@@ -1,0 +1,8 @@
+{
+  "schema": "covariate/v1",
+  "task": "C4-enforcement-verifier",
+  "contract": true,
+  "check_strength": "behavioral",
+  "negative_cases": "true",
+  "check_contract_sha256": "e10da2084f4f3945c0a7eaa450c53612302a97d50947f1e8c6714aab8f74cb54"
+}

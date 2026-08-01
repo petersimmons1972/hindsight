@@ -1,0 +1,8 @@
+{
+  "schema": "covariate/v1",
+  "task": "C6-vendor-sync",
+  "contract": true,
+  "check_strength": "behavioral",
+  "negative_cases": "true",
+  "check_contract_sha256": "49702c09e82f7e9efb4e50f019da0bf8a9adf2e0eb0783ad5826eed74879af8b"
+}

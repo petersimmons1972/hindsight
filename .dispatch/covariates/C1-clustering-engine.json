@@ -1,0 +1,8 @@
+{
+  "schema": "covariate/v1",
+  "task": "C1-clustering-engine",
+  "contract": true,
+  "check_strength": "behavioral",
+  "negative_cases": "true",
+  "check_contract_sha256": "3370a21464cfd463a01e1d8599b984059f4933850dc9f38f5197a52284d5bfa8"
+}

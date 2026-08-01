@@ -1,0 +1,14 @@
+{
+  "statusCheckRollup": [
+    {
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "name": "GitGuardian Security Checks",
+      "status": "QUEUED",
+      "conclusion": null
+    }
+  ]
+}

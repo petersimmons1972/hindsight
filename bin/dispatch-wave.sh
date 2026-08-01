@@ -5,6 +5,13 @@ set -uo pipefail
 
 REPO="$HOME/projects/hindsight"
 B="$REPO/briefs"
+
+# The ambient GH_TOKEN goes stale in long-lived sessions (App installation tokens
+# expire hourly) and returns "Bad credentials". Refresh here rather than trusting
+# the exported value -- verify auth by exercising it, not by reading it.
+if command -v gh-app-token >/dev/null; then
+  GH_TOKEN="$(gh-app-token claude | tr -d '[:space:]')" && export GH_TOKEN
+fi
 OUT="$REPO/.dispatch-briefs"
 mkdir -p "$OUT"
 

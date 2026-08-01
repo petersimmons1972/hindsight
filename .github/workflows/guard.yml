@@ -9,8 +9,12 @@ jobs:
     runs-on: homelab-arc
     steps:
       - uses: actions/checkout@v4
+      - name: Set up virtualenv
+        run: |
+          python3 -m venv --system-site-packages .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Install numpy
-        run: python3 -m pip install --user numpy
+        run: python3 -m pip install numpy
       - name: Update apt package index
         run: sudo apt-get update
       - name: Install bats

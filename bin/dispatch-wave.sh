@@ -39,6 +39,6 @@ for p in "$@"; do
   cli-dispatch start --repo "$REPO" --task "$slug" \
     --harness codex --effort "$(packet_effort "$p")" \
     --brief-file "$OUT/$slug.md" \
-    --check "$chk" --check-timeout 900 --retries 1
+    --check "$chk" --check-strength behavioral --check-timeout 900 --retries 1
   echo "  exit=$?"
 done

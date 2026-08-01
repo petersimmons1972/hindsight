@@ -42,16 +42,48 @@ def write_source_roots(path: Path, mapping: dict[str, str]) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def write_known_phantoms(path: Path, records: list[dict[str, str]]) -> None:
+    lines = [json.dumps(record) for record in records]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+
+def write_enforcement_floor(path: Path, floor: int | str) -> None:
+    path.write_text(f"{floor}\n", encoding="utf-8")
+
+
 def run_verifier(
     monkeypatch: pytest.MonkeyPatch,
     l1_dir: Path,
     projects: Path,
     source_roots_path: Path,
     extra_args: list[str] | None = None,
+    known_phantoms: list[dict[str, str]] | None = None,
+    enforcement_floor: int | str | None = None,
+    known_phantoms_path: Path | None = None,
+    enforcement_floor_path: Path | None = None,
 ) -> int:
+    """Drive main() with every default sandboxed to tmp_path.
+
+    known_phantoms / enforcement_floor default to permissive, no-op values
+    (an empty ledger, floor 0) so tests that don't care about the debt-
+    ledger/floor gates aren't affected by them -- pass known_phantoms_path
+    or enforcement_floor_path (pointing at a file you never created, or
+    deliberately malformed) to exercise the "fails loud" behavior instead.
+    """
     monkeypatch.setattr(MODULE, "default_l1_dir", lambda: l1_dir)
     monkeypatch.setattr(MODULE, "default_projects_dir", lambda: projects)
     monkeypatch.setattr(MODULE, "default_source_roots_path", lambda: source_roots_path)
+
+    if known_phantoms_path is None:
+        known_phantoms_path = l1_dir.parent / "known-phantoms.conf"
+        write_known_phantoms(known_phantoms_path, known_phantoms or [])
+    monkeypatch.setattr(MODULE, "default_known_phantoms_path", lambda: known_phantoms_path)
+
+    if enforcement_floor_path is None:
+        enforcement_floor_path = l1_dir.parent / "enforcement-floor.conf"
+        write_enforcement_floor(enforcement_floor_path, 0 if enforcement_floor is None else enforcement_floor)
+    monkeypatch.setattr(MODULE, "default_enforcement_floor_path", lambda: enforcement_floor_path)
+
     return MODULE.main(["--verify-enforcement", *(extra_args or [])])
 
 
@@ -95,9 +127,12 @@ def test_root_known_and_path_absent_is_phantom_names_entry_and_source(
 
     assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
     err = capsys.readouterr().err
-    assert "missing/control.py" in err
-    assert "sample" in err
-    assert "example" in err
+    # Assert the exact rendered phantom line, not loose substrings -- "sample"
+    # and "example" alone also appear in the always-printed per-source summary
+    # row regardless of whether phantom detection ran at all, so a decorative
+    # boilerplate print (or a deleted phantom-append) would pass those checks
+    # for the wrong reason.
+    assert "phantom: missing/control.py (sample:example," in err
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +146,16 @@ def test_root_unknown_is_unverifiable_not_enforced(
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "projects"
-    # A second, mapped-and-present source so the overall "zero roots resolved"
-    # floor is satisfied and doesn't mask what we're testing here.
+    # A second, mapped-and-present source with a REAL checked entry, so the
+    # root floor sees at least one genuinely useful root and doesn't mask
+    # what we're testing here behind the SKIPPED (zero-useful-roots) path.
     (projects / "anchor-repo").mkdir(parents=True)
+    (projects / "anchor-repo" / "control.py").touch()
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"anchor": "anchor-repo"})
-    write_records(l1_dir, "anchor", machine_record("anchor-1", None))
+    write_records(
+        l1_dir, "anchor", machine_record("anchor-1", {"file": "control.py", "kind": "test"})
+    )
     # "orphan" has NO entry in source-roots.conf at all.
     write_records(
         l1_dir, "orphan", machine_record("orphan-1", {"file": "control.py", "kind": "test"})
@@ -126,9 +165,18 @@ def test_root_unknown_is_unverifiable_not_enforced(
     err = capsys.readouterr().err
     assert exit_code == 0  # unverifiable is not a failure
     assert "phantom:" not in err
-    assert "unverifiable" in err.lower()
-    assert "orphan" in err
-    assert "1" in err  # the count is printed somewhere
+    # Discriminating: this exact count+message only prints when
+    # unverifiable_count > 0, i.e. the UNVERIFIABLE branch actually ran and
+    # appended to report.unverifiable. A bare `continue` swapped in for that
+    # branch (silently treating the entry as neither checked nor flagged)
+    # would leave this count at 0 and this line unprinted -- "unverifiable"
+    # in err.lower() alone does NOT catch that, because the line is printed
+    # unconditionally too (in the SCOPE footer, and per-source summary row).
+    assert "UNVERIFIABLE: 1 machine entries could not be checked" in err
+    # The specific detail line, keyed to the entry that was actually
+    # appended -- not just the source name, which also appears in the
+    # always-printed summary table regardless of whether detection ran.
+    assert "unverifiable: control.py (orphan:orphan-1," in err
 
 
 def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
@@ -139,12 +187,16 @@ def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
     projects = tmp_path / "projects"
     projects.mkdir()
     (projects / "anchor-repo").mkdir()
+    (projects / "anchor-repo" / "control.py").touch()
     roots_path = tmp_path / "source-roots.conf"
     # "vanished" is mapped, but its target directory does not exist on this
     # machine -- exactly the CI-runner-without-checkouts case, but scoped to
-    # one source instead of all of them.
+    # one source instead of all of them. "anchor" has a real, resolving
+    # entry so the root floor sees a genuinely useful root.
     write_source_roots(roots_path, {"anchor": "anchor-repo", "vanished": "never-checked-out"})
-    write_records(l1_dir, "anchor", machine_record("anchor-1", None))
+    write_records(
+        l1_dir, "anchor", machine_record("anchor-1", {"file": "control.py", "kind": "test"})
+    )
     write_records(
         l1_dir, "vanished", machine_record("v-1", {"file": "control.py", "kind": "test"})
     )
@@ -153,8 +205,9 @@ def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "phantom:" not in err
-    assert "unverifiable" in err.lower()
-    assert "vanished" in err
+    # Discriminating, same rationale as test_root_unknown_is_unverifiable_not_enforced.
+    assert "UNVERIFIABLE: 1 machine entries could not be checked" in err
+    assert "unverifiable: control.py (vanished:v-1," in err
 
 
 # ---------------------------------------------------------------------------
@@ -187,18 +240,23 @@ def test_require_roots_flag_raises_the_floor(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo-a").mkdir(parents=True)
+    (projects / "repo-a" / "control.py").touch()
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"a": "repo-a", "b": "repo-b-not-checked-out"})
-    write_records(l1_dir, "a", machine_record("a-1", None))
+    # "a" has a real, resolving, non-null entry -- genuinely useful, not just
+    # resolved. "b" doesn't resolve at all.
+    write_records(l1_dir, "a", machine_record("a-1", {"file": "control.py", "kind": "test"}))
     write_records(l1_dir, "b", machine_record("b-1", None))
 
-    # Only 1 of 2 mapped roots resolves; demanding 2 must ERROR even though
-    # nothing is phantom.
+    # Only 1 of 2 mapped roots actually verified anything; demanding 2 must
+    # ERROR even though nothing is phantom.
     exit_code = run_verifier(
         monkeypatch, l1_dir, projects, roots_path, extra_args=["--require-roots", "2"]
     )
+    err = capsys.readouterr().err
     assert exit_code != 0
-    assert "error" in capsys.readouterr().err.lower()
+    assert "phantom:" not in err
+    assert "error" in err.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +281,11 @@ def test_path_existing_in_a_different_repo_is_still_phantom(
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
 
     assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
-    assert "control.py" in capsys.readouterr().err
+    # Discriminating: the bare filename alone would also match a merely
+    # UNVERIFIABLE detail line or an unrelated print; the exact phantom
+    # rendering only appears when the resolve-under-own-root check actually
+    # failed it.
+    assert "phantom: control.py (sample:example," in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -251,12 +313,16 @@ def test_self_root_token_resolves_to_this_repo_regardless_of_projects_dir(
 
     exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)
     err = capsys.readouterr().err
-    assert exit_code == 1  # the fake one is a genuine phantom
+    assert exit_code == 1  # the fake one is a genuine (undocumented) phantom
     assert "phantom: guard/definitely-not-a-real-file.py" in err
     assert "guard/failure_mode_catalog_guard.py" not in err.replace(
         "phantom: guard/definitely-not-a-real-file.py", ""
     )  # the real one stayed silent
-    assert "ERROR" not in err  # SELF resolved -- this isn't the fail-open case
+    # SELF resolved AND verified 2 entries -- the ROOT-FLOOR path specifically
+    # must not be why this failed (it failed because the fake phantom is
+    # undocumented in known-phantoms.conf, a distinct and correct gate).
+    assert "refusing to report success" not in err
+    assert "undocumented: phantom: guard/definitely-not-a-real-file.py" in err
 
 
 # ---------------------------------------------------------------------------
@@ -338,3 +404,273 @@ def test_real_corpus_reports_a_summary(capsys: pytest.CaptureFixture[str]) -> No
     output = capsys.readouterr().err
     assert "summary" in output.lower()
     assert "machine" in output.lower()
+
+
+# ---------------------------------------------------------------------------
+# The falsifiable root floor (C4c item 2): a root that RESOLVES but never
+# had a single non-null entry to actually check proves nothing and must not
+# satisfy --require-roots. This is exactly the CI/homelab-canon shape: SELF
+# always resolves, but every one of its entries is enforcement: null.
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_root_with_zero_checked_entries_does_not_satisfy_the_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)  # the root genuinely resolves...
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    # ...but its only entry is unbacked, so it never actually gets checked.
+    write_records(l1_dir, "sample", machine_record("example", None))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, extra_args=["--require-roots", "1"])
+    err = capsys.readouterr().err
+    # Must NOT be a silent/vacuous pass reported as "verified" -- and must
+    # not be misreported as a phantom or a hard ERROR either: the
+    # environment isn't misconfigured, it structurally has nothing to check
+    # yet. A declared SKIP is the honest outcome.
+    assert exit_code == 0
+    assert "phantom:" not in err
+    assert "SKIPPED" in err
+
+
+def test_zero_roots_resolved_at_all_is_still_a_hard_error_not_a_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Distinguishes the two honest-failure shapes: a root that resolves but
+    checks nothing is a SKIP (above); NO root resolving at all is still the
+    original, harder signal that the environment itself looks broken
+    (wrong projects_dir, deleted source-roots.conf mappings, ...)."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    projects.mkdir()  # exists, but the mapped subdir does not
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "does-not-exist-on-this-machine"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "SKIPPED" not in err
+    assert "0 of 1 mapped source roots are present on this machine at all" in err
+
+
+# ---------------------------------------------------------------------------
+# The enforcement-bearing floor (C4c item 3, "floor not just a cap"): the
+# fleet#152 shape -- a debt ledger can be "reduced" by deleting the flagged
+# entry instead of fixing it. Only a floor on the TOTAL corpus count catches
+# that, and it must hold with NO root resolved at all (root-independent).
+# ---------------------------------------------------------------------------
+
+
+def test_enforcement_bearing_count_dropping_below_floor_is_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    # Only 1 enforcement-bearing entry exists this run...
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    # ...but the floor says there used to be 5 -- as if 4 records were
+    # deleted (or their enforcement value nulled) instead of ever being
+    # fixed. That must fail loud, even though nothing here is phantom.
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=5
+    )
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "phantom:" not in err
+    assert "dropped to 1, below floor 5" in err
+
+
+def test_enforcement_bearing_count_at_or_above_floor_is_fine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=1)
+    assert exit_code == 0
+
+
+def test_missing_enforcement_floor_file_fails_loud_not_a_silent_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", None))
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        enforcement_floor_path=tmp_path / "does-not-exist-floor.conf",
+    )
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "phantom:" not in err
+    assert "enforcement floor file not found" in err.lower()
+
+
+def test_malformed_enforcement_floor_file_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", None))
+
+    floor_path = tmp_path / "bad-floor.conf"
+    floor_path.write_text("not-a-number\n", encoding="utf-8")
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor_path=floor_path
+    )
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "not an integer" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# The known-phantoms debt ledger (C4c item 3): a phantom already documented
+# (with evidence + disposition) is visible debt, not a build failure -- but
+# an UNDOCUMENTED phantom is fatal by default, and the ledger going missing
+# must never be a silent "0 known, so nothing to check."
+# ---------------------------------------------------------------------------
+
+
+def test_documented_phantom_is_debt_not_a_build_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "missing.py", "kind": "test"}))
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        known_phantoms=[
+            {
+                "source": "sample",
+                "id": "example",
+                "claimed_path": "missing.py",
+                "evidence": "ls repo/missing.py -> absent (test fixture)",
+                "disposition": "genuine-phantom: test fixture",
+            }
+        ],
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 0
+    assert "phantom: missing.py (sample:example," in err  # still visible, not hidden
+    assert "DEBT: 1 known phantom(s)" in err
+
+
+def test_undocumented_phantom_is_fatal_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "missing.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)  # empty ledger
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "undocumented: phantom: missing.py (sample:example," in err
+    assert "new phantoms cannot land silently" in err.lower()
+
+
+def test_accept_phantom_flag_bypasses_for_this_run_only_with_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "missing.py", "kind": "test"}))
+
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, extra_args=["--accept-phantom"]
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 0
+    assert "WARNING" in err
+    assert "--accept-phantom set" in err
+
+
+def test_missing_known_phantoms_ledger_fails_loud_not_a_silent_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The (c) mutation bar: deleting known-phantoms.conf must go red, even
+    on a corpus with zero real phantoms -- a vanished ledger must never be
+    silently read as '0 known, so nothing to check.'"""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        known_phantoms_path=tmp_path / "does-not-exist-ledger.conf",
+    )
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "known-phantoms ledger not found" in err.lower()
+
+
+def test_empty_known_phantoms_ledger_is_a_valid_zero_debt_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, known_phantoms=[])
+    err = capsys.readouterr().err
+    assert exit_code == 0
+    assert "DEBT: 0 known phantom(s)" in err

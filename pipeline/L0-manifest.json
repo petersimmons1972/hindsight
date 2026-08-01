@@ -1,0 +1,166 @@
+{
+  "generated": "2026-08-01T00:04:06-04:00",
+  "canon": "homelab-config/docs/failure-modes-standard.md",
+  "canon_rows": 134,
+  "phase0": {
+    "duplicate_fm28_resolved": true,
+    "backported": "FM-126..FM-134",
+    "claude_codex_role": "mirror",
+    "clones_neutralised": [
+      {
+        "lane": "fleet-cA",
+        "prior_sha256": "7651c034672d0d132368fd1a14dd10e9a4f136f79a87d061874525d582f26917",
+        "action": "replaced_with_pointer"
+      },
+      {
+        "lane": "fleet-cB",
+        "prior_sha256": "7651c034672d0d132368fd1a14dd10e9a4f136f79a87d061874525d582f26917",
+        "action": "replaced_with_pointer"
+      },
+      {
+        "lane": "fleet-cC",
+        "prior_sha256": "7651c034672d0d132368fd1a14dd10e9a4f136f79a87d061874525d582f26917",
+        "action": "replaced_with_pointer"
+      }
+    ]
+  },
+  "l0_files": [
+    {
+      "path": "fleet/FAILURE-MODES.md",
+      "sha256": "e48b9790c3c13a88891080b0bcb8899bc64ae9273cbd3bbf2be05298982bf280",
+      "lines": 1554
+    },
+    {
+      "path": "fleet/orchestration/FAILURE-MODES.md",
+      "sha256": "673a62d17642f11ee14fc113d557b93bed12983c8c83e0ff907f55f2d73a3d09",
+      "lines": 261
+    },
+    {
+      "path": "fleet/CODING-INVARIANTS.md",
+      "sha256": "47a0afb6679ff83297f3f4adb4f474ab97742b6ba55d1f9c84cadbfaa0737791",
+      "lines": 191
+    },
+    {
+      "path": "fleet/CODING-FAILURE-MODES.md",
+      "sha256": "84b8d1947c2d307ac3e3399edab08f27e0d8421c30dc0f05363be0540d5a96c8",
+      "lines": 27
+    },
+    {
+      "path": "homelab-config/docs/failure-modes-standard.md",
+      "sha256": "388f513b527d5dfe75cc71a2fbbdae04aa314abd8d43f3dcd2a4f49213a81c42",
+      "lines": 375
+    },
+    {
+      "path": "homelab-config/LESSONS-LEARNED-GMAIL-TRACKER-RESTART-LOOP.md",
+      "sha256": "a015df517fc72256dfb7b0e696139abb0f1520f1c3f60c467c3fd144eff5f568",
+      "lines": 314
+    },
+    {
+      "path": "homelab-config/LESSONS-LEARNED-CERT-MANAGER.md",
+      "sha256": "f2bc15f43260d7e3447780e5d7acd9b12affb8a3d56842a1819dbc9e00e73a7c",
+      "lines": 218
+    },
+    {
+      "path": "homelab-config/SECURITY-INCIDENT-2026-01-18.md",
+      "sha256": "1ffd9e37104a8e8ffb2c5c7d82e63e13c941286759bdd1aab491fb7784b4b8e4",
+      "lines": 169
+    },
+    {
+      "path": "claude-codex/docs/integration-failure-modes.md",
+      "sha256": "9abafb6d11f2272ba9bd5821c21e96839f197b5d88c6b23620f341afeda0e09f",
+      "lines": 531
+    },
+    {
+      "path": "claude-codex/docs/failure-modes-standard.md",
+      "sha256": "a8461b9716d2a4691d0b81aba9fdfaca059c2083c9ac18c6116ad55bd21fa446",
+      "lines": 162
+    },
+    {
+      "path": "codex/docs/failure-modes.md",
+      "sha256": "58e540f1f46bbbfb4ca5e9aed0b761e6bc54e8dcb0e3d1027b5f77f7b321e3bd",
+      "lines": 206
+    },
+    {
+      "path": "aifleet/docs/model-failure-modes.md",
+      "sha256": "c53c17e51b46393037113a61b74e09079bf9a6843bd17022a3a50167056c4ed4",
+      "lines": 33
+    },
+    {
+      "path": "spark/docs/model-failure-modes.md",
+      "sha256": "972891149618cc744aa39318db540d35ec743ad6ea93858cf2d465b3d3836425",
+      "lines": 42
+    },
+    {
+      "path": "duramind/docs/campaign/DETERMINISM-CAMPAIGN-LESSONS.md",
+      "sha256": "a764d50a9f4f2ec9c0de22c2fb500df261d9c735f0c3d929ee4a6df7eb17da61",
+      "lines": 72
+    },
+    {
+      "path": "engram-go/results/v9-failure-taxonomy.md",
+      "sha256": "da12f558c91a3cc0a222015ee212f1baf876d07a3d70bd5c72c8f8c001a75deb",
+      "lines": 157
+    },
+    {
+      "path": "engram-go/results/v9-failure-taxonomy.json",
+      "sha256": "79bfed8e5113b4b079c7c1dac2cdf3b8e979832b36f15c4073ddb9c0a7a5f99b",
+      "lines": 1002
+    },
+    {
+      "path": "engram-go/results/research-notes-failure-patterns.md",
+      "sha256": "280f14dc101ca928afe9bd6feeebedcf8b0a734909e9c4423a43fe62281d038c",
+      "lines": 201
+    },
+    {
+      "path": "generals/docs/LESSONS-LEARNED.md",
+      "sha256": "c89836e3f48a9c643b4ada9a902a0c34ae9d6e9c4b1f65f0630e968633fd8121",
+      "lines": 250
+    },
+    {
+      "path": "kubernetes/homepage/LESSONS_LEARNED.md",
+      "sha256": "251ba61afc396f3b12549519f56fc262000b229fbff88bc7e5cb79c1155d1984",
+      "lines": 696
+    },
+    {
+      "path": "fleet-dispatch/migrations/0017_failure_class.sql",
+      "sha256": "2e6f8c9a3d5717a1210c85d513205a1fece1d710b9701238e9362a5e185a150e",
+      "lines": 39
+    },
+    {
+      "path": "homelab-config/INCIDENTS/2026-01-28-resume-website-deployment.md",
+      "sha256": "b5b5ab6823bad84674a5b1c1373ae2c9ee1cf2eb17ce4d44e3e411f396e565b2",
+      "lines": 132
+    },
+    {
+      "path": "homelab-config/INCIDENTS/2026-02-12-cert-manager-issuer-name-mismatch.md",
+      "sha256": "b076bc2ac97b6a759292c26e2769ef746ab7de934a9c60b5005944aed82dd755",
+      "lines": 209
+    },
+    {
+      "path": "homelab-config/INCIDENTS/2026-02-12-kubernetes-failed-pod-accumulation.md",
+      "sha256": "7e02cba84ea7e3b01900dbdc5cee7036eb24375af3174bd555a682cc29cc478a",
+      "lines": 118
+    },
+    {
+      "path": "homelab-config/INCIDENTS/2026-02-17-kubernetes-maintenance.md",
+      "sha256": "7a68ddf8deee50d6142c7ca2cac2a7bf0a5a2ebc09a82ed2d43804729307d3e8",
+      "lines": 113
+    },
+    {
+      "path": "clearwatch/docs/incidents/2026-07-29-leaked-research-db-password.md",
+      "sha256": "2a9a9d8857aab6d174cc2e070baf7449a95837c897e9cf2e7b0fb599470e6463",
+      "lines": 71
+    },
+    {
+      "path": "substack/docs/incidents/2026-07-21-scheduler-silent-stall.md",
+      "sha256": "3ce735c02ed89362502ba2c3add26145d6d99e642977101218626ff721a9ea85",
+      "lines": 38
+    },
+    {
+      "path": "substack/docs/incidents/2026-07-31-scheduler-deploy-key-revoked.md",
+      "sha256": "51f3bc7c29597b3a48e221680cef70b6b34fc38cb3671c9a7cef3ad3289f9c45",
+      "lines": 56
+    }
+  ],
+  "total_files": 27,
+  "total_lines": 7237
+}

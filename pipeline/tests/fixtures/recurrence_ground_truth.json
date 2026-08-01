@@ -1,0 +1,105 @@
+{
+  "schema": "hindsight/recurrence-ground-truth/v1",
+  "authored_by": "coordinator, before any clustering code existed",
+  "purpose": [
+    "This fixture is the acceptance gate for the clustering engine (packet C1).",
+    "It is authored deliberately BEFORE the implementation and must not be edited",
+    "to make an implementation pass. A validator that grades its own homework is",
+    "the failure family this repository exists to catalogue.",
+    "",
+    "Every member ID below was verified present in pipeline/L1/*.jsonl at authoring",
+    "time. These families were identified by independent human-directed reading of",
+    "the source corpus, NOT by any clustering algorithm -- that is what makes them",
+    "usable as ground truth."
+  ],
+
+  "families": [
+    {
+      "key": "completion-signal",
+      "claim": "A process, agent or tool reports that work finished; the artifact it claims to have produced does not exist, or the process is dead, zombied, or still running.",
+      "why_it_matters": "The single most-repeated lesson in the corpus. Re-logged at least 7 times in 3 weeks under 7 different IDs, each treated as a new discovery.",
+      "members": [
+        "fleet-OPS-11",
+        "fleet-OPS-16",
+        "fleet-OPS-21",
+        "fleet-OPS-23",
+        "fleet-OPS-28",
+        "fleet-MDL-18",
+        "fleet-orch-OPS-11"
+      ],
+      "note": "fleet-OPS-11 and fleet-orch-OPS-11 are the same failure recorded in two separate files -- a cross-file duplicate that a correct clusterer must also collapse."
+    },
+    {
+      "key": "shared-mutable-checkout",
+      "claim": "Two or more concurrent agents or dispatches operate in one working tree or checkout and observe or clobber each other's uncommitted state; evidence that appears independent is not.",
+      "why_it_matters": "Seven separate incidents spanning 2026-07-14 to 2026-07-30, each logged as a fresh discovery of the identical root cause.",
+      "members": [
+        "fleet-OPS-8",
+        "fleet-OPS-13",
+        "fleet-OPS-36",
+        "fleet-OPS-38",
+        "fleet-OPS-41",
+        "fleet-OPS-45",
+        "fleet-OPS-48"
+      ]
+    },
+    {
+      "key": "fail-silent-gate",
+      "claim": "A gate collapses error and reject into one channel, so a dependency failure, a 404, or an exit-0-on-error path is read as a passing or rejecting verdict rather than as a broken check.",
+      "why_it_matters": "Logged 4 times under different IDs before the chapters were merged under CI-1.",
+      "members": [
+        "fleet-CI-1",
+        "fleet-orch-CI-1-FM5",
+        "fleet-orch-CI-1-FM7",
+        "fleet-orch-CI-1-FM8"
+      ]
+    },
+    {
+      "key": "dedup-identity-key",
+      "claim": "A deduplication or identity key is coupled to the discoverer or to surface phrasing, so equivalent items never collapse -- or an escape hatch added to fix that then over-merges genuinely distinct items.",
+      "why_it_matters": "Relearned three times on the same source file, chaptered a/b/c.",
+      "members": [
+        "fleet-orch-ORC-1a",
+        "fleet-orch-ORC-1b",
+        "fleet-orch-ORC-1c"
+      ],
+      "note": "Self-referential: this is the failure mode the clusterer under test could itself commit."
+    },
+    {
+      "key": "convergence-not-corroboration",
+      "claim": "Multiple reviewers or lanes agree because they share one upstream source, not because they independently verified; or a claim/gap is asserted with no negative-search artifact behind it.",
+      "why_it_matters": "ORC-9 and ORC-11 are the same failure eleven days apart; ORC-11 cites ORC-9 by name as the same root class.",
+      "members": [
+        "fleet-ORC-9",
+        "fleet-ORC-11"
+      ]
+    }
+  ],
+
+  "assertions": {
+    "recall": {
+      "rule": "For each family, its members must land in a single cluster.",
+      "min_fraction_together": 0.75,
+      "rationale": "Allows one outlier per large family without permitting the family to fragment. A family whose members scatter across clusters means the engine cannot see recurrence, which is the entire deliverable."
+    },
+    "precision": {
+      "rule": "No two families listed below may be merged into the same cluster.",
+      "must_not_merge": [
+        ["completion-signal", "shared-mutable-checkout"],
+        ["completion-signal", "fail-silent-gate"],
+        ["shared-mutable-checkout", "dedup-identity-key"],
+        ["fail-silent-gate", "convergence-not-corroboration"],
+        ["dedup-identity-key", "convergence-not-corroboration"]
+      ],
+      "rationale": "Recall alone is trivially satisfiable by putting the whole corpus in one cluster. Precision is what makes the recall assertion meaningful. Both must hold."
+    },
+    "headline": {
+      "rule": "The completion-signal cluster must be reported with a recurrence count of at least 6 distinct member entries.",
+      "rationale": "This is the project's stated ground-truth test. If the pipeline cannot independently rediscover the most-repeated lesson in the corpus, its output must not be trusted and downstream synthesis must not proceed."
+    },
+    "backend_agnostic": {
+      "rule": "These assertions must hold for whichever embedding backend is active -- the HTTP embedding service or the numpy TF-IDF fallback.",
+      "rationale": "The fallback is not a lesser mode that may quietly fail the contract. If it cannot meet the bar it must fail loudly, not degrade silently."
+    }
+  }
+}

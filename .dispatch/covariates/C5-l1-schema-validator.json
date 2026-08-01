@@ -1,8 +1,0 @@
-{
-  "schema": "covariate/v1",
-  "task": "C5-l1-schema-validator",
-  "contract": true,
-  "check_strength": "behavioral",
-  "negative_cases": "true",
-  "check_contract_sha256": "3322da6b4597924ff070bb78e867e0902f282b78a43c7195e0108d1528c163b6"
-}

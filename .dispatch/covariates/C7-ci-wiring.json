@@ -1,8 +1,0 @@
-{
-  "schema": "covariate/v1",
-  "task": "C7-ci-wiring",
-  "contract": true,
-  "check_strength": "behavioral",
-  "negative_cases": "true",
-  "check_contract_sha256": "50b4284479b2f77686e8e63f8fd50f9990980343059ed270a4b0b63ac84442be"
-}

@@ -1,0 +1,17 @@
+name: catalog-guard
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guard:
+    runs-on: homelab-arc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate canonical catalog
+        run: python3 guard/failure_mode_catalog_guard.py
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Guard tests
+        run: bats guard/tests/test_failure_mode_catalog_guard.bats

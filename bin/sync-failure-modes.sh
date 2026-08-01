@@ -1,49 +1,104 @@
 #!/usr/bin/env bash
-# sync-failure-modes.sh — vendor checkin-lint-core.sh into all registered projects.
+# Vendor the canonical failure-mode catalog without mutating consumer git state.
 #
-# Usage: bin/sync-failure-modes.sh
-# Config: bin/failure-modes-projects.conf (relative to this script's location)
-
+# A consumer's origin is checked before any write: this is deliberately a
+# distribution gate, not a convenient bulk copy command.
 set -euo pipefail
 
-BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
-CORE_SRC="${BIN_DIR}/checkin-lint-core.sh"
-CONF="${BIN_DIR}/failure-modes-projects.conf"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CONF="${HINDSIGHT_CONSUMERS_CONF:-$ROOT_DIR/conf/consumers.conf}"
+CATALOG="${HINDSIGHT_CATALOG_SOURCE:-$ROOT_DIR/catalog/failure-modes.md}"
+MODE="dry-run"
 
-RED='\033[0;31m'; YLW='\033[1;33m'; GRN='\033[0;32m'; BOLD='\033[1m'; RST='\033[0m'
+usage() {
+  printf 'Usage: %s [--dry-run|--apply]\n' "$0"
+}
 
-if [[ ! -f "$CORE_SRC" ]]; then
-  echo -e "${RED}ERROR${RST}: checkin-lint-core.sh not found at $CORE_SRC" >&2; exit 1
-fi
-if [[ ! -f "$CONF" ]]; then
-  echo -e "${RED}ERROR${RST}: project config not found at $CONF" >&2; exit 1
-fi
+case "${1:-}" in
+  '') ;;
+  --dry-run) MODE="dry-run" ;;
+  --apply) MODE="apply" ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
 
-updated=0; current=0; skipped=0
+[[ -f "$CONF" ]] || { printf 'ERROR: consumers config not found: %s\n' "$CONF" >&2; exit 1; }
+[[ -f "$CATALOG" ]] || { printf 'ERROR: canonical catalog not found: %s\n' "$CATALOG" >&2; exit 1; }
 
-while IFS=: read -r project_path _rest; do
-  project_path="${project_path%%#*}"
-  project_path="$(echo "$project_path" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
-  [[ -z "$project_path" ]] && continue
+expected="$(mktemp "${TMPDIR:-/tmp}/hindsight-catalog.XXXXXX")"
+trap 'rm -f "$expected"' EXIT
+printf '<!-- GENERATED — DO NOT EDIT, canonical source is hindsight -->\n\n' > "$expected"
+cat "$CATALOG" >> "$expected"
 
-  dest="${project_path}/bin/checkin-lint-core.sh"
-
-  if [[ ! -d "$project_path" ]]; then
-    echo -e "${YLW}skip${RST}  $project_path — directory not found"; ((skipped++)) || true; continue
-  fi
-  if [[ ! -d "${project_path}/bin" ]]; then
-    echo -e "${YLW}skip${RST}  $project_path — no bin/ directory (run project setup first)"; ((skipped++)) || true; continue
-  fi
-
-  if [[ -f "$dest" ]] && diff -q "$CORE_SRC" "$dest" > /dev/null 2>&1; then
-    echo -e "${GRN}current${RST}  $project_path"; ((current++)) || true
+origin_fragment() {
+  local origin="$1"
+  local fragment
+  if [[ "$origin" =~ ^git@github\.com:([^[:space:]]+/[^[:space:]]+)(\.git)?$ ]]; then
+    fragment="${BASH_REMATCH[1]}"
+  elif [[ "$origin" =~ ^https?://github\.com/([^[:space:]]+/[^[:space:]]+)(\.git)?$ ]]; then
+    fragment="${BASH_REMATCH[1]}"
+  elif [[ "$origin" =~ ^ssh://git@github\.com/([^[:space:]]+/[^[:space:]]+)(\.git)?$ ]]; then
+    fragment="${BASH_REMATCH[1]}"
   else
-    cp "$CORE_SRC" "$dest"
-    echo -e "${GRN}updated${RST}  $project_path"; ((updated++)) || true
+    return 1
+  fi
+  printf '%s\n' "${fragment%.git}"
+}
+
+printf '%-20s %s\n' STATUS REPOSITORY
+while IFS= read -r raw || [[ -n "$raw" ]]; do
+  [[ "$raw" =~ ^[[:space:]]*($|#) ]] && continue
+  if [[ "$raw" != *:* ]]; then
+    printf 'ERROR: invalid consumer entry: %s\n' "$raw" >&2
+    exit 1
+  fi
+  repo="${raw%%:*}"
+  required_fragment="${raw#*:}"
+  if [[ -z "$repo" || -z "$required_fragment" || "$required_fragment" == *:* ]]; then
+    printf 'ERROR: invalid consumer entry: %s\n' "$raw" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "$repo" ]] || ! repo_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)"; then
+    printf '%-20s %s (not a git repo)\n' skipped-not-a-repo "$repo" >&2
+    continue
+  fi
+  if ! origin="$(git -C "$repo" remote get-url origin 2>/dev/null)"; then
+    printf '%-20s %s (origin missing)\n' skipped-not-a-repo "$repo" >&2
+    continue
+  fi
+  if ! actual_fragment="$(origin_fragment "$origin")" || [[ "$actual_fragment" != "$required_fragment" ]]; then
+    printf '%-20s %s (expected %s, got %s)\n' refused-mismatch "$repo" "$required_fragment" "$origin" >&2
+    continue
+  fi
+
+  destination="$repo_root/docs/failure-modes.md"
+  if [[ -L "$repo_root/docs" || -L "$destination" ]]; then
+    printf '%-20s %s (vendored path is a symlink)\n' refused-unsafe-path "$repo" >&2
+    continue
+  fi
+  if [[ -f "$destination" ]] && cmp -s "$expected" "$destination"; then
+    printf '%-20s %s\n' up-to-date "$repo"
+  elif [[ "$MODE" == dry-run ]]; then
+    printf '%-20s %s\n' would-write "$repo"
+  else
+    mkdir -p "$repo/docs"
+    # Keep the directory open while writing.  A later pathname swap cannot
+    # redirect /proc/self/fd/$docs_fd to a different directory.
+    exec {docs_fd}<"$repo_root/docs"
+    opened_docs="$(cd "/proc/self/fd/$docs_fd" && pwd -P)"
+    if [[ "$opened_docs" != "$repo_root/docs" ]]; then
+      exec {docs_fd}<&-
+      printf '%-20s %s (vendored directory changed)\n' refused-unsafe-path "$repo" >&2
+      continue
+    fi
+    staged_file="$(mktemp "/proc/self/fd/$docs_fd/.hindsight-catalog.XXXXXX")"
+    cat "$expected" > "$staged_file"
+    chmod 0644 "$staged_file"
+    mv -f "$staged_file" "/proc/self/fd/$docs_fd/failure-modes.md"
+    exec {docs_fd}<&-
+    printf '%-20s %s\n' wrote "$repo"
   fi
 done < "$CONF"
 
-echo ""
-echo -e "${BOLD}sync-failure-modes: ${updated} updated, ${current} current, ${skipped} skipped${RST}"
-[[ $skipped -gt 0 ]] && echo -e "${YLW}Skipped projects need bin/ setup first.${RST}"
 exit 0

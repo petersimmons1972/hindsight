@@ -108,6 +108,16 @@ def main() -> int:
                   f"{r['coverage_pct']:>6.1f}%  {m}")
         n_missing = sum(len(r["missing"]) for r in report)
         print(f"\n{'SHORT' if short else 'COMPLETE'}: {n_missing} enumerable entries unaccounted for")
+        print(
+            "\nSCOPE LIMIT -- read this before trusting the word COMPLETE:\n"
+            "  This checks only entries with a machine-detectable ID. Narrative content\n"
+            "  (case studies, standalone bullets, prose lessons) carries no ID, so it is\n"
+            "  invisible here and a shortfall in it CANNOT be detected by this tool.\n"
+            "  This is not hypothetical: the mechanical catalog extractor missed 4 such\n"
+            "  entries (2 case studies, 2 standalone bullets) while this script reported\n"
+            "  100% coverage. They were recovered only because a model pass saw them.\n"
+            "  COMPLETE means 'no enumerable entry is missing', never 'nothing is missing'."
+        )
     return 1 if short else 0
 
 

@@ -27,17 +27,7 @@ jobs:
         run: bats guard/tests/*.bats
       - name: Reconcile L1 corpus
         run: python3 pipeline/reconcile_l1.py
-      - name: Validate L1 schema when available
-        run: |
-          if [ -f pipeline/validate_l1.py ]; then
-            python3 pipeline/validate_l1.py
-          else
-            echo "pipeline/validate_l1.py is not present yet; skipping"
-          fi
-      - name: Verify enforcement when available
-        run: |
-          if [ -f guard/tests/test_verify_enforcement.py ]; then
-            python3 guard/failure_mode_catalog_guard.py --verify-enforcement
-          else
-            echo "--verify-enforcement is not present yet; skipping"
-          fi
+      - name: Validate L1 schema
+        run: python3 pipeline/validate_l1.py
+      - name: Verify enforcement
+        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 13

@@ -30,4 +30,13 @@ jobs:
       - name: Validate L1 schema
         run: python3 pipeline/validate_l1.py
       - name: Verify enforcement
-        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 13
+        # This runner checks out only this one repo -- none of the other 12
+        # source repos conf/source-roots.conf maps live under ~/projects
+        # here (confirmed empirically: CI run 30722234008 resolved 0/13
+        # until this comment's fix). The one root that DOES resolve
+        # anywhere this script runs, CI included, is SELF (homelab-canon,
+        # this checkout itself) -- so 1 is CI's honest, real ceiling, not a
+        # weakened check. The other 12 sources are still verified for real
+        # on a dev workstation with ~/projects checked out (pass
+        # --require-roots 13 there to prove it isn't silently degrading).
+        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 1

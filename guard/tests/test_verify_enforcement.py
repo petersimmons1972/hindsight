@@ -227,6 +227,39 @@ def test_path_existing_in_a_different_repo_is_still_phantom(
 
 
 # ---------------------------------------------------------------------------
+# SELF: the one root that must resolve in ANY environment (CI included),
+# because it's this checkout's own root, not a sibling under ~/projects.
+# ---------------------------------------------------------------------------
+
+
+def test_self_root_token_resolves_to_this_repo_regardless_of_projects_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    # projects_dir points nowhere real -- if SELF fell back to projects_dir,
+    # every entry here would be UNVERIFIABLE (or ERROR at the roots floor).
+    projects = tmp_path / "does-not-exist-anywhere"
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "SELF"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("real", {"file": "guard/failure_mode_catalog_guard.py", "kind": "test"}),
+        machine_record("fake", {"file": "guard/definitely-not-a-real-file.py", "kind": "test"}),
+    )
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)
+    err = capsys.readouterr().err
+    assert exit_code == 1  # the fake one is a genuine phantom
+    assert "phantom: guard/definitely-not-a-real-file.py" in err
+    assert "guard/failure_mode_catalog_guard.py" not in err.replace(
+        "phantom: guard/definitely-not-a-real-file.py", ""
+    )  # the real one stayed silent
+    assert "ERROR" not in err  # SELF resolved -- this isn't the fail-open case
+
+
+# ---------------------------------------------------------------------------
 # The map itself must never silently be treated as "no map, so all fine".
 # ---------------------------------------------------------------------------
 

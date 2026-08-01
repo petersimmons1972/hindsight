@@ -151,6 +151,17 @@ def next_id(rows: list[CatalogRow]) -> str:
     return f"FM-{next_number:02d}"
 
 
+SELF_ROOT_TOKEN = "SELF"
+
+
+def _repo_root() -> Path:
+    """This checkout's own root -- present in ANY environment running this
+    file, unlike ~/projects/<name>, which only exists on a machine that
+    happens to have that repo cloned there (true on a dev workstation,
+    false on a CI runner that checks out only this one repo)."""
+    return Path(__file__).resolve().parents[1]
+
+
 def _resolve_source_root(
     source: str, source_roots: dict[str, str], projects_dir: Path
 ) -> tuple[Path | None, str | None]:
@@ -159,11 +170,15 @@ def _resolve_source_root(
     Two distinct UNVERIFIABLE reasons, kept distinguishable in the reason
     string: no mapping was ever established (root unknown), vs a mapping
     exists but the target directory isn't checked out on this machine.
+
+    The SELF_ROOT_TOKEN maps to this checkout's own root regardless of
+    projects_dir -- for the one L1 source (homelab-canon) whose "repo" IS
+    this repo, so it resolves everywhere this script runs, CI included.
     """
     relpath = source_roots.get(source)
     if relpath is None:
         return None, "no root mapping for this source in source-roots.conf"
-    candidate = (projects_dir / relpath).resolve()
+    candidate = _repo_root() if relpath == SELF_ROOT_TOKEN else (projects_dir / relpath).resolve()
     if not candidate.is_dir():
         return None, f"root not present on this machine: {candidate}"
     return candidate, None

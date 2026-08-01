@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Self
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,6 +65,48 @@ def test_ground_truth_contract_with_forced_tfidf_backend() -> None:
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
     clusters = MODULE.cluster_entries(entries, MODULE.TfidfEmbeddingBackend())
     _assert_fixture_contract(clusters)
+
+
+def test_each_backend_has_an_explicit_calibrated_default_threshold() -> None:
+    """A dense embedding backend must not inherit sparse TF-IDF's cutoff."""
+    assert MODULE.default_threshold("tfidf") == 0.17
+    assert MODULE.default_threshold("http") == 0.20
+
+
+def test_active_http_backend_meets_the_ground_truth_contract_when_reachable() -> None:
+    """The live backend is exercised, or visibly reported as untested when offline."""
+    backend = MODULE.HttpEmbeddingBackend()
+    if not backend.available:
+        pytest.skip("authorised HTTP embedding backend is unreachable")
+
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    clusters = MODULE.cluster_entries(entries, backend)
+    _assert_fixture_contract(clusters)
+
+
+def test_degenerate_uniform_embeddings_fail_loudly_instead_of_emitting_one_cluster() -> None:
+    """A backend that makes every record equivalent cannot produce trusted L2 output."""
+
+    class UniformEmbeddingBackend:
+        name = "uniform"
+
+        def embed(self, texts: list[str]) -> np.ndarray:
+            return np.ones((len(texts), 2), dtype=np.float32)
+
+    entries = [
+        MODULE.Entry(
+            id=f"example-{number}",
+            instance=f"Unrelated failure {number}.",
+            check=None,
+            class_hint=None,
+            first_seen=None,
+            source_path="examples/failures.md",
+        )
+        for number in range(5)
+    ]
+
+    with pytest.raises(RuntimeError, match=r"degenerate clustering.*uniform.*0\.17"):
+        MODULE.cluster_entries(entries, UniformEmbeddingBackend())
 
 
 def test_same_input_produces_identical_assignment() -> None:
@@ -142,7 +185,7 @@ def test_cli_writes_complete_cluster_jsonl_with_backend_metadata(tmp_path: Path,
 
 def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     """A native llama.cpp endpoint may accept `content`, not an OpenAI batch payload."""
-    calls: list[dict[str, object]] = []
+    calls: list[tuple[dict[str, object], float]] = []
 
     class Response:
         def __enter__(self) -> Self:
@@ -155,9 +198,8 @@ def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pyt
             return b'{"embedding":[3.0,4.0]}'
 
     def fake_urlopen(request: object, timeout: float) -> Response:
-        assert timeout <= 3.0
         payload = json.loads(request.data.decode("utf-8"))
-        calls.append(payload)
+        calls.append((payload, timeout))
         if request.full_url.endswith("/v1/embeddings") or "input" in payload:
             raise MODULE.URLError("unsupported shape")
         assert request.full_url.endswith("/embedding")
@@ -169,4 +211,6 @@ def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pyt
     assert backend.available
     vectors = backend.embed(["first", "second"])
     assert vectors.shape == (2, 2)
-    assert len([call for call in calls if "content" in call]) == 3
+    assert [timeout for _, timeout in calls[:3]] == [3.0, 3.0, 3.0]
+    assert [timeout for _, timeout in calls[3:]] == [120.0, 120.0, 120.0]
+    assert len([payload for payload, _ in calls if "content" in payload]) == 3

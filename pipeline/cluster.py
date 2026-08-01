@@ -5,6 +5,15 @@ identity, which would reproduce the discoverer-coupled dedup defect it exists
 to prevent.  Average-link agglomeration is used instead of single-link: a new
 member must resemble a cluster as a whole, preventing one vague bridge record
 from chaining two otherwise distinct causes together.
+
+Thresholds are calibrated per backend because cosine values from the local
+dense service have a much higher baseline than sparse TF-IDF.  On 2026-08-01,
+the authorised HTTP endpoint clustered all 458 L1 entries at raw cosine 0.17;
+no raw-dense threshold recovered every fixture family without an incorrect
+merge.  A 0.10 dense / 0.90 lexical cosine blend at 0.20 produced 180 clusters
+(largest 34) and recovered 6/7 completion, 6/7 shared-checkout, 4/4
+fail-silent, 3/3 dedup-key, and 2/2 convergence records with every required
+precision separation.  The sparse TF-IDF default remains 0.17.
 """
 from __future__ import annotations
 
@@ -24,9 +33,14 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-DEFAULT_THRESHOLD = 0.17
+BACKEND_DEFAULT_THRESHOLDS = {"tfidf": 0.17, "http": 0.20}
+# Retained as the sparse fallback's public compatibility constant.  Call
+# default_threshold() for a selected backend rather than reusing this value.
+DEFAULT_THRESHOLD = BACKEND_DEFAULT_THRESHOLDS["tfidf"]
 DEFAULT_EMBEDDING_URL = "http://192.168.0.98:8004"
 LINKAGE = "average"
+HTTP_DENSE_WEIGHT = 0.10
+MAX_CLUSTER_FRACTION = 0.40
 REQUIRED_FIELDS = frozenset(
     {"id", "source_path", "source_anchor", "instance", "check", "enforcement", "auto", "first_seen"}
 )
@@ -49,6 +63,11 @@ class InvalidL1RecordError(ValueError):
 
 class EmbeddingProtocolError(ValueError):
     """The optional embedding service returned a response outside its contract."""
+
+
+def default_threshold(backend_name: str) -> float:
+    """Return the calibrated threshold for a known backend or sparse fallback."""
+    return BACKEND_DEFAULT_THRESHOLDS.get(backend_name, DEFAULT_THRESHOLD)
 
 
 @dataclass(frozen=True)
@@ -443,16 +462,44 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
     return [members[index] for index in range(count) if active[index]]
 
 
+def _assert_non_degenerate(
+    assignments: Sequence[Sequence[int]], backend_name: str, threshold: float, entry_count: int
+) -> None:
+    """Reject collapse patterns that turn recurrence output into empty signal."""
+    largest_cluster = max(len(group) for group in assignments)
+    multi_member_clusters = sum(len(group) > 1 for group in assignments)
+    largest_fraction = largest_cluster / entry_count
+    if (len(assignments) == 1 and largest_fraction > MAX_CLUSTER_FRACTION) or multi_member_clusters == 1:
+        raise RuntimeError(
+            "degenerate clustering for backend "
+            f"{backend_name!r} at threshold {threshold:.2f}: "
+            f"largest cluster is {largest_cluster}/{entry_count} ({largest_fraction:.1%}); "
+            f"multi-member clusters={multi_member_clusters}"
+        )
+
+
+def _similarity_matrix(texts: Sequence[str], embeddings: np.ndarray, backend: EmbeddingBackend) -> np.ndarray:
+    """Blend the calibrated HTTP metric with lexical evidence when selected."""
+    dense_similarity = embeddings @ embeddings.T
+    if backend.name != "http":
+        return dense_similarity
+    lexical_embeddings = TfidfEmbeddingBackend().embed(texts)
+    lexical_similarity = lexical_embeddings @ lexical_embeddings.T
+    return HTTP_DENSE_WEIGHT * dense_similarity + (1.0 - HTTP_DENSE_WEIGHT) * lexical_similarity
+
+
 def cluster_entries(
-    entries: Sequence[Entry], backend: EmbeddingBackend, threshold: float = DEFAULT_THRESHOLD
+    entries: Sequence[Entry], backend: EmbeddingBackend, threshold: float | None = None
 ) -> list[Cluster]:
     """Cluster entries using only their incident, check, and class-hint text."""
+    threshold = default_threshold(backend.name) if threshold is None else threshold
     if not 0.0 < threshold <= 1.0:
         raise ValueError("threshold must be in (0, 1]")
     ordered = sorted(entries, key=lambda entry: entry.id)
     if not ordered:
         raise ValueError("cannot cluster an empty entry set")
-    embeddings = backend.embed([similarity_text(entry) for entry in ordered])
+    texts = [similarity_text(entry) for entry in ordered]
+    embeddings = backend.embed(texts)
     if embeddings.shape[0] != len(ordered) or embeddings.ndim != 2:
         raise ValueError("backend returned an embedding matrix with the wrong shape")
     if not np.isfinite(embeddings).all():
@@ -461,7 +508,8 @@ def cluster_entries(
     if np.any(norms == 0):
         raise ValueError("backend returned a zero embedding")
     embeddings = embeddings / norms[:, None]
-    assignments = _cluster_indices(embeddings @ embeddings.T, threshold)
+    assignments = _cluster_indices(_similarity_matrix(texts, embeddings, backend), threshold)
+    _assert_non_degenerate(assignments, backend.name, threshold, len(ordered))
 
     groups = [[ordered[index] for index in group] for group in assignments]
     groups.sort(key=lambda group: group[0].id)
@@ -506,14 +554,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = Path(__file__).resolve().parent
     parser.add_argument("--input-dir", type=Path, default=root / "L1")
     parser.add_argument("--output", type=Path, default=root / "L2" / "clusters.jsonl")
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
+    parser.add_argument("--threshold", type=float)
     parser.add_argument("--backend", choices=("auto", "http", "tfidf"), default="auto")
     args = parser.parse_args(argv)
     try:
         entries = load_entries(args.input_dir)
         backend = select_backend(args.backend)
-        clusters = cluster_entries(entries, backend, args.threshold)
-        write_clusters(args.output, clusters, backend, args.threshold, len(entries))
+        threshold = args.threshold if args.threshold is not None else default_threshold(backend.name)
+        clusters = cluster_entries(entries, backend, threshold)
+        write_clusters(args.output, clusters, backend, threshold, len(entries))
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"cluster: error: {exc}", file=sys.stderr)
         return 1

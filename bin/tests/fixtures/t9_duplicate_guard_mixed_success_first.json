@@ -1,0 +1,35 @@
+{
+  "_label": "Order-dependence probe (defect repro): [guard SUCCESS, guard FAILURE-shape]. A dedup-by-name (last-wins) implementation would let the first entry's SUCCESS get silently overwritten... this fixture puts SUCCESS FIRST so a first-wins implementation would falsely PASS. The correct fix must FAIL regardless of order.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/30720708145/job/91423892719",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": null,
+      "startedAt": null,
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/30720701087/job/91423875086",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "GitGuardian Security Checks",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:51Z",
+      "completedAt": "2026-08-01T22:10:52Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
+    }
+  ]
+}

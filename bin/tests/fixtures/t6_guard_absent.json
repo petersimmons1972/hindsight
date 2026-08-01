@@ -1,9 +1,0 @@
-{
-  "statusCheckRollup": [
-    {
-      "name": "GitGuardian Security Checks",
-      "status": "COMPLETED",
-      "conclusion": "SUCCESS"
-    }
-  ]
-}

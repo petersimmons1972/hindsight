@@ -1,0 +1,35 @@
+{
+  "_label": "Real shape captured from PR #6 (gh pr view 6 --json statusCheckRollup, 2026-08-01T22:12Z): two separate 'guard' CheckRun entries (runs 30720708145 and 30720701087), both SUCCESS. Duplicate check names are the NORMAL case in this repo, not an edge case.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/30720708145/job/91423892719",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:28Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/30720701087/job/91423875086",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "GitGuardian Security Checks",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:51Z",
+      "completedAt": "2026-08-01T22:10:52Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
+    }
+  ]
+}

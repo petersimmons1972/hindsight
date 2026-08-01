@@ -1,0 +1,16 @@
+{
+  "_label": "Verbatim FM-149 catalog shape: 10+ queued runs, zero executions, plus one unrelated completed success. Must FAIL — 10 of 11 'guard' entries never ran.",
+  "statusCheckRollup": [
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/1","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/2","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/3","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/4","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/5","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/6","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/7","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/8","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/9","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":null,"completedAt":null,"detailsUrl":"https://x/10","workflowName":"catalog-guard"},
+    {"__typename":"CheckRun","name":"guard","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-08-01T22:11:22Z","completedAt":"2026-08-01T22:11:41Z","detailsUrl":"https://x/11","workflowName":"catalog-guard"}
+  ]
+}

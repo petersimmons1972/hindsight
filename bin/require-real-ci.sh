@@ -7,13 +7,24 @@
 # reported an EMPTY conclusion, which GitHub renders BLANK, not red — so
 # nothing flagged the problem and PRs merged on a gate that never executed.
 #
-# Contract: exit 0 ONLY if every required check has status == COMPLETED AND a
-# non-empty conclusion AND that conclusion is SUCCESS. A check with no
-# conclusion is RED, never green. Zero checks reported is an ERROR, not a
-# clean pass. A required check absent from the rollup entirely is an ERROR.
+# Contract: exit 0 ONLY if every required check name is present in the
+# rollup AND every single entry bearing that name (there is often more than
+# one — duplicate names are the NORMAL case in this repo, not an edge case)
+# has status == COMPLETED AND a non-empty conclusion AND that conclusion is
+# SUCCESS. Never deduplicate by name: one bad entry fails the whole check,
+# regardless of how many good entries share its name or what order they
+# appear in. A check with no conclusion is RED, never green. Zero checks
+# reported is an ERROR, not a clean pass. A required check absent from the
+# rollup entirely is an ERROR.
+#
+# Legacy commit statuses (the StatusContext shape used by some third-party
+# bots) carry `context`/`state` instead of `name`/`status`/`conclusion`; those
+# are evaluated on their own terms (state == SUCCESS), not permanently
+# reported RED just because they lack a `conclusion` field.
 #
 # Usage:
-#   require-real-ci.sh <pr-number> [--repo <owner/repo>] [--required <name[,name...]>] [--json-file <path>]
+#   require-real-ci.sh <pr-number> [--repo <owner/repo>] [--required <name[,name...]>]
+#                       [--json-file <path>] [--max-wait-minutes <n>]
 #
 # Exit codes:
 #   0  all required checks are COMPLETED with conclusion SUCCESS
@@ -29,10 +40,11 @@ REPO="petersimmons1972/hindsight"
 REQUIRED_CSV="guard"
 JSON_FILE=""
 PR=""
+MAX_WAIT_MINUTES="15"
 
 usage() {
   cat >&2 <<EOF
-Usage: $PROG <pr-number> [--repo <owner/repo>] [--required <name[,name...]>] [--json-file <path>]
+Usage: $PROG <pr-number> [--repo <owner/repo>] [--required <name[,name...]>] [--json-file <path>] [--max-wait-minutes <n>]
 EOF
 }
 
@@ -58,6 +70,14 @@ while [ $# -gt 0 ]; do
     --json-file)
       [ $# -ge 2 ] || die_usage "--json-file requires an argument"
       JSON_FILE="$2"
+      shift 2
+      ;;
+    --max-wait-minutes)
+      [ $# -ge 2 ] || die_usage "--max-wait-minutes requires an argument"
+      case "$2" in
+        ''|*[!0-9]*) die_usage "--max-wait-minutes must be a non-negative integer, got: $2" ;;
+      esac
+      MAX_WAIT_MINUTES="$2"
       shift 2
       ;;
     -h|--help)
@@ -121,15 +141,17 @@ for name in "${REQUIRED_ARR[@]}"; do
 done
 
 # ---- evaluate via python3 (robust JSON handling, no jq quoting gymnastics) ----
-# We pass the raw rollup JSON and the required-name list to python3, which
-# does the actual contract check and prints PASS/FAIL plus reasons. Bash just
-# relays python3's verdict and exit code.
-PY_OUT="$(python3 - "$RAW_JSON" "${TRIMMED_REQUIRED[@]}" <<'PYEOF'
+# We pass the raw rollup JSON, the required-name list, and the max-wait window
+# to python3, which does the actual contract check and prints PASS/FAIL plus
+# reasons. Bash just relays python3's verdict and exit code.
+PY_OUT="$(python3 - "$RAW_JSON" "$MAX_WAIT_MINUTES" "${TRIMMED_REQUIRED[@]}" <<'PYEOF'
 import json
 import sys
+from datetime import datetime, timezone
 
 raw_json = sys.argv[1]
-required = sys.argv[2:]
+max_wait_minutes = int(sys.argv[2])
+required = sys.argv[3:]
 
 try:
     doc = json.loads(raw_json)
@@ -146,44 +168,96 @@ elif isinstance(doc, list):
 else:
     rollup = None
 
-if rollup is None:
-    print("FAIL: no checks reported (statusCheckRollup missing from response)")
-    sys.exit(2)
-
 if not isinstance(rollup, list) or len(rollup) == 0:
-    print("FAIL: no checks reported (empty statusCheckRollup)")
+    print("FAIL: no checks reported (statusCheckRollup missing, null, non-list, or empty)")
     sys.exit(2)
 
-# Index rollup entries by name (checks use "name", legacy status contexts use "context").
-by_name = {}
-for entry in rollup:
-    if not isinstance(entry, dict):
-        continue
-    key = entry.get("name") or entry.get("context")
-    if key:
-        by_name[key] = entry
+
+def entry_key(entry):
+    """CheckRun entries use 'name'; legacy StatusContext entries use 'context'."""
+    return entry.get("name") or entry.get("context")
+
+
+def parse_time(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def elapsed_minutes(entry):
+    started = parse_time(entry.get("startedAt") or entry.get("createdAt"))
+    if started is None:
+        return None
+    now = datetime.now(timezone.utc)
+    return (now - started).total_seconds() / 60.0
+
+
+def evaluate_entry(req, entry):
+    """Return None if this single entry satisfies the contract, else a reason string."""
+    if "status" in entry or "conclusion" in entry:
+        # CheckRun shape.
+        status = entry.get("status")
+        conclusion = entry.get("conclusion")
+
+        if status != "COMPLETED":
+            mins = elapsed_minutes(entry)
+            if mins is None:
+                window_note = ""
+            elif mins < max_wait_minutes:
+                window_note = f" ({mins:.1f}m elapsed, within --max-wait-minutes={max_wait_minutes}: still starting up)"
+            else:
+                window_note = (
+                    f" ({mins:.1f}m elapsed, exceeded --max-wait-minutes={max_wait_minutes}: "
+                    f"likely stuck, matches the FM-149 pattern)"
+                )
+            return f"required check '{req}' is not complete (status={status!r}){window_note}"
+
+        if conclusion is None or conclusion == "":
+            return f"required check '{req}' is COMPLETED but has an empty/missing conclusion"
+
+        if conclusion != "SUCCESS":
+            return f"required check '{req}' concluded '{conclusion}', not SUCCESS"
+
+        return None
+
+    if "state" in entry:
+        # Legacy StatusContext shape: context/state/targetUrl/createdAt, no
+        # status/conclusion fields at all.
+        state = entry.get("state")
+        if state != "SUCCESS":
+            return f"required check '{req}' (legacy status context) is not SUCCESS (state={state!r})"
+        return None
+
+    return f"required check '{req}' has an unrecognized entry shape: {entry!r}"
+
 
 reasons = []
 for req in required:
-    entry = by_name.get(req)
-    if entry is None:
+    matches = [e for e in rollup if isinstance(e, dict) and entry_key(e) == req]
+
+    if not matches:
         reasons.append(f"required check '{req}' is absent from the rollup entirely")
         continue
 
-    status = entry.get("status")
-    conclusion = entry.get("conclusion")
+    # Every entry bearing this name must independently satisfy the contract.
+    # Never deduplicate by name / let one SUCCESS entry mask a bad sibling.
+    bad = []
+    for entry in matches:
+        reason = evaluate_entry(req, entry)
+        if reason is not None:
+            bad.append(reason)
 
-    if status != "COMPLETED":
-        reasons.append(f"required check '{req}' is not complete (status={status!r})")
-        continue
-
-    if conclusion is None or conclusion == "":
-        reasons.append(f"required check '{req}' is COMPLETED but has an empty/missing conclusion")
-        continue
-
-    if conclusion != "SUCCESS":
-        reasons.append(f"required check '{req}' concluded '{conclusion}', not SUCCESS")
-        continue
+    if bad:
+        if len(matches) > 1:
+            reasons.append(
+                f"{len(bad)} of {len(matches)} entries named '{req}' failed the contract: "
+                + " | ".join(bad)
+            )
+        else:
+            reasons.extend(bad)
 
 if reasons:
     print("FAIL: " + "; ".join(reasons))

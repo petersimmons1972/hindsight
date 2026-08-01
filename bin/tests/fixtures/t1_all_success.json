@@ -1,14 +1,24 @@
 {
   "statusCheckRollup": [
     {
+      "__typename": "CheckRun",
       "name": "guard",
       "status": "COMPLETED",
-      "conclusion": "SUCCESS"
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/30720708145/job/91423892719",
+      "workflowName": "catalog-guard"
     },
     {
+      "__typename": "CheckRun",
       "name": "GitGuardian Security Checks",
       "status": "COMPLETED",
-      "conclusion": "SUCCESS"
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:51Z",
+      "completedAt": "2026-08-01T22:10:52Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
     }
   ]
 }

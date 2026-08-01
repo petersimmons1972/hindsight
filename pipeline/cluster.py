@@ -287,17 +287,28 @@ class HttpEmbeddingBackend:
 
     name = "http"
 
-    def __init__(self, base_url: str = DEFAULT_EMBEDDING_URL, timeout: float = 3.0) -> None:
+    def __init__(
+        self,
+        base_url: str = DEFAULT_EMBEDDING_URL,
+        timeout: float = 3.0,
+        request_timeout: float = 120.0,
+    ) -> None:
         parsed = urlsplit(base_url)
         self.available = False
         self.endpoint: str | None = None
         self.base_url = base_url.rstrip("/")
-        self.timeout = min(max(timeout, 0.1), 3.0)
+        # The PROBE must be short -- an unreachable host should not stall startup.
+        # The bulk request must NOT inherit that cap: embedding the whole corpus
+        # is orders of magnitude more work than a one-string liveness probe.
+        # Capping both at 3s made every real run fail with "timed out" while the
+        # test suite stayed green, because the tests force the TF-IDF fallback.
+        self.probe_timeout = min(max(timeout, 0.1), 3.0)
+        self.request_timeout = max(request_timeout, self.probe_timeout)
         if parsed.scheme != "http" or parsed.hostname != "192.168.0.98":
             return
         for endpoint in ("/v1/embeddings", "/embedding"):
             try:
-                vectors = self._request(endpoint, ["hindsight embedding probe"])
+                vectors = self._request(endpoint, ["hindsight embedding probe"], timeout=self.probe_timeout)
             except (OSError, ValueError, URLError):
                 continue
             if len(vectors) == 1 and vectors[0].size:
@@ -305,10 +316,10 @@ class HttpEmbeddingBackend:
                 self.available = True
                 return
 
-    def _request(self, endpoint: str, texts: Sequence[str]) -> list[np.ndarray]:
+    def _request(self, endpoint: str, texts: Sequence[str], timeout: float | None = None) -> list[np.ndarray]:
         try:
             return self._vectors_from_payload(
-                self._post(endpoint, {"input": list(texts)}), expected_count=len(texts)
+                self._post(endpoint, {"input": list(texts)}, timeout), expected_count=len(texts)
             )
         except (OSError, ValueError, URLError):
             if endpoint != "/embedding":
@@ -317,11 +328,11 @@ class HttpEmbeddingBackend:
         # time rather than the OpenAI batch shape.  Retain batching for OpenAI,
         # but fall back to this documented native protocol when needed.
         return [
-            self._vectors_from_payload(self._post(endpoint, {"content": text}), expected_count=1)[0]
+            self._vectors_from_payload(self._post(endpoint, {"content": text}, timeout), expected_count=1)[0]
             for text in texts
         ]
 
-    def _post(self, endpoint: str, payload: dict[str, object]) -> object:
+    def _post(self, endpoint: str, payload: dict[str, object], timeout: float | None = None) -> object:
         body = json.dumps(payload).encode("utf-8")
         request = Request(
             f"{self.base_url}{endpoint}",
@@ -329,7 +340,7 @@ class HttpEmbeddingBackend:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(request, timeout=self.timeout) as response:
+        with urlopen(request, timeout=timeout or self.request_timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
     @staticmethod

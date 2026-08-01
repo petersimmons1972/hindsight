@@ -234,6 +234,60 @@ never reported. C6b did not fix it.
 
 ---
 
+### G3 — drop the ordering rule, add the append-only invariant *(founder-approved 2026-08-01)*
+
+**Sequenced after #4 lands** — #4 is the only open PR that touches
+`guard/failure_mode_catalog_guard.py` (#5 is pipeline-only). Doing this before #4 lands
+guarantees a conflict in the same file.
+
+**Measured basis.** The catalog is 150 rows, IDs FM-1…FM-150: **zero gaps, zero duplicates,
+5 out-of-order transitions.** The guard has no gap check at all — `next_id()` is `max + 1`,
+so position is never read. The ordering rule emits **5 warnings on every single run**,
+including inside the pre-commit hook.
+
+**Why order does not matter.** Nothing reads the catalog in ID order; lookup is grep-by-content.
+The rule has never caught a defect and structurally cannot. It is also wrong on the merits: it
+flags `FM-145 precedes FM-98`, which are the *recovered* rows deliberately placed beside
+topically related entries. Grouping by subject is more useful than sorting by integer, so the
+rule warns about the better arrangement, and it fights the natural append-at-the-end workflow.
+This is `lesson-text-gates-cosmetic-strictness`. The cost is not zero: five lines of routine
+noise per run trains everyone to skim guard output, which is exactly how an empty CI conclusion
+went unnoticed for eight hours on 2026-08-01.
+
+**Why gaps do not matter either — but the thing behind them does.** A gap is the correct
+outcome of renumbering a duplicate (already done deliberately: FM-127 for a live duplicate
+FM-28). But a gap is also the fingerprint of a **deleted row**, and deletion is this repo's
+near-catastrophe — a fork "resolved" FM-REC-01..11 by deleting eleven real failure modes.
+"No gaps" is a bad proxy for that: it fires on a legitimate renumber, and stays **silent** if
+someone deletes a row *and* renumbers to close the hole. The property worth enforcing is that
+**the ID set never shrinks.**
+
+**The change.**
+1. Delete the ordering rule and its 5 warnings.
+2. Delete `test_out_of_order_is_a_warning_not_an_error`, replacing rather than relaxing it
+   (repo CLAUDE.md: never relax a test to make a change pass). Its embedded reasoning —
+   that fatally enforcing order would force a destructive renumbering — is correct and is
+   preserved as the argument for *not reintroducing* the rule in fatal form; record it in the
+   new test's docstring so the reasoning outlives the rule.
+3. Add `--check-append-only`: assert the committed ID set is a **superset** of the previous
+   commit's. This is the mechanism that would actually have caught the FM-REC deletion.
+
+**RED tests first, both directions (R1, R2):**
+
+| test | assertion |
+|---|---|
+| T1 | a commit adding FM-151 to the existing 150 → pass |
+| T2 | a commit **deleting** FM-99 → **exit 1**, naming FM-99. *This is the FM-REC case.* |
+| T3 | a commit renumbering FM-28 → FM-151 (a delete + an add) → **exit 1** — a renumber is a deletion of the old ID and must be declared, not inferred |
+| T4 | `--force-renumber="<why>"` permits T3 and records the justification | 
+| T5 | out-of-order rows produce **no output at all** — the rule is gone, not demoted again |
+| T6 | prior commit unreadable / no parent (initial commit) ⇒ **exit 1, fail loud**, never "no baseline, so everything is fine" (R4) |
+
+T6 is the one that matters most: the natural implementation of an append-only check
+degrades to a silent pass exactly when it cannot find its baseline.
+
+---
+
 ## Phase 3 — Wave 2: the packets that are the point
 
 ### C2 — recurrence report

@@ -21,11 +21,29 @@ OUT = P / "hindsight/pipeline/L1"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-def emit(slug: str, records: list[dict]) -> None:
-    (OUT / f"{slug}.jsonl").write_text(
-        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records)
+def emit(slug: str, records: list[dict], preserve_prefix: str | None = None) -> None:
+    """Write records, PRESERVING any existing entry this extractor cannot produce.
+
+    The catalog parser only sees `| FM-NNN |` table rows. Narrative content (case
+    studies, standalone bullets) has no table row and was recovered by a model
+    pass. A plain overwrite silently dropped those 4 entries on every re-run --
+    the same silent-drop defect this pipeline exists to catch. Anything whose id
+    does not match this extractor's own prefix is carried forward untouched.
+    """
+    path = OUT / f"{slug}.jsonl"
+    carried: list[dict] = []
+    if preserve_prefix and path.exists():
+        for line in path.read_text().splitlines():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if not str(rec.get("id", "")).startswith(preserve_prefix):
+                carried.append(rec)
+    path.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records + carried)
     )
-    print(f"  {slug:<26} {len(records):>4} entries")
+    note = f" (+{len(carried)} preserved)" if carried else ""
+    print(f"  {slug:<26} {len(records):>4} entries{note}")
 
 
 # ---- 1. the canonical catalog (markdown table) --------------------------------
@@ -55,7 +73,7 @@ for n, line in enumerate(cat.read_text(encoding="utf-8").splitlines(), 1):
         "auto": "machine" if "🤖" in auto else "judgment",
         "first_seen": None,
     })
-emit("homelab-canon", records)
+emit("homelab-canon", records, preserve_prefix="hc-FM-")
 
 # ---- 2. fleet-dispatch failure_class enum (SQL CHECK constraint) --------------
 sql = P / "fleet-dispatch/migrations/0017_failure_class.sql"

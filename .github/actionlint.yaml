@@ -1,0 +1,4 @@
+# Private ARC runner label used by this repository's CI jobs.
+self-hosted-runner:
+  labels:
+    - homelab-arc

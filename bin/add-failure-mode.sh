@@ -23,13 +23,13 @@
 #               <repo>/docs/failure-modes-standard.md).
 #               Useful for testing: CATALOG=/tmp/fms-test.md add-failure-mode.sh ...
 #
-# Install: ln -sf ~/projects/claude-codex/scripts/add-failure-mode.sh ~/bin/add-failure-mode.sh
+# Install: ln -sf ~/projects/hindsight/bin/add-failure-mode.sh ~/bin/add-failure-mode.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CATALOG="${CATALOG:-$REPO_ROOT/docs/failure-modes-standard.md}"
+CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
 
 usage() {
     grep '^#' "$0" | sed 's/^# \?//'
@@ -67,7 +67,7 @@ fi
 [[ -z "$TITLE" ]] && { echo "ERROR: title is required" >&2; exit 1; }
 [[ -f "$CATALOG" ]] || { echo "ERROR: catalog not found: $CATALOG" >&2; exit 1; }
 
-FM_ID="$(python3 "$REPO_ROOT/scripts/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
+FM_ID="$(python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
 
 class_label() {
     case "${1^^}" in
@@ -129,7 +129,7 @@ else:
 path.write_text(''.join(lines), encoding="utf-8")
 PYEOF
 
-python3 "$REPO_ROOT/scripts/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
+python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
 
 # ── Report ────────────────────────────────────────────────────────────────────
 

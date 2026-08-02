@@ -72,6 +72,15 @@ def test_rejects_each_missing_required_key(tmp_path: Path) -> None:
         assert any(f"missing required key '{key}'" in error for error in report.errors)
 
 
+def test_rejects_empty_record_object(tmp_path: Path) -> None:
+    """An empty object owes every required field; it is not a vacuous record."""
+    report = validate(tmp_path, {})
+
+    assert report.error_count == 4
+    for key in ("id", "source_path", "instance", "auto"):
+        assert any(f"missing required key '{key}'" in error for error in report.errors)
+
+
 def test_rejects_invalid_auto(tmp_path: Path) -> None:
     record = VALID_RECORD | {"auto": "automatic"}
 
@@ -155,6 +164,19 @@ def test_rejects_non_string_id(tmp_path: Path) -> None:
     assert "id must be a string" in report.errors[0]
 
 
+def test_rejects_non_string_instance(tmp_path: Path) -> None:
+    """The evidence-bearing instance field requires actual nonblank text."""
+    records = [
+        VALID_RECORD | {"instance": value, "id": f"fixture-{index}"}
+        for index, value in enumerate((12345, [], None), start=1)
+    ]
+
+    report = validate(tmp_path, *records)
+
+    assert report.error_count == 3
+    assert all("instance must be non-empty and not a placeholder" in error for error in report.errors)
+
+
 def test_rejects_empty_enforcement_object(tmp_path: Path) -> None:
     """`{}` is not `null`: an empty object must still owe file and kind.
 
@@ -168,13 +190,30 @@ def test_rejects_empty_enforcement_object(tmp_path: Path) -> None:
     assert any("enforcement missing required key 'kind'" in e for e in report.errors)
 
 
-def test_rejects_non_string_enforcement_file(tmp_path: Path) -> None:
-    record = VALID_RECORD | {"enforcement": {"file": 123, "kind": "test"}}
+def test_rejects_invalid_enforcement_file_values(tmp_path: Path) -> None:
+    """A stated enforcement path must be nonempty text, including falsy values."""
+    records = [
+        VALID_RECORD | {"id": f"fixture-{index}", "enforcement": {"file": value, "kind": "test"}}
+        for index, value in enumerate((123, 0, None, [], ""), start=1)
+    ]
 
-    report = validate(tmp_path, record)
+    report = validate(tmp_path, *records)
 
-    assert report.error_count == 1
-    assert "enforcement.file must be a string" in report.errors[0]
+    assert report.error_count == 5
+    assert all("enforcement.file must be a non-empty string" in error for error in report.errors)
+
+
+def test_rejects_null_or_empty_enforcement_kind(tmp_path: Path) -> None:
+    """A present kind must be one of the declared enforcement mechanisms."""
+    records = [
+        VALID_RECORD | {"id": f"fixture-{index}", "enforcement": {"file": "t.py", "kind": value}}
+        for index, value in enumerate((None, ""), start=1)
+    ]
+
+    report = validate(tmp_path, *records)
+
+    assert report.error_count == 2
+    assert all("enforcement.kind must be one of" in error for error in report.errors)
 
 
 def test_rejects_non_string_first_seen(tmp_path: Path) -> None:
@@ -270,6 +309,19 @@ def test_cli_counts_every_file_and_exits_0_on_a_valid_corpus(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     assert "TOTAL: 3 records across 2 files" in result.stdout
     assert "VALID: no schema violations" in result.stdout
+
+
+def test_cli_counts_empty_jsonl_files(tmp_path: Path) -> None:
+    """A zero-record file is still read and must remain visible in the CLI total."""
+    script = build_corpus(
+        tmp_path,
+        {"a.jsonl": jsonl(VALID_RECORD), "empty.jsonl": ""},
+    )
+
+    result = run_cli(script)
+
+    assert result.returncode == 0, result.stderr
+    assert "TOTAL: 1 records across 2 files" in result.stdout
 
 
 def test_cli_exits_1_on_a_single_violation_in_a_later_file(tmp_path: Path) -> None:

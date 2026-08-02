@@ -36,10 +36,20 @@ GROUND_TRUTH_FLOORS = {
     "fleet-dispatch-schema": 10,
 }
 
-# Skipped only where no source repo is checked out at all (a bare CI runner).
-# Where any source is present, the whole configuration is held to account.
-SOURCES_PRESENT = any(
-    f.exists() for files, _ in reconcile_l1.ENUMERABLE.values() for f in files
+# The SELF source lives inside this checkout, so it resolves on every host --
+# including CI. Everything else is a sibling repo, legitimately absent on a
+# runner. Keeping these separate matters, and the reason is instructive: the
+# original guard was `any(source exists)`. On CI that was False, so these tests
+# skipped. Once the path fix made the self source resolve, `any(...)` became
+# True, the guard stopped firing, and a test asserting that SIX sibling repos
+# exist began running on a runner that will never have them. A skip condition
+# that depends on the thing being fixed is not a skip condition.
+SELF_SLUG = "homelab-canon"
+EXTERNAL_SOURCES_PRESENT = all(
+    f.exists()
+    for slug, (files, _) in reconcile_l1.ENUMERABLE.items()
+    if slug != SELF_SLUG
+    for f in files
 )
 
 
@@ -175,7 +185,19 @@ def test_ground_truth_matches_heading_levels_two_through_four(tmp_path: Path, mo
     assert reconcile_l1.ground_truth("alpha") == {"OPS-2", "OPS-3", "OPS-4"}
 
 
-@pytest.mark.skipif(not SOURCES_PRESENT, reason="ground-truth source repos are not checked out here")
+def test_self_ground_truth_source_always_resolves() -> None:
+    """The self source must resolve on EVERY host, CI included.
+
+    This is the host-independent half of the old all-sources test, and it is the
+    half that actually gates: if this repo cannot find its own catalog, the
+    reconcile step compares nothing no matter where it runs.
+    """
+    ids = reconcile_l1.ground_truth(SELF_SLUG)
+    assert ids, "this repo's own catalog resolved to zero entries"
+    assert len(ids) >= GROUND_TRUTH_FLOORS[SELF_SLUG], f"{len(ids)} ids"
+
+
+@pytest.mark.skipif(not EXTERNAL_SOURCES_PRESENT, reason="sibling source repos are not checked out here")
 def test_every_configured_ground_truth_source_resolves() -> None:
     """A source that resolves to nothing scores 100%: pin existence and a floor."""
     missing_files = [
@@ -192,7 +214,7 @@ def test_every_configured_ground_truth_source_resolves() -> None:
         assert len(ids) >= GROUND_TRUTH_FLOORS[slug], f"{slug}: {len(ids)} ids"
 
 
-@pytest.mark.skipif(not SOURCES_PRESENT, reason="ground-truth source repos are not checked out here")
+@pytest.mark.skipif(not EXTERNAL_SOURCES_PRESENT, reason="sibling source repos are not checked out here")
 def test_every_configured_source_has_a_non_empty_extraction() -> None:
     """Coverage of 100% is meaningless if the extraction file was never read."""
     for slug in reconcile_l1.ENUMERABLE:

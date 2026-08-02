@@ -15,6 +15,7 @@ a recurrence report no matter how green its suite is.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -205,6 +206,45 @@ def test_every_row_carries_the_evidence_a_reader_needs():
         )
 
 
+def test_size_is_derived_from_members_not_read_from_the_file(tmp_path):
+    """The assertion above cannot see this on its own.
+
+    In the pinned artifact the serialized `size` already agrees with
+    `len(members)`, so an implementation that simply trusts the serialized value
+    is behaviourally identical there and survives. Only a partition where the two
+    DISAGREE can tell the two implementations apart -- and a count that can drift
+    away from the evidence it summarizes is exactly the FM-155 shape: a number
+    reported as a measurement that nothing recomputed.
+    """
+    bad = tmp_path / "lying_size.jsonl"
+    bad.write_text(
+        json.dumps({"_meta": {"backend": "test", "entry_count": 2}})
+        + "\n"
+        + json.dumps(
+            {
+                "cluster_id": "c-999",
+                "size": 99,  # a lie; there are two members
+                "members": ["x-1", "x-2"],
+                "source_repos": ["x"],
+                "first_seen": "2026-01-01",
+                "last_seen": "2026-01-02",
+                "label": "fabricated",
+            }
+        )
+        + "\n"
+    )
+    res = run_report("--format", "json", clusters=bad)
+    if res.returncode != 0:
+        # Failing loud on an internally inconsistent record is also correct.
+        assert "99" in (res.stderr + res.stdout) or "size" in (res.stderr + res.stdout).lower()
+        return
+    groups = json.loads(res.stdout)
+    assert groups[0]["size"] == 2, (
+        f"the report echoed the serialized size {groups[0]['size']} instead of "
+        f"deriving 2 from the members it actually has"
+    )
+
+
 def test_null_dates_do_not_crash_ranking():
     """c-043 in the pinned artifact has first_seen/last_seen of null.
 
@@ -233,19 +273,52 @@ def test_text_output_names_members_not_just_counts():
 # --------------------------------------------------------------------------
 
 
+def _header_block(stdout: str) -> str:
+    """Everything before the first cluster row.
+
+    Scoping matters: cluster LABELS come from the corpus and happen to contain
+    words like `missing_recall`. An unscoped substring search over the whole
+    report is therefore satisfiable by corpus data rather than by the report's
+    own disclosure -- which is exactly how the first version of the test below
+    passed a mutant that had replaced the disclosure with "Report complete."
+    """
+    lines = []
+    for line in stdout.splitlines():
+        if re.match(r"^c-\d+:", line.strip()):
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def test_report_discloses_its_recall_limitation():
     """It under-reports recurrence. It must say so, on the report itself.
 
     Silence here is the FM-155/FM-149 family: a partial measurement rendering as
     a complete one.
+
+    MUTATION-PINNED: replacing the disclosure line with any reassuring sentence
+    must fail this test. Do not loosen it back to a substring search over the
+    whole document.
     """
     res = run_report()
-    out = res.stdout.lower()
-    assert any(k in out for k in ("limitation", "under-report", "recall", "not exhaustive")), (
-        "the text report makes no statement about what it cannot detect. It "
-        "cannot group records that share a cause shape but no wording "
-        "(measured: 1/77 blind paraphrase recall), and a reader who does not "
-        "know that will read absence as evidence of no recurrence."
+    assert res.returncode == 0, res.stderr
+    header = _header_block(res.stdout).lower()
+
+    assert header.strip(), "the report emitted no header block at all"
+    assert "limitation" in header, (
+        "the report's header states no limitation. It cannot group records that "
+        "share a cause shape but no wording (measured: 1/77 blind paraphrase "
+        "recall), and a reader who does not know that will read absence as "
+        "evidence of no recurrence."
+    )
+    assert "under-report" in header or "under report" in header, (
+        "the header mentions a limitation but never says the report "
+        "UNDER-REPORTS. Direction matters: a reader must know the error runs "
+        "toward missing recurrences, not inventing them."
+    )
+    assert "1/77" in header or "1 of 77" in header, (
+        "the disclosure cites no measurement. An unquantified caveat is a "
+        "disclaimer, not a disclosure."
     )
 
 

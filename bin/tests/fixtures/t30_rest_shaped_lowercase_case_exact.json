@@ -1,0 +1,15 @@
+{
+  "_label": "F2/M27+M28 pin: a legacy-REST-shaped 'guard' entry using lowercase status/conclusion values ('completed'/'success'), as GitHub's REST commit-status API can emit, WITHOUT a StatusContext ('state') field -- this is a defensive shape, not observed on this repo's PRs, but the contract is explicitly exact-case: only the literal strings 'COMPLETED'/'SUCCESS' pass. Without this fixture, 'conclusion != \"SUCCESS\"' -> 'str(conclusion).upper() != \"SUCCESS\"' (and the same status mutation) is undetectable, because every other CheckRun fixture already uses uppercase GraphQL-shaped values. The shipped script must reject this shape (exit 2) precisely because it is lowercase, not because anything else about it is wrong.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

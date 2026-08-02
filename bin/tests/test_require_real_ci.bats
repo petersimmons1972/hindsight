@@ -308,7 +308,71 @@ EOF
   [[ "$output" == *"no checks reported"* ]]
 }
 
-@test "error path: gh CLI fetch failure (no --json-file, gh exits nonzero) -> exit 1" {
+# ---- F2 (round 5): four unpinned mutation-surviving behaviours ------------
+
+@test "M31 pin: bad 'guard' sibling lacking __typename is still evaluated (entry-selection must never drop entries on an incidental field) -> exit 2, names FAILURE" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t29_bad_sibling_no_typename.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"'guard'"* ]]
+  [[ "$output" == *"FAILURE"* ]]
+}
+
+@test "M27 pin: lowercase REST-shaped status='completed'/conclusion='success' -> exit 2 (exact-case contract on status; only literal 'COMPLETED' passes)" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t30_rest_shaped_lowercase_case_exact.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"'guard' is not complete (status='completed')"* ]]
+}
+
+@test "M28 pin (isolated from M27): status='COMPLETED' exact, conclusion='success' lowercase -> exit 2 (exact-case contract on conclusion specifically; t30 alone shares its status-check cause with M27 and does not isolate this one)" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t31_completed_lowercase_conclusion.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"concluded 'success', not SUCCESS"* ]]
+}
+
+@test "M42 pin: python3 evaluator exits nonzero with EMPTY stdout -> script relays that exit code verbatim, never silently downgrades to 0" {
+  FAKE_BIN="$BATS_TEST_TMPDIR/fakebin_m42"
+  mkdir -p "$FAKE_BIN"
+  cat > "$FAKE_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+# Distinguish the two python3 invocations by ARGUMENT COUNT, not by
+# grep-matching script text -- the real script's source itself now mentions
+# "json.load(sys.stdin)" in a comment, which would false-match a text-based
+# discriminator. The bash-side JSON pre-validation call is always exactly
+# `python3 -c '<fixed short snippet>'` (2 args); the main evaluator call is
+# always `python3 -c "$PY_SCRIPT" "$MAX_WAIT_MINUTES" "${TRIMMED_REQUIRED[@]}"`
+# (4+ args: -c, script, max-wait, and at least one required name).
+if [ "$#" -le 2 ]; then
+  cat >/dev/null
+  exit 0
+fi
+# Simulate the main evaluator failing with NO stdout output at all but a
+# real, documented-range nonzero exit code (2) -- pins that require-real-ci.sh's
+# final relay line surfaces this exit code verbatim. A mutant final line
+# `if [ -n "$PY_OUT" ]; then exit "$PY_RC"; else exit 0; fi` takes the empty
+# branch here and would wrongly exit 0.
+cat >/dev/null
+exit 2
+EOF
+  chmod +x "$FAKE_BIN/python3"
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  [ "$status" -eq 2 ]
+}
+
+# ---- F1 (round 5): oversized rollup must not silently fail to run ---------
+# Linux caps a single argv element at MAX_ARG_STRLEN (131072 bytes), independent
+# of ARG_MAX. Passing RAW_JSON as a python3 argv string makes execve() itself
+# fail before python3 starts once the rollup crosses that: the shell prints
+# "Argument list too long" and the exit code is 126 -- undocumented, and no
+# PASS:/FAIL: line reaches stdout. This must not happen: the gate must still
+# evaluate every entry and exit 2 on the bad one, however large the rollup.
+@test "F1: >128KB rollup (465 gh-shaped entries, last one QUEUED/null) -> exit 2, names 'guard', never exit 126" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t28_oversized_rollup_argv_limit.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"'guard'"* ]]
+  [[ "$output" == *"FAIL:"* ]]
+}
+
+@test "error path: gh CLI fetch failure (no --json-file, gh exits nonzero) -> exit 1, names the gh failure specifically (M41: pins the RC!=0 branch itself, not just that SOME exit-1 path was hit -- a mutated 'if [ \$RC -ne 0 ]' -> 'if false' survives on status alone, because the captured stderr text then separately fails the JSON pre-check and also produces exit 1)" {
   FAKE_BIN="$BATS_TEST_TMPDIR/fakebin"
   mkdir -p "$FAKE_BIN"
   cat > "$FAKE_BIN/gh" <<'EOF'
@@ -319,4 +383,5 @@ EOF
   chmod +x "$FAKE_BIN/gh"
   PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999
   [ "$status" -eq 1 ]
+  [[ "$output" == *"gh pr view failed"* ]]
 }

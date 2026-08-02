@@ -141,23 +141,50 @@ for name in "${REQUIRED_ARR[@]}"; do
 done
 
 # ---- evaluate via python3 (robust JSON handling, no jq quoting gymnastics) ----
-# We pass the raw rollup JSON, the required-name list, and the max-wait window
-# to python3, which does the actual contract check and prints PASS/FAIL plus
-# reasons. Bash just relays python3's verdict and exit code.
-PY_OUT="$(python3 - "$RAW_JSON" "$MAX_WAIT_MINUTES" "${TRIMMED_REQUIRED[@]}" <<'PYEOF'
+# We pass the max-wait window and required-name list as argv (small, bounded),
+# and the raw rollup JSON via stdin -- NOT argv. A rollup can exceed
+# MAX_ARG_STRLEN (131072 bytes on Linux, independent of ARG_MAX and unrelated
+# to any per-process argv/env budget): once RAW_JSON crossed that as a single
+# argv string, execve() itself failed before python3 ever started, so the
+# shell printed "Argument list too long" and python3 exited 126 -- a code
+# this script's own contract does not document (0/1/2 only). Zero checks got
+# evaluated and no PASS:/FAIL: line reached stdout at all: the gate silently
+# did not run. stdin has no such size cap, so the payload goes there instead.
+#
+# This means the python *program text* can no longer come from stdin (the
+# usual `python3 - <<'PYEOF' ... PYEOF` trick): stdin is now RAW_JSON's
+# channel, and `python3 -` reading its own source from stdin would consume
+# that payload as "source code" before the script ever calls
+# sys.stdin.read(), leaving it empty. So the program text is captured into
+# PY_SCRIPT (a plain heredoc-to-variable, no execution involved) and handed
+# to python3 via -c instead; only RAW_JSON travels over the pipe.
+#
+# CI-17: never read a command's exit status through a pipe when the command
+# whose status you want is NOT the last stage (`cmd | head; echo $?` reports
+# head's status, not cmd's). Here python3 -- the command whose exit code we
+# actually need -- IS the last stage of `printf ... | python3 ...`, so plain
+# $?/pipefail already resolves to python3's own status; PIPESTATUS would in
+# fact be wrong here, since PIPESTATUS from a pipeline run inside a `$(...)`
+# subshell does not propagate to the parent shell that reads PY_RC.
+PY_SCRIPT="$(cat <<'PYEOF'
 import json
 import sys
 from datetime import datetime, timezone
 
-raw_json = sys.argv[1]
-max_wait_minutes = int(sys.argv[2])
-required = sys.argv[3:]
+raw_json = sys.stdin.read()
+max_wait_minutes = int(sys.argv[1])
+required = sys.argv[2:]
 
-try:
-    doc = json.loads(raw_json)
-except Exception as exc:
-    print(f"FAIL: could not parse rollup JSON: {exc}")
-    sys.exit(2)
+# No try/except here: bash already validated raw_json as parseable JSON
+# (see the `json.load(sys.stdin)` pre-check above, run against this exact
+# string before this invocation happens at all), so json.loads() can never
+# raise here in practice. A try/except around it would be unreachable dead
+# code that reads as coverage but is never exercised -- deleted rather than
+# kept for a false sense of safety (M33). If json.loads ever DOES raise here
+# despite that guarantee, the uncaught exception's nonzero, no-stdout exit
+# is caught by the undocumented-exit-code check below, same as any other
+# unexpected python3 failure.
+doc = json.loads(raw_json)
 
 # Accept either the full `gh pr view --json statusCheckRollup` envelope
 # ({"statusCheckRollup": [...]}) or a bare list, for fixture convenience.
@@ -282,7 +309,22 @@ print(f"PASS: all required checks ({names}) are COMPLETED/SUCCESS")
 sys.exit(0)
 PYEOF
 )"
+
+PY_OUT="$(printf '%s' "$RAW_JSON" | python3 -c "$PY_SCRIPT" "$MAX_WAIT_MINUTES" "${TRIMMED_REQUIRED[@]}")"
 PY_RC=$?
 
+# Documented contract is 0 (pass) / 2 (fail); anything else (e.g. a python3
+# crash unrelated to the try/except above, an interpreter-level failure, or
+# a future regression reopening the argv-limit failure this section exists
+# to close) must not pass through as a silent, undocumented exit code -- it
+# must become a loud, clearly-labeled failure instead.
+if [ "$PY_RC" -ne 0 ] && [ "$PY_RC" -ne 2 ]; then
+  echo "$PROG: python3 evaluator exited with undocumented code $PY_RC (expected 0 or 2)" >&2
+  if [ -n "$PY_OUT" ]; then
+    echo "$PY_OUT" >&2
+  fi
+  exit 2
+fi
+
 echo "$PY_OUT"
-exit $PY_RC
+exit "$PY_RC"

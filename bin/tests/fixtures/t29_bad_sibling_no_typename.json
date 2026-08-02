@@ -1,0 +1,24 @@
+{
+  "_label": "F2/M31 pin: two 'guard' entries sharing the same name. The first is GOOD (CheckRun, __typename present, COMPLETED/SUCCESS). The second is BAD (COMPLETED/FAILURE) and deliberately OMITS the __typename field entirely -- every other fixture in this suite carries __typename on every entry, which is exactly what let a mutant add 'and e.get(\"__typename\") in (\"CheckRun\",\"StatusContext\")' to the matches comprehension and survive: it silently drops any entry lacking that field from evaluation, so a bad sibling missing __typename would never be seen. The contract evaluates every entry bearing the required name regardless of whether it carries __typename -- entries must never be dropped by an incidental field an entry-selection filter wasn't asked to check.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/2/job/2",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

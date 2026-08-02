@@ -1,0 +1,11 @@
+{
+  "_label": "Required check present in the rollup but carrying none of status/conclusion/state -- an entry shape the fallthrough must FAIL LOUD on, never silently PASS.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

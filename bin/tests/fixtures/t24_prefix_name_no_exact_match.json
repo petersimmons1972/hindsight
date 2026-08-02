@@ -1,0 +1,15 @@
+{
+  "_label": "Rollup contains 'guard-extra' but not 'guard' itself. Required name matching must be exact, not prefix -- 'guard-extra' must NOT satisfy a requirement for 'guard'.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard-extra",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

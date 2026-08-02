@@ -191,8 +191,22 @@ def elapsed_minutes(entry):
     started = parse_time(entry.get("startedAt") or entry.get("createdAt"))
     if started is None:
         return None
-    now = datetime.now(timezone.utc)
-    return (now - started).total_seconds() / 60.0
+    try:
+        # A timestamp with no timezone offset (e.g. "2026-08-01", or
+        # "2026-08-01T22:12:07" with no trailing Z/+00:00) parses fine via
+        # fromisoformat() but yields a tz-naive datetime. Subtracting that
+        # from an aware datetime.now(timezone.utc) raises TypeError -- and
+        # since this helper is only ever used to enrich a diagnostic
+        # message, that must never escape and crash the whole evaluation
+        # (which would relay bash exit 1, the code documented as a USAGE
+        # error, silently downgrading a real gate failure). GitHub's own
+        # timestamps are always UTC, so treat a naive value as UTC.
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return (now - started).total_seconds() / 60.0
+    except Exception:
+        return None
 
 
 def evaluate_entry(req, entry):

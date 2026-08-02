@@ -1,0 +1,25 @@
+{
+  "_label": "Genuinely discriminating duplicate-name probe (replaces the old T9, which passed unchanged on the pre-repair tree): [guard COMPLETED/FAILURE, guard COMPLETED/SUCCESS]. A last-wins dedupe-by-name implementation looks up 'guard' and finds only the trailing SUCCESS entry, silently masking a real completed FAILURE from an earlier attempt -- exactly the FM-149 class of bug, but with a genuine conclusion mismatch instead of an incomplete status, so ordering alone (not completeness) is what a naive fix could get wrong. Verified: pre-repair commit a72c5ef exits 0 (false PASS) on this fixture; the current fixed script must exit 2.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/2/job/2",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

@@ -16,6 +16,18 @@
 #   - Exit 0 for advisory lookup results (zero or more candidates).
 #   - Non-zero ONLY for operational failure: bad usage, empty corpus, unreadable
 #     corpus. Finding a similar entry is NEVER an operational failure.
+#   - Exit status must not distinguish match from no-match under any encoding,
+#     corpus content (e.g. surrogates), or downstream pipe (e.g. | head).
+#   - Default corpus path (no --corpus) is a first-class success path: known
+#     matches exit 0, print the header, and print candidate rows.
+#   - Corpus fields (id/source/instance) are single-line on stdout; control
+#     characters (ANSI) must not erase tool-authored structure in a terminal.
+#   - No row-level verdict/guard structure (bare DUPLICATE/REJECT/DO NOT ADD
+#     prefixes); language check is structural, not a closed phrase list.
+#   - Partial corpus load (skipped unparseable lines, BOM-dropped records)
+#     must report loaded/skipped counts — silence is not a defined outcome.
+#   - Cap is exactly 10 when >10 match; truncation notice numbers must be true
+#     (shown == rows printed, total == positive-score count).
 #
 # Gate: bash bin/tests/test_similar_causes.sh
 #
@@ -96,12 +108,60 @@ assert_not_missing_script_noise() {
 
 HEADER='Candidates for human review. This tool does not determine duplication.'
 
-# Verdict / guard language that must never appear (guard-semantics reintroduction).
-# Case-insensitive scan of combined streams.
+# Normalize a line to lowercase alphanumeric tokens separated by spaces.
+_norm_tokens() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/ /g; s/  */ /g; s/^ //; s/ $//'
+}
+
+# Whole-token verdict/guard language (structural — not an enumerable phrase list).
+# Matches bare DUPLICATE / REJECT / DO NOT ADD etc. that a fixed multi-word blocklist misses.
+_tokens_have_verdict_language() {
+  local norm="$1"
+  # Multi-word structural forms first.
+  if [[ "$norm" == *"do not add"* ]] || [[ "$norm" == *"not accepting"* ]] \
+    || [[ "$norm" == *"will not accept"* ]] || [[ "$norm" == *"already exists"* ]]; then
+    return 0
+  fi
+  local tok
+  for tok in $norm; do
+    case "$tok" in
+      duplicate|duplicates|reject|rejected|rejecting|rejection|refuse|refused|refusing|refusal|refusing)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# True if a single output line is a truncation / meta notice (not a candidate row).
+_is_meta_line() {
+  local low
+  low="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$low" == *"more candidate"* ]] || [[ "$low" == *"truncated"* ]] \
+    || [[ "$low" == *"showing "*" of "* ]] || [[ "$low" == *"and "*" more"* ]] \
+    || [[ "$low" == *"total matches"* ]] || [[ "$low" == *"additional match"* ]] \
+    || [[ "$low" == *"omitted"* ]] || [[ "$low" == *"remaining"* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# Verdict / guard language that must never appear as *tool structure*.
+#
+# Structural (not a closed phrase list):
+#   - multi-word legacy phrases (kept; they still catch clear verdicts)
+#   - bare tokens DUPLICATE/REJECT/REFUSE/… on any non-header, non-instance-
+#     field text (row prefixes like "DUPLICATE - DO NOT ADD | 1.000 | …",
+#     forged VERDICT: lines, id/source columns)
+#   - lines that are not header/meta/candidate-shaped are fully scanned
+#
+# Instance text (last field of a well-formed candidate row) is corpus data and
+# may legally contain the word "duplicate"; only tool-owned columns are gated.
 has_forbidden_verdict_language() {
-  local blob
-  blob="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  # Phrases that assert a duplication decision or rejection action.
+  local blob="$1"
+  local blob_low line low norm owned
+
+  blob_low="$(printf '%s' "$blob" | tr '[:upper:]' '[:lower:]')"
   local patterns=(
     'duplicate detected'
     'is a duplicate'
@@ -131,10 +191,162 @@ has_forbidden_verdict_language() {
   )
   local p
   for p in "${patterns[@]}"; do
-    if [[ "$blob" == *"$p"* ]]; then
+    if [[ "$blob_low" == *"$p"* ]]; then
       return 0
     fi
   done
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "${line// }" ]] && continue
+    [[ "$line" == "$HEADER" ]] && continue
+    if _is_meta_line "$line"; then
+      continue
+    fi
+    low="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+    # Explicit verdict/status markers on a line are always tool structure.
+    if [[ "$low" == verdict:* ]] || [[ "$low" == status:* ]] \
+      || [[ "$low" == *" verdict:"* ]] || [[ "$low" == rejected:* ]]; then
+      return 0
+    fi
+    # Well-formed candidate: SCORE | ID | source: SRC | INSTANCE
+    # Only tool-owned columns (id, source) are scanned for bare tokens.
+    if [[ "$line" =~ ^[0-9]+([.][0-9]+)?[[:space:]]*\|[[:space:]]*([^|]+)\|[[:space:]]*(source:[[:space:]]*[^|]+)\|[[:space:]]*(.*)$ ]]; then
+      owned="$(printf '%s %s' "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")"
+      norm="$(_norm_tokens "$owned")"
+      if _tokens_have_verdict_language "$norm"; then
+        return 0
+      fi
+      # Leading score field is numeric — never a DUPLICATE prefix. Good.
+      continue
+    fi
+    # Non-candidate line (row prefix, forged free text, broken multi-line field):
+    # full structural token scan — this is what kills "DUPLICATE - DO NOT ADD | …".
+    norm="$(_norm_tokens "$line")"
+    if _tokens_have_verdict_language "$norm"; then
+      return 0
+    fi
+  done <<< "$blob"
+  return 1
+}
+
+# Minimal ANSI screen model: ESC[2J (erase display) and ESC[H / ESC[;H (cursor
+# home) clear the buffer. Used to assert what a terminal actually shows, which
+# grep -Fxq on the raw byte stream cannot see.
+terminal_render() {
+  python3 -c '
+import sys
+text = sys.stdin.read()
+buf = []
+i = 0
+n = len(text)
+while i < n:
+    if text[i] == "\x1b" and i + 1 < n and text[i + 1] == "[":
+        j = i + 2
+        while j < n and not (text[j].isalpha() or text[j] == "@"):
+            j += 1
+        if j < n:
+            cmd = text[j]
+            params = text[i + 2 : j]
+            if cmd == "J" and params in ("2", "3", ""):
+                buf = []
+            elif cmd == "H":
+                buf = []
+            i = j + 1
+            continue
+    buf.append(text[i])
+    i += 1
+sys.stdout.write("".join(buf))
+' <<< "$1"
+}
+
+# Assert no tool-owned field may introduce a line break: every non-empty stdout
+# line must be the header, a meta/truncation notice, or a single-line candidate.
+# Returns 0 if structure holds; 1 otherwise (reason on stdout for fail msgs).
+check_single_line_fields() {
+  local text="$1"
+  local line bad=0
+  local candidates=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "${line// }" ]] && continue
+    if [[ "$line" == "$HEADER" ]]; then
+      continue
+    fi
+    if _is_meta_line "$line"; then
+      continue
+    fi
+    if [[ "$line" == *$'\x1b'* ]]; then
+      echo "ANSI/control escape in output line"
+      bad=1
+      break
+    fi
+    if [[ ! "$line" =~ ^[0-9]+([.][0-9]+)?[[:space:]]*\| ]]; then
+      echo "non-header line is not a scored candidate (field newline or forge): ${line:0:120}"
+      bad=1
+      break
+    fi
+    # Candidate rows must be exactly one record: score | id | source: … | instance
+    # with no additional raw newlines already handled by line iteration.
+    if [[ ! "$line" =~ ^[0-9]+([.][0-9]+)?[[:space:]]*\|[[:space:]]*[^|]+[[:space:]]*\|[[:space:]]*source:[[:space:]]*[^|]+[[:space:]]*\|[[:space:]]*.+$ ]]; then
+      echo "candidate row missing required single-line fields: ${line:0:120}"
+      bad=1
+      break
+    fi
+    candidates=$((candidates + 1))
+  done <<< "$text"
+  if [[ "$bad" -ne 0 ]]; then
+    return 1
+  fi
+  if [[ "$candidates" -gt 10 ]]; then
+    echo "scored candidate lines exceed cap of 10: $candidates"
+    return 1
+  fi
+  return 0
+}
+
+# Parse "Showing X of Y" (or equivalent) from blob; sets _SHOWN _TOTAL or returns 1.
+parse_truncation_counts() {
+  local blob="$1"
+  _SHOWN=""
+  _TOTAL=""
+  local line low
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    low="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+    # Showing N of M candidates.
+    if [[ "$low" =~ showing[[:space:]]+([0-9]+)[[:space:]]+of[[:space:]]+([0-9]+) ]]; then
+      _SHOWN="${BASH_REMATCH[1]}"
+      _TOTAL="${BASH_REMATCH[2]}"
+      return 0
+    fi
+  done <<< "$blob"
+  return 1
+}
+
+# Stderr (or combined) must disclose load/skip counts when records were skipped.
+# Accepts flexible phrasing as long as both a loaded count and a skipped count appear.
+has_load_skip_report() {
+  local blob
+  blob="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  # Must mention skip/drop/ignore AND a load/parse/record count of some form.
+  local has_skip=0 has_load=0
+  if [[ "$blob" == *"skip"* ]] || [[ "$blob" == *"skipped"* ]] \
+    || [[ "$blob" == *"drop"* ]] || [[ "$blob" == *"dropped"* ]] \
+    || [[ "$blob" == *"ignor"* ]] || [[ "$blob" == *"unparseable"* ]] \
+    || [[ "$blob" == *"malformed"* ]] || [[ "$blob" == *"invalid"* ]]; then
+    has_skip=1
+  fi
+  if [[ "$blob" == *"load"* ]] || [[ "$blob" == *"loaded"* ]] \
+    || [[ "$blob" == *"record"* ]] || [[ "$blob" == *"entries"* ]] \
+    || [[ "$blob" == *"entry"* ]] || [[ "$blob" == *"parsed"* ]] \
+    || [[ "$blob" == *"usable"* ]]; then
+    has_load=1
+  fi
+  # Also accept a compact "N loaded, M skipped" style with two integers near skip words.
+  if [[ "$has_skip" -eq 1 && "$has_load" -eq 1 ]]; then
+    # Prefer a form that includes at least one digit (a count).
+    if [[ "$blob" =~ [0-9] ]]; then
+      return 0
+    fi
+  fi
   return 1
 }
 
@@ -495,9 +707,10 @@ t15_determinism() {
   pass "$name"
 }
 
-# T16: never more than 10 candidates printed.
+# T16: pin the cap at exactly 10 for many_matches (15 positive-score entries).
+# A mutant with MAX_CANDIDATES=2 or 9 previously survived "1 ≤ n ≤ 10".
 t16_cap_at_ten() {
-  local name="T16 never prints more than 10 candidates"
+  local name="T16 prints exactly 10 candidates when >10 match"
   require_tool_present "$name" || return 0
   run_tool --corpus "$FIX/many_matches" \
     "Silent truncation of candidate list advisory lookup overflow test token XQZ9"
@@ -507,23 +720,17 @@ t16_cap_at_ten() {
   fi
   local n
   n="$(count_scored_candidate_lines "$_OUT")"
-  if [[ "$n" -gt 10 ]]; then
-    fail "$name — printed $n scored candidate lines (cap is 10)"
-    return
-  fi
-  if [[ "$n" -lt 1 ]]; then
-    # Fixture is constructed so any non-trivial ranker returns hits; zero is
-    # either a broken ranker that scores everything 0 (then cap is moot) or
-    # a silent drop. Require at least one hit for this distinctive token set.
-    fail "$name — expected scored candidates for distinctive many_matches query, got $n"
+  if [[ "$n" -ne 10 ]]; then
+    fail "$name — printed $n scored candidate lines (cap must be exactly 10 for this 15-hit fixture)"
     return
   fi
   pass "$name"
 }
 
-# T17: if more than 10 would match, truncation is disclosed (not silent).
+# T17: truncation notice must disclose the true total (15) and shown (10).
+# A mutant hardcoding "Showing 10 of 10 candidates." previously survived.
 t17_truncation_disclosed() {
-  local name="T17 >10 matches discloses truncation (not silent top-10)"
+  local name="T17 truncation notice discloses correct shown/total (10 of 15)"
   require_tool_present "$name" || return 0
   run_tool --corpus "$FIX/many_matches" \
     "Silent truncation of candidate list advisory lookup overflow test token XQZ9"
@@ -533,15 +740,28 @@ t17_truncation_disclosed() {
   fi
   local n
   n="$(count_scored_candidate_lines "$_OUT")"
-  if [[ "$n" -gt 10 ]]; then
-    fail "$name — printed $n lines (cap broken); truncation notice irrelevant"
+  if [[ "$n" -ne 10 ]]; then
+    fail "$name — printed $n lines (need exactly 10 before trusting notice)"
     return
   fi
-  # 15 near-identical entries: a score>0 policy that returns fewer than 10
-  # still must not pretend the corpus had only those. We require either a
-  # truncation notice OR an explicit total/count that is > printed.
-  if ! has_truncation_notice "$_COMBINED"; then
-    fail "$name — no truncation/total disclosure when many_matches has 15 near-identical hits. out=${_OUT}"
+  if ! parse_truncation_counts "$_COMBINED"; then
+    fail "$name — no parseable 'Showing N of M' truncation notice. out=${_OUT}"
+    return
+  fi
+  if [[ "$_SHOWN" -ne 10 ]]; then
+    fail "$name — notice shown=$_SHOWN (want 10)"
+    return
+  fi
+  if [[ "$_TOTAL" -ne 15 ]]; then
+    fail "$name — notice total=$_TOTAL (want 15, the true positive-score count)"
+    return
+  fi
+  if [[ "$_SHOWN" -ge "$_TOTAL" ]]; then
+    fail "$name — notice claims shown ($_SHOWN) >= total ($_TOTAL); not a real truncation"
+    return
+  fi
+  if [[ "$_SHOWN" -ne "$n" ]]; then
+    fail "$name — notice shown=$_SHOWN disagrees with printed scored rows=$n"
     return
   fi
   pass "$name"
@@ -703,10 +923,11 @@ t22_scores_non_increasing() {
   pass "$name"
 }
 
-# T23: malformed JSONL must not produce a bare traceback; either skip-bad-lines
-# with exit 0 + header, or operational non-zero naming the parse error.
+# T23: malformed JSONL must not produce a bare traceback.
+# Skip-bad-lines is allowed only when the skip is *audible*: a load/skip count
+# must appear (stderr or stdout). Silent partial load is the defect — not the skip.
 t23_malformed_no_traceback() {
-  local name="T23 malformed JSONL: no traceback; defined outcome"
+  local name="T23 malformed JSONL: no traceback; skip must be reported"
   require_tool_present "$name" || return 0
   run_tool --corpus "$FIX/malformed" "credential leakage in argv"
   if [[ "$_COMBINED" == *"Traceback (most recent call last)"* ]]; then
@@ -716,6 +937,11 @@ t23_malformed_no_traceback() {
   if [[ "$_STATUS" -eq 0 ]]; then
     if ! grep -Fxq "$HEADER" <<<"$_OUT"; then
       fail "$name — exit 0 but missing header after partial parse"
+      return
+    fi
+    # Fixture has 1 garbage line + 1 good record → at least one skip occurred.
+    if ! has_load_skip_report "$_COMBINED"; then
+      fail "$name — skipped unparseable line(s) with no loaded/skipped count (silent partial load). err=${_ERR}"
       return
     fi
   else
@@ -816,6 +1042,493 @@ t27_no_sidecar_writes() {
   pass "$name"
 }
 
+# ---- stage-1b hardening (holes from stage-3 DEFECTIVE verifiers) ------------
+#
+# Property under test for exit-status oracles (hole 1): no invocation may
+# distinguish "match found" from "no match" by exit status, under any encoding,
+# corpus content, or downstream pipe. Concrete probes below are instances of
+# that property — not an exhaustive list of mechanisms.
+
+# T28 (hole 1): PYTHONIOENCODING=ascii + em-dash corpus → match must still exit 0.
+# Current impl: UnicodeEncodeError on match → exit 1; no-match → exit 0 (oracle).
+t28_ascii_encoding_exit_not_match_oracle() {
+  local name="T28 exit status must not discriminate match under PYTHONIOENCODING=ascii"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/emdash.XXXXXX")"
+  printf '%s\n' \
+    '{"id":"em-1","instance":"Poller double-claim race — two hosts share a queue label.","source_path":"e.md"}' \
+    >"$cdir/a.jsonl"
+
+  local outf errf st_match st_nomatch
+  outf="$(mktemp)"; errf="$(mktemp)"
+  set +e
+  PYTHONIOENCODING=ascii python3 "$TOOL" --corpus "$cdir" \
+    "Poller double-claim race two hosts share a queue label" >"$outf" 2>"$errf"
+  st_match=$?
+  local out_match err_match
+  out_match="$(cat "$outf")"; err_match="$(cat "$errf")"
+  PYTHONIOENCODING=ascii python3 "$TOOL" --corpus "$cdir" \
+    "zzzqqq xylophone wombat qqqzzz" >"$outf" 2>"$errf"
+  st_nomatch=$?
+  local out_nomatch
+  out_nomatch="$(cat "$outf")"
+  rm -f "$outf" "$errf"
+  rm -rf "$cdir"
+
+  if [[ "$st_match" -ne "$st_nomatch" ]]; then
+    fail "$name — match exit=$st_match != no-match exit=$st_nomatch (exit-status oracle). match_err=${err_match}"
+    return
+  fi
+  if [[ "$st_match" -ne 0 || "$st_nomatch" -ne 0 ]]; then
+    fail "$name — valid lookup must exit 0 for match and no-match (got $st_match / $st_nomatch). err=${err_match}"
+    return
+  fi
+  if ! grep -Fxq "$HEADER" <<<"$out_match" || ! grep -Fxq "$HEADER" <<<"$out_nomatch"; then
+    fail "$name — missing advisory header under ascii codec"
+    return
+  fi
+  pass "$name"
+}
+
+# T29 (hole 1): | head -1 must not yield exit 120 on match and 0 on no-match.
+# BrokenPipeError handler at shutdown is dead code; CPython exits 120 on flush.
+t29_pipe_head_exit_not_match_oracle() {
+  local name="T29 piped-to-head exit status must not discriminate match from no-match"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/pipebig.XXXXXX")"
+  # ~17KB+ of match output so head -1 closes the pipe before Python finishes.
+  python3 - "$cdir" <<'PY'
+import sys
+from pathlib import Path
+d = Path(sys.argv[1])
+body = ("Poller double-claim race queue label hosts share " + ("x" * 800) + " ") * 3
+for i in range(15):
+    (d / f"r{i}.jsonl").write_text(
+        f'{{"id":"b{i}","instance":"{body} {i}","source_path":"s{i}.md"}}\n',
+        encoding="utf-8",
+    )
+PY
+
+  local st_match st_nomatch
+  set +e
+  python3 "$TOOL" --corpus "$cdir" \
+    "Poller double-claim race queue label hosts share" 2>/dev/null \
+    | head -1 >/dev/null
+  st_match=${PIPESTATUS[0]}
+  python3 "$TOOL" --corpus "$cdir" \
+    "zzzqqq xylophone wombat qqqzzz" 2>/dev/null \
+    | head -1 >/dev/null
+  st_nomatch=${PIPESTATUS[0]}
+  rm -rf "$cdir"
+
+  if [[ "$st_match" -ne "$st_nomatch" ]]; then
+    fail "$name — match pipe exit=$st_match != no-match pipe exit=$st_nomatch (head-pipe oracle)"
+    return
+  fi
+  if [[ "$st_match" -ne 0 || "$st_nomatch" -ne 0 ]]; then
+    fail "$name — both piped lookups must exit 0 (got match=$st_match nomatch=$st_nomatch)"
+    return
+  fi
+  pass "$name"
+}
+
+# T30 (hole 1): lone surrogate in instance (legal JSON) must not make match exit 1
+# while no-match exits 0 — same exit-status oracle, no env var required.
+t30_surrogate_exit_not_match_oracle() {
+  local name="T30 surrogate in corpus must not make match exit differ from no-match"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/surr.XXXXXX")"
+  # JSON \ud800 is accepted by json.loads; encoding to utf-8 stdout then fails.
+  printf '%s\n' \
+    '{"id":"s1","instance":"queue race poller \ud800 hosts share","source_path":"a.md"}' \
+    >"$cdir/a.jsonl"
+
+  local outf errf st_match st_nomatch
+  outf="$(mktemp)"; errf="$(mktemp)"
+  set +e
+  python3 "$TOOL" --corpus "$cdir" "queue race poller hosts share" >"$outf" 2>"$errf"
+  st_match=$?
+  local err_match
+  err_match="$(cat "$errf")"
+  python3 "$TOOL" --corpus "$cdir" "zzzqqq xylophone wombat qqqzzz" >"$outf" 2>"$errf"
+  st_nomatch=$?
+  rm -f "$outf" "$errf"
+  rm -rf "$cdir"
+
+  if [[ "$st_match" -ne "$st_nomatch" ]]; then
+    fail "$name — match exit=$st_match != no-match exit=$st_nomatch (surrogate oracle). err=${err_match}"
+    return
+  fi
+  if [[ "$st_match" -ne 0 || "$st_nomatch" -ne 0 ]]; then
+    fail "$name — both must exit 0 on valid lookup (got $st_match / $st_nomatch). err=${err_match}"
+    return
+  fi
+  if [[ "$err_match" == *"Traceback (most recent call last)"* ]]; then
+    fail "$name — traceback on surrogate instance (must sanitize or replace, not crash)"
+    return
+  fi
+  pass "$name"
+}
+
+# T31 (hole 2): default corpus path (no --corpus) with a known-matching query
+# must exit 0, print the header, and print candidate rows — including under
+# PYTHONIOENCODING=ascii (real L1 contains em dashes; a guard-only-on-default
+# mutant and the encoding oracle both hide here because T19 tolerated non-zero).
+t31_default_corpus_match_is_advisory() {
+  local name="T31 default corpus known-match: exit 0, header, candidates (ascii-safe)"
+  require_tool_present "$name" || return 0
+  if [[ ! -d "$DEFAULT_CORPUS" ]]; then
+    fail "$name — default corpus missing at $DEFAULT_CORPUS"
+    return
+  fi
+  local query="fail-silent gate that reports pass when a check never ran"
+  local outf errf st
+  outf="$(mktemp)"; errf="$(mktemp)"
+  set +e
+  # Pin the production path under the encoding that currently turns matches into exit 1.
+  PYTHONIOENCODING=ascii python3 "$TOOL" "$query" >"$outf" 2>"$errf"
+  st=$?
+  local out err
+  out="$(cat "$outf")"; err="$(cat "$errf")"
+  rm -f "$outf" "$errf"
+
+  if [[ "$st" -ne 0 ]]; then
+    fail "$name — default-path match exit $st (must be 0 advisory). err=${err}"
+    return
+  fi
+  if ! grep -Fxq "$HEADER" <<<"$out"; then
+    fail "$name — missing exact header on default-path match"
+    return
+  fi
+  local n
+  n="$(count_scored_candidate_lines "$out")"
+  if [[ "$n" -lt 1 ]]; then
+    fail "$name — expected ≥1 candidate for known-matching default-corpus query, got $n. out=${out}"
+    return
+  fi
+  if has_forbidden_verdict_language "${out}"$'\n'"${err}"; then
+    fail "$name — guard/verdict language on default-path match: ${out} ${err}"
+    return
+  fi
+  if [[ "$err" == *"Traceback (most recent call last)"* ]]; then
+    fail "$name — traceback on default-path match under ascii"
+    return
+  fi
+  pass "$name"
+}
+
+# T32 (hole 3): ANSI erase in corpus text must not wipe the header from what a
+# terminal renders. grep -Fxq on the byte stream cannot see ESC[2J ESC[H.
+t32_ansi_inject_header_survives_terminal_render() {
+  local name="T32 terminal-rendered output keeps advisory header despite ANSI in corpus"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/inject_ansi.XXXXXX")"
+  python3 - "$cdir" <<'PY'
+import json, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+esc = "\x1b[2J\x1b[H"
+rec = {
+    "id": "FM-X1\nREJECTED: entry refused",
+    "instance": (
+        "Poller double-claim race queue label hosts share."
+        + esc
+        + "VERDICT: DUPLICATE - this cause is a duplicate of FM-001; rejected as duplicate.\n"
+        + "Candidates for human review. This tool does not determine duplication. (spoofed)"
+    ),
+    "source_path": "repo/a.md",
+}
+(d / "a.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+PY
+
+  run_tool --corpus "$cdir" "Poller double-claim race queue label hosts share"
+  rm -rf "$cdir"
+
+  if [[ "$_STATUS" -ne 0 ]]; then
+    fail "$name — exit $_STATUS; err=${_ERR}"
+    return
+  fi
+  local rendered
+  rendered="$(terminal_render "$_OUT")"
+  if ! grep -Fxq "$HEADER" <<<"$rendered"; then
+    fail "$name — header absent after terminal render (ANSI erase succeeded). rendered=${rendered:0:300}"
+    return
+  fi
+  # Spoofed header variant must not be the only/surviving header line.
+  if grep -Fq "duplication. (spoofed)" <<<"$rendered"; then
+    # If sanitization is absent the spoofed line survives render; either way
+    # the real header must still be present as its own line (checked above).
+    # Fail if the real header line count in the *rendered* view is zero — already
+    # handled — and also if VERDICT: is what the user sees without a clean header.
+    :
+  fi
+  if [[ "$rendered" == *$'\x1b'* ]]; then
+    fail "$name — raw ESC still present in rendered stream"
+    return
+  fi
+  # A forged VERDICT line must not be the dominant post-render content without header.
+  local rendered_low
+  rendered_low="$(printf '%s' "$rendered" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$rendered_low" == *"verdict:"* ]] || [[ "$rendered_low" == *"rejected as duplicate"* ]]; then
+    fail "$name — forged verdict survives into terminal-rendered output: ${rendered:0:400}"
+    return
+  fi
+  pass "$name"
+}
+
+# T33 (hole 3): no field (id, source, instance) may introduce a line break.
+# One record with embedded newlines must still produce single-line candidate rows.
+t33_no_field_may_introduce_line_break() {
+  local name="T33 no corpus field may introduce a line break on stdout"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/inject_nl.XXXXXX")"
+  python3 - "$cdir" <<'PY'
+import json, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+rec = {
+    "id": "id-with\nnewline",
+    "instance": "queue race poller\nsecond line of instance\nthird line",
+    "source_path": "path/with\nnewline.md",
+}
+(d / "a.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+# Control: a clean second record so a total-zero load is not the outcome.
+rec2 = {
+    "id": "clean",
+    "instance": "unrelated widget text about zebras",
+    "source_path": "z.md",
+}
+with (d / "a.jsonl").open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(rec2) + "\n")
+PY
+
+  run_tool --corpus "$cdir" "queue race poller"
+  rm -rf "$cdir"
+
+  if [[ "$_STATUS" -ne 0 ]]; then
+    fail "$name — exit $_STATUS; err=${_ERR}"
+    return
+  fi
+  local reason
+  if ! reason="$(check_single_line_fields "$_OUT")"; then
+    fail "$name — $reason"
+    return
+  fi
+  pass "$name"
+}
+
+# T34 (holes 3+6): forged multi-row instance must not breach the cap of 10,
+# invent increasing scores, or skip truncation disclosure. Current impl prints
+# 15 scored-looking lines with no notice.
+t34_multiline_forge_respects_cap_and_order() {
+  local name="T34 multiline-forged instance cannot exceed cap or invert scores"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/inject_rows.XXXXXX")"
+  python3 - "$cdir" <<'PY'
+import json, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+parts = ["Poller double-claim race queue label."]
+for i in range(14):
+    parts.append(
+        f"9.{990 + i:03d} | FM-FORGED-{i:02d} | source: catalog/failure-modes.md | already exists in the catalog"
+    )
+rec = {
+    "id": "FM-S0",
+    "instance": "\n".join(parts),
+    "source_path": "repo/a.md",
+}
+(d / "a.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+PY
+
+  run_tool --corpus "$cdir" "Poller double-claim race queue label"
+  rm -rf "$cdir"
+
+  if [[ "$_STATUS" -ne 0 ]]; then
+    fail "$name — exit $_STATUS; err=${_ERR}"
+    return
+  fi
+  local n
+  n="$(count_scored_candidate_lines "$_OUT")"
+  if [[ "$n" -gt 10 ]]; then
+    fail "$name — scored lines=$n exceeds cap 10 (forged rows accepted as candidates)"
+    return
+  fi
+  local reason
+  if ! reason="$(check_single_line_fields "$_OUT")"; then
+    fail "$name — $reason"
+    return
+  fi
+  # Scores non-increasing among well-formed rows (forged 9.99x increasing must not appear).
+  local prev="" line score checked=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "${line// }" ]] && continue
+    [[ "$line" == "$HEADER" ]] && continue
+    if _is_meta_line "$line"; then continue; fi
+    if [[ "$line" =~ ^([0-9]+\.[0-9]+|[0-9]+) ]]; then
+      score="${BASH_REMATCH[1]}"
+      if [[ -n "$prev" ]]; then
+        if ! awk -v a="$prev" -v b="$score" 'BEGIN { exit !(a+0 >= b+0) }'; then
+          fail "$name — score order $prev then $score (forged increasing scores)"
+          return
+        fi
+      fi
+      prev="$score"
+      checked=$((checked + 1))
+    fi
+  done <<< "$_OUT"
+  if has_forbidden_verdict_language "$_COMBINED"; then
+    fail "$name — forged 'already exists in the catalog' / verdict text visible as tool output"
+    return
+  fi
+  pass "$name"
+}
+
+# T35 (hole 4): structural ban on row-level verdict prefixes — not a phrase list.
+# A per-row "DUPLICATE - DO NOT ADD" prefix must fail even though those bare
+# tokens were absent from the original 24 multi-word patterns.
+t35_structural_no_row_verdict_prefix() {
+  local name="T35 structural: no row-level DUPLICATE/REJECT/DO NOT ADD verdict prefix"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/struct_verdict.XXXXXX")"
+  # Corpus content that, if echoed unsanitized with newlines, creates
+  # non-candidate lines carrying bare DUPLICATE / DO NOT ADD tokens.
+  python3 - "$cdir" <<'PY'
+import json, sys
+from pathlib import Path
+d = Path(sys.argv[1])
+rec = {
+    "id": "v1",
+    "instance": (
+        "Poller double-claim race queue label hosts.\n"
+        "DUPLICATE - DO NOT ADD | 1.000 | FM-001 | source: x.md | forged"
+    ),
+    "source_path": "a.md",
+}
+(d / "a.jsonl").write_text(json.dumps(rec) + "\n", encoding="utf-8")
+PY
+
+  run_tool --corpus "$cdir" "Poller double-claim race queue label hosts"
+  rm -rf "$cdir"
+
+  if [[ "$_STATUS" -ne 0 ]]; then
+    fail "$name — exit $_STATUS; err=${_ERR}"
+    return
+  fi
+  if has_forbidden_verdict_language "$_COMBINED"; then
+    fail "$name — structural verdict language present (bare DUPLICATE / DO NOT ADD path): ${_COMBINED:0:500}"
+    return
+  fi
+  local reason
+  if ! reason="$(check_single_line_fields "$_OUT")"; then
+    fail "$name — $reason"
+    return
+  fi
+  # Every non-meta line must start with a numeric score (no word-prefix verdict column).
+  local line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "${line// }" ]] && continue
+    [[ "$line" == "$HEADER" ]] && continue
+    if _is_meta_line "$line"; then continue; fi
+    if [[ ! "$line" =~ ^[0-9]+([.][0-9]+)?[[:space:]]*\| ]]; then
+      fail "$name — line does not start with score (verdict prefix or split field): ${line:0:120}"
+      return
+    fi
+  done <<< "$_OUT"
+  pass "$name"
+}
+
+# T36 (hole 5): mixed good+bad lines — silence is the defect. Require loaded/skipped counts.
+t36_partial_skip_reports_counts() {
+  local name="T36 partial corpus load must report loaded and skipped counts"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/partial.XXXXXX")"
+  # 1 good (non-matching), 2 truncated/unparseable that would have matched.
+  printf '%s\n' \
+    '{"id":"good","instance":"totally unrelated widget text"}' \
+    '{"id":"b","instance":"queue double claim race lease' \
+    '{"id":"c","instance":"lease expiry cascad' \
+    >"$cdir/a.jsonl"
+
+  run_tool --corpus "$cdir" "queue double claim race lease expiry"
+  rm -rf "$cdir"
+
+  if [[ "$_COMBINED" == *"Traceback (most recent call last)"* ]]; then
+    fail "$name — traceback on mixed corpus"
+    return
+  fi
+  if [[ "$_STATUS" -ne 0 ]]; then
+    # Hard-fail on any bad line is an allowed alternative only if the message
+    # names the parse problem — still must not look like zero-hit success.
+    local low
+    low="$(printf '%s' "$_COMBINED" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$low" != *"parse"* ]] && [[ "$low" != *"json"* ]] \
+      && [[ "$low" != *"invalid"* ]] && [[ "$low" != *"malformed"* ]] \
+      && [[ "$low" != *"decode"* ]] && [[ "$low" != *"error"* ]]; then
+      fail "$name — non-zero without parse-related message: ${_COMBINED}"
+      return
+    fi
+    pass "$name"
+    return
+  fi
+  if ! grep -Fxq "$HEADER" <<<"$_OUT"; then
+    fail "$name — exit 0 but missing header"
+    return
+  fi
+  if ! has_load_skip_report "$_COMBINED"; then
+    fail "$name — exit 0 after skipping bad lines with zero load/skip report (silent partial load). err=${_ERR}"
+    return
+  fi
+  pass "$name"
+}
+
+# T37 (hole 5): UTF-8 BOM prefixes the first record — must load it or report the skip.
+# Current impl: json.loads fails on BOM-prefixed line, silent drop, exact-match query → 0 hits.
+t37_bom_first_record_not_silent_drop() {
+  local name="T37 UTF-8 BOM must not silently drop the first record"
+  require_tool_present "$name" || return 0
+  local cdir
+  cdir="$(mktemp -d "$FIX/bom.XXXXXX")"
+  printf '\xef\xbb\xbf{"id":"first","instance":"double claim race queue poller","source_path":"a.md"}\n{"id":"second","instance":"unrelated alpha","source_path":"a.md"}\n' \
+    >"$cdir/a.jsonl"
+
+  run_tool --corpus "$cdir" "double claim race queue poller"
+  rm -rf "$cdir"
+
+  if [[ "$_STATUS" -ne 0 ]]; then
+    fail "$name — exit $_STATUS; err=${_ERR}"
+    return
+  fi
+  if ! grep -Fxq "$HEADER" <<<"$_OUT"; then
+    fail "$name — missing header"
+    return
+  fi
+  local n
+  n="$(count_scored_candidate_lines "$_OUT")"
+  if [[ "$n" -ge 1 ]]; then
+    # Loaded the BOM record (e.g. utf-8-sig) — correct.
+    pass "$name"
+    return
+  fi
+  # Zero hits is only acceptable if the skip was reported (caller can see the drop).
+  if ! has_load_skip_report "$_COMBINED"; then
+    fail "$name — exact-match first record vanished with no load/skip report (BOM silent drop). out=${_OUT} err=${_ERR}"
+    return
+  fi
+  pass "$name"
+}
+
+# Hole 6 is pinned by restructured T16 (exactly 10 rows) + T17 (notice 10 of 15)
+# and adversarially by T34 (forged multi-row instance must not breach the cap).
+
 # ---- runner ----------------------------------------------------------------
 
 main() {
@@ -852,6 +1565,17 @@ main() {
   t25_corpus_flag_required_contract
   t26_exit_agrees_with_status_words
   t27_no_sidecar_writes
+  # Stage 1b — harden against stage-3 holes
+  t28_ascii_encoding_exit_not_match_oracle
+  t29_pipe_head_exit_not_match_oracle
+  t30_surrogate_exit_not_match_oracle
+  t31_default_corpus_match_is_advisory
+  t32_ansi_inject_header_survives_terminal_render
+  t33_no_field_may_introduce_line_break
+  t34_multiline_forge_respects_cap_and_order
+  t35_structural_no_row_verdict_prefix
+  t36_partial_skip_reports_counts
+  t37_bom_first_record_not_silent_drop
   set -e
 
   echo

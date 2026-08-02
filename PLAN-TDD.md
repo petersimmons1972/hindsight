@@ -578,27 +578,50 @@ Not a claim, in every case a command. Nothing below is satisfied by a review pas
 | V6 | Recurrence is measured, not asserted | `pytest pipeline/tests/test_recurrence_report.py` — ground-truth families surface |
 | V7 | ~~**The decisive test**~~ **VOID — the capability it tests was cancelled by measurement** | Was: *reworded known FM is rejected naming its cluster; `--force-new-cause` lands it with justification recorded.* Both flags are **deleted**; no implementation can satisfy this row, so leaving it would assert a test that can never pass. Replaced by V7b |
 | V7b | The lookup surfaces prior art and **claims nothing more** | `bash bin/tests/test_similar_causes.sh` → **37/37** (27 original + 10 added after stage-3 verification found the guard could be rebuilt). Pins: never exit non-zero on a match (T21 closes the flag-shaped sneak-back), never emit verdict language, the advisory header is unconditional, truncation past 10 is disclosed, read-only, deterministic — and **the two zeros are separated**: empty/unreadable corpus fails loud (T05–T07) while zero candidates from a *populated* corpus is a legitimate exit 0 (T08) |
-| V8 | No phantom mechanisms | `--verify-enforcement` → 0 phantoms. **Known gap: this does not run on CI.** Only 1 of 13 source roots resolves on the runner and it verifies zero paths, so the step declares SKIPPED and exits 0. That is the honest branch, but phantom-discovery therefore runs *nowhere* automatically — open, Phase 5 |
-| V11 | **Every gate is mutation-tested, not merely green** | 91 mutants applied across the merged gates; **56 survived (62%)**, now all killed. `pytest guard/tests/ pipeline/tests/ -q` → **102 passed** (was 53); `bats guard/tests/*.bats bin/tests/*.bats` → **81 ok** (was 61). Each test proven to kill its mutant: pass unmutated → FAIL mutated → restore. A suite that is green says nothing about whether it would go red |
+| V8 | No phantom mechanisms | `--verify-enforcement` → 0 phantoms. **Known gap: this does not run on CI.** Only 1 of 13 source roots resolves on the runner and it verifies zero paths, so the step declares SKIPPED and exits 0. That is the honest branch, but phantom-discovery therefore runs *nowhere* automatically. **Founder ruling 2026-08-02: stays ADVISORY, but must print the count** of rows whose claimed mechanism does not execute, on every run. Explicitly accepted trade: this enforces nothing, and "a floor that counts units present rather than units performed" is FM-155 — the exact family this repo exists to catalogue. The count is the honest disclosure that keeps it from reading as covered. Not a ratchet; do not describe it as one |
+| V11 | **Every gate is mutation-tested, not merely green** | Three rounds, each re-swept with *fresh* mutants rather than re-running the ones already killed. Round 1: 91 mutants, **56 survived (62%)**. Round 2 (fresh): **39 survived (43%)**. Round 3 offloaded to three cross-vendor lanes — pipeline (codex, 11/11), guard (grok, tests-only, 319 insertions), CI-gate (codex, tests-only, 95 insertions). **Every lane's kill-proof re-verified by hand rather than taken from its report**: mutants applied here, suite observed to go red, production file restored. `pytest guard/tests/ pipeline/tests/ -q` → **129 passed** (was 53); `bats bin/tests/*.bats` → **92 ok** (was 61). The CI-gate lane was additionally probed with a mutant it never named (the bash guard on undocumented evaluator exit codes) — it died too, so the suite generalizes rather than fitting its own survivor list. A suite that is green says nothing about whether it would go red |
 | V12 | **A gate must not certify what it never compared** | `python3 pipeline/reconcile_l1.py` → verdict is one of COMPLETE / PARTIAL / **UNVERIFIED**, with the resolved-source count on the line. Previously it hardcoded the author's home directory, resolved **zero** sources on CI, and the `else 100.0` fail-open printed COMPLETE exit 0 — the step had never actually compared anything there. Verified by relocating the checkout |
 | V9 | Sync is safe | dry-run resolves all 12 consumers; unrecognised arg aborts; undo journal restores |
 | V10 | Provenance | no L3 law has single-repo provenance |
 
 ---
 
+## Founder rulings — 2026-08-02
+
+Four open decisions were put to the founder in one round and answered. They re-point the
+plan, so they sit above Sequencing rather than in a footnote.
+
+1. **Next push: build the recurrence spine.** The gates are now trustworthy and the
+   pipeline still stops at L1 — the registry cannot answer the one question it exists to
+   answer. Land C1c (the clusterer, PR #13) → C2 recurrence report → L2/L3. Chosen over
+   "wire up what exists" and over "keep hardening". Hardening rounds are done for now; a
+   clean fresh-mutant round is no longer the gating condition on new build.
+2. **V8 enforcement step: advisory, with the count printed.** See V8 row. Not a ratchet.
+3. **PR #2 (`dispatch/C6-vendor-sync`): repair, do not close.** Same treatment as
+   `bin/land.sh` — refuse to write without an explicit `--apply`, print the undo journal
+   *before* acting, pin the contract with red-first tests. Keeps the capability, removes
+   the blast radius that wrote into 11 live repos on 2026-08-01.
+4. **G2 / PR #10: rebuild, do not land and do not drop.** The re-scope is directionally
+   right, but its 671 lines predate this week's hardening and were never mutation-tested.
+   Close the PR, re-derive from an **attack spec written before any implementation
+   exists**, cross-vendor. This also finally fills the standing "real audition slot" debt
+   below — G2 was already the named candidate.
+
 ## Sequencing
 
 ```
-D1 runner decision (founder)
- └─ Phase 0  G1 require-real-ci  +  live CI proof  +  #1 re-review
-     └─ Phase 1  G2 verify-discriminating           [no dispatch; both are mine]
-         └─ Phase 2  land #5 → #4 → #1 → #3(after adversarial review) ;  C6c replaces #2
-             └─ Phase 3  C2 → C3          [C3 is the point of the project]
+D1 runner decision (founder)                                              [DONE]
+ └─ Phase 0  G1 require-real-ci  +  live CI proof  +  #1 re-review        [DONE]
+     └─ Phase 1  G2 verify-discriminating                                 [REBUILD, ruling 4]
+         └─ Phase 2  land #5 → #4 → #1 → #3 ;  C6c replaces #2            [#2 → repair, ruling 3]
+             └─ Phase 3  C1c clusterer → C2 → C3     ← ACTIVE (ruling 1)
                  └─ Phase 4  W1 → W2 → W3
                      └─ Phase 5  phantoms → harness corpus → D2
 ```
 
-Serial throughout (R8). One dispatch in flight at a time in this repo.
+Serial throughout (R8). One dispatch in flight at a time in this repo — and **no writes to
+the shared checkout while one is running** (FM-162: doing so trips the leak detector and
+invalidates the run).
 
 ## Standing debts carried into this plan
 

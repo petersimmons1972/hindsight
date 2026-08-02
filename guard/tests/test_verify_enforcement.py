@@ -72,6 +72,9 @@ def run_verifier(
     checked_floor_path: Path | None = None,
     unmapped_sources: list[dict[str, str]] | None = None,
     unmapped_sources_path: Path | None = None,
+    previous_floor_values: dict[str, int] | None = None,
+    ci_no_source_repos: bool = False,
+    patch_previous_floor_value: bool = True,
 ) -> int:
     """Drive main() with every default sandboxed to tmp_path.
 
@@ -81,10 +84,37 @@ def run_verifier(
     gate aren't affected by it -- pass the matching *_path parameter
     (pointing at a file you never created, or deliberately malformed) to
     exercise that gate's own "fails loud" behavior instead.
+
+    previous_floor_values: real fixture floor files live under tmp_path,
+    outside this actual git repo, so the REAL previous_floor_value() always
+    returns None for them (see
+    test_previous_floor_value_returns_none_for_a_file_outside_this_repo) --
+    and C4f made check_floor_ratchet treat a None previous as a hard ERROR
+    unless overridden. Tests that aren't exercising the ratchet itself
+    would all spuriously fail on that ERROR, so this defaults to a
+    permissive stub (previous == 0 for every floor, trivially satisfied by
+    any real floor value) -- pass an explicit dict (keyed on the floor
+    file's basename, e.g. "checked-floor.conf") only from tests that are
+    specifically exercising ratchet behavior.
+
+    ci_no_source_repos: mirrors --ci-no-source-repos (C4f, HIGH-2) -- the
+    explicit, caller-cannot-fake-it-via-environment flag that exempts
+    conf/checked-floor.conf when nothing was checked. Defaults to False
+    (not CI-shaped) so existing tests keep exercising the fully-enforced
+    path unless they opt in.
     """
     monkeypatch.setattr(MODULE, "default_l1_dir", lambda: l1_dir)
     monkeypatch.setattr(MODULE, "default_projects_dir", lambda: projects)
     monkeypatch.setattr(MODULE, "default_source_roots_path", lambda: source_roots_path)
+    if patch_previous_floor_value:
+        if previous_floor_values is None:
+            monkeypatch.setattr(MODULE, "previous_floor_value", lambda path, ref: 0)
+        else:
+            monkeypatch.setattr(MODULE, "previous_floor_value", _fake_previous(previous_floor_values))
+    # else: leave the REAL previous_floor_value in place -- for tests that
+    # specifically want to exercise its actual git-history lookup end to end.
+    if ci_no_source_repos:
+        extra_args = [*(extra_args or []), "--ci-no-source-repos"]
 
     if known_phantoms_path is None:
         known_phantoms_path = l1_dir.parent / "known-phantoms.conf"
@@ -1144,16 +1174,15 @@ def test_checked_floor_at_or_above_is_fine(
     assert exit_code == 0
 
 
-def test_checked_floor_is_exempt_only_when_projects_dir_is_entirely_absent(
+def test_checked_floor_is_exempt_only_with_explicit_ci_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """C4e (finding 2): the ONLY environment exempted from the checked
-    floor is one where ~/projects does not exist on disk AT ALL -- the
-    real CI runner's actual shape (confirmed empirically: `~/projects does
-    not exist here at all`, .github/workflows/guard.yml). SELF is the one
-    root that resolves regardless (this checkout's own root), so this is
-    the true CI shape: SELF resolves, checked == 0 (all its entries
-    unbacked), and projects_dir itself is nowhere on disk."""
+    """C4f (HIGH-2): the ONLY thing that exempts the checked floor is the
+    explicit, pinned --ci-no-source-repos flag -- NOT ~/projects being
+    absent on disk. SELF is the one root that resolves regardless (this
+    checkout's own root), so this is the true CI shape: SELF resolves,
+    checked == 0 (all its entries unbacked), projects_dir is nowhere on
+    disk, AND the flag guard.yml pins is passed."""
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "does-not-exist-at-all"  # never created
@@ -1161,12 +1190,41 @@ def test_checked_floor_is_exempt_only_when_projects_dir_is_entirely_absent(
     write_source_roots(roots_path, {"sample": "SELF"})
     write_records(l1_dir, "sample", machine_record("example", None))  # unbacked, checked=0
 
-    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, checked_floor=99)
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, checked_floor=99, ci_no_source_repos=True
+    )
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "SKIPPED" in err
     assert "checked entry count dropped" not in err
     assert "CHECKED-FLOOR: exempted" in err
+
+
+def test_checked_floor_directory_absence_alone_does_not_exempt_mutation_c4f_high2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """C4f (HIGH-2), the exploit this closes: C4e's exemption keyed on
+    `not default_projects_dir().is_dir()`, and `default_projects_dir()` is
+    `Path.home()/"projects"` -- entirely caller-controlled (e.g.
+    `HOME=/tmp/nohomehere`), so a fully populated workstation could claim
+    the exemption with zero config or code edits, verifying nothing while
+    printing the honest-sounding CI-skip message. Identical fixture to the
+    test above -- SELF resolves, checked == 0, projects_dir absent -- but
+    WITHOUT --ci-no-source-repos this must be a hard ERROR, never the
+    silent exemption."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "does-not-exist-at-all"  # never created; NOT sufficient on its own
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "SELF"})
+    write_records(l1_dir, "sample", machine_record("example", None))  # unbacked, checked=0
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, checked_floor=99)
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "SKIPPED" not in err
+    assert "CHECKED-FLOOR: exempted" not in err
+    assert "checked entry count dropped to 0, below floor 99" in err
 
 
 def test_checked_floor_still_fires_in_skip_shape_when_projects_dir_exists(
@@ -1421,8 +1479,16 @@ def test_empty_known_phantoms_ledger_is_a_valid_zero_debt_state(
 
 
 def _fake_previous(values: dict[str, int]):
-    def _lookup(path: Path, ref: str) -> int | None:
-        return values.get(path.name)
+    """Every real run evaluates the ratchet for all three floors
+    unconditionally (see main()), even when a test only cares about one of
+    them -- so any floor NOT named in `values` must still get a real,
+    permissive previous value (0, trivially satisfied by any actual floor)
+    rather than None, or C4f's fail-loud-on-None fix would spuriously
+    ERROR on the other two floors in every single-floor-focused test.
+    """
+
+    def _lookup(path: Path, ref: str) -> int:
+        return values.get(path.name, 0)
 
     return _lookup
 
@@ -1443,8 +1509,6 @@ def test_floor_ratchet_blocks_silent_decrease_mutation_bar_c(
     kwarg: str,
     path_name: str,
 ) -> None:
-    monkeypatch.setattr(MODULE, "previous_floor_value", _fake_previous({path_name: 33}))
-
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "projects"
@@ -1454,7 +1518,14 @@ def test_floor_ratchet_blocks_silent_decrease_mutation_bar_c(
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
 
-    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, **{kwarg: 10})
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        previous_floor_values={path_name: 33},
+        **{kwarg: 10},
+    )
     err = capsys.readouterr().err
     assert exit_code != 0
     assert f"{label} dropped from 33" in err
@@ -1477,8 +1548,6 @@ def test_floor_ratchet_allows_decrease_with_explicit_flag_and_reason(
     kwarg: str,
     path_name: str,
 ) -> None:
-    monkeypatch.setattr(MODULE, "previous_floor_value", _fake_previous({path_name: 33}))
-
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "projects"
@@ -1494,6 +1563,7 @@ def test_floor_ratchet_allows_decrease_with_explicit_flag_and_reason(
         projects,
         roots_path,
         extra_args=["--allow-floor-decrease", f"{label}=deliberate test decrease"],
+        previous_floor_values={path_name: 33},
         **{kwarg: 1},
     )
     err = capsys.readouterr().err
@@ -1505,9 +1575,6 @@ def test_floor_ratchet_allows_decrease_with_explicit_flag_and_reason(
 def test_floor_ratchet_is_silent_when_current_is_at_or_above_previous(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        MODULE, "previous_floor_value", _fake_previous({"checked-floor.conf": 1})
-    )
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "projects"
@@ -1517,7 +1584,14 @@ def test_floor_ratchet_is_silent_when_current_is_at_or_above_previous(
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
 
-    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, checked_floor=1)
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        previous_floor_values={"checked-floor.conf": 1},
+        checked_floor=1,
+    )
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "dropped from" not in err
@@ -1547,8 +1621,72 @@ def test_floor_ratchet_malformed_allow_flag_fails_loud(
 
 
 def test_previous_floor_value_returns_none_for_a_file_outside_this_repo(tmp_path: Path) -> None:
-    """The ratchet must fail OPEN (skip enforcement, never raise or block a
-    run) when it cannot determine history at all -- a file outside this
-    checkout entirely (as every sandboxed test fixture is) is exactly that
-    case."""
+    """previous_floor_value() itself still fails OPEN in the sense of never
+    raising and never blocking the CALLER from running at all -- a file
+    outside this checkout entirely (as every sandboxed test fixture is) is
+    exactly the case where it cannot determine anything and returns None.
+    C4f: what CHANGED is what the caller (check_floor_ratchet, see the
+    tests below) does with that None -- it is no longer treated as "fine,
+    proceed silently"; see test_check_floor_ratchet_none_previous_is_error_*."""
     assert MODULE.previous_floor_value(tmp_path / "checked-floor.conf", "origin/main") is None
+
+
+# ---------------------------------------------------------------------------
+# C4f (HIGH-1 / MEDIUM-3): check_floor_ratchet must treat an indeterminate
+# `previous` as "cannot confirm this did not shrink" -- an ERROR, not the
+# old silent (True, None) pass. Direct unit tests on the function itself,
+# not routed through main(), so they pin the exact contract regardless of
+# how main() wires it up.
+# ---------------------------------------------------------------------------
+
+
+def test_check_floor_ratchet_none_previous_is_error_without_override() -> None:
+    ok, message = MODULE.check_floor_ratchet(
+        "checked-floor", Path("conf/checked-floor.conf"), 5, None, {}
+    )
+    assert ok is False
+    assert message is not None
+    assert "could not determine the previous" in message
+    assert "--allow-floor-decrease" in message
+
+
+def test_check_floor_ratchet_none_previous_allowed_with_explicit_override() -> None:
+    ok, message = MODULE.check_floor_ratchet(
+        "checked-floor",
+        Path("conf/checked-floor.conf"),
+        5,
+        None,
+        {"checked-floor": "manually confirmed via workstation run"},
+    )
+    assert ok is True
+    assert message is not None  # permitted, but never silent
+    assert "WARNING" in message
+    assert "manually confirmed via workstation run" in message
+
+
+def test_ratchet_end_to_end_errors_when_previous_cannot_be_determined_mutation_bar_b(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Mutation bar (b): a previous-is-None result must go RED end to end
+    through main(), not just at the unit level. Uses the REAL (unmocked)
+    previous_floor_value against floor files that live under tmp_path,
+    outside this actual git checkout -- the same shape every other
+    fixture-based test is in, which is exactly why run_verifier() defaults
+    to stubbing it (see its docstring): without that stub (or an explicit
+    override), main() must now fail loud instead of silently passing."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, patch_previous_floor_value=False
+    )
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "could not determine the previous" in err
+    assert "ERROR:" in err

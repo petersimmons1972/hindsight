@@ -425,12 +425,24 @@ def previous_floor_value(path: Path, ref: str) -> int | None:
     Returns None -- never raises -- only when NEITHER source yields a
     single resolvable integer anywhere: this checkout isn't a git
     repository, git isn't installed, or the file has no history at all on
-    either `ref` or HEAD (freshly created, uncommitted). `None` means
-    "ratchet enforcement is skipped for this run" -- it must NEVER make
-    the floor file's own value unreadable or fail a run for a reason
-    unrelated to the floor itself; the absolute-minimum check
-    (`load_*_floor` above) is what actually gates correctness, this only
-    adds "don't shrink it quietly" on top of an already-working floor.
+    either `ref` or HEAD (freshly created, uncommitted).
+
+    C4f (HIGH-1): `None` used to mean "ratchet enforcement is skipped for
+    this run, silently" -- but a real CI run demonstrated exactly why that
+    is wrong: a shallow (`fetch-depth: 1`) checkout has no `origin/main`
+    remote-tracking ref at all (this function's first source), AND its
+    single-commit history means the HEAD-log fallback (its second source)
+    can only ever find the checked-out tip commit -- whose committed value
+    IS the current value. That shape doesn't even reach this "return None"
+    branch; it silently returns a *value* (current, disguised as
+    previous), which is arguably worse. This docstring's caller,
+    `check_floor_ratchet`, now treats `None` as "I could not verify this
+    did not shrink" and refuses to pass silently (see its own docstring) --
+    "could not check" must never read as "checked and fine". The real fix
+    for the shallow-checkout shape is giving the checkout real history
+    (`.github/workflows/guard.yml`'s `fetch-depth: 0`); this function's
+    contract (never raise, return None when truly undeterminable) is
+    unchanged -- only what the caller DOES with a `None` result changed.
     """
     try:
         repo_root = _repo_root()
@@ -492,15 +504,47 @@ def check_floor_ratchet(
     previous: int | None,
     decrease_reasons: dict[str, str],
 ) -> tuple[bool, str | None]:
-    """Returns (ok, message). `ok` is False only for a SILENT, unauthorized
-    decrease -- never for a missing `previous` (see previous_floor_value)
-    or for `current >= previous`, both of which are fine and produce no
-    message at all. An authorized decrease (present in decrease_reasons)
-    is `ok = True` but still returns a loud message: the whole point of
-    C4d's `--accept-phantom` idiom, reused here, is that widening an escape
-    hatch must never be quiet just because it was permitted.
+    """Returns (ok, message). `ok` is True with no message ONLY when a
+    previous value was actually determined AND `current >= previous` --
+    the one case that is genuinely, silently fine.
+
+    `ok` is False for a SILENT, unauthorized decrease, exactly as before --
+    but ALSO, C4f (HIGH-1/MEDIUM-3), for an INDETERMINATE `previous`
+    (`previous is None`), unless explicitly overridden via
+    `--allow-floor-decrease`. The old behavior treated `previous is None`
+    identically to "confirmed not a decrease" and returned `(True, None)`
+    -- completely silent, no ERROR, no WARNING, nothing printed. That is
+    this repo's one forbidden move: "I could not check" read as "it is
+    fine". It also means a real bug (a shallow CI checkout whose
+    `previous_floor_value` genuinely cannot resolve `origin/main` or real
+    history) produced a green run with zero diagnostic trace that the
+    ratchet never actually evaluated. An authorized override (label present
+    in `decrease_reasons`) is `ok = True` but still returns a loud message,
+    same idiom as an authorized decrease: permission to proceed without
+    verification must never be quiet just because it was granted.
     """
-    if previous is None or current >= previous:
+    if previous is None:
+        reason = decrease_reasons.get(label)
+        if reason is None:
+            return False, (
+                f"{label} in {path}: could not determine the previous committed value at "
+                f"{default_git_ref()} or anywhere in this branch's own history, so it is "
+                "impossible to confirm this run did not silently shrink it -- 'could not "
+                "check' is never 'it is fine'. This usually means the checkout lacks the git "
+                "history the ratchet needs (e.g. a shallow clone with no origin/main "
+                "remote-tracking ref -- fetch-depth: 0 on actions/checkout fixes that) rather "
+                "than a genuine absence of any prior value. If you have manually confirmed "
+                f"this is not a real decrease, pass --allow-floor-decrease {label}=\"<reason>\" "
+                "to proceed anyway."
+            )
+        return True, (
+            f"WARNING: {label} in {path}: previous committed value could not be determined "
+            f"(see check_floor_ratchet for why) -- proceeding WITHOUT ratchet verification, "
+            f"authorized via --allow-floor-decrease with reason: {reason!r}. This flag does "
+            "not persist -- the reason must also be recorded in the conf file's own comments "
+            "before this lands."
+        )
+    if current >= previous:
         return True, None
     reason = decrease_reasons.get(label)
     if reason is None:
@@ -915,6 +959,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--ci-no-source-repos",
+        action="store_true",
+        help=(
+            "C4f (HIGH-2): explicitly declare that THIS run's environment structurally has "
+            "no mapped source repos checked out at all (e.g. a CI runner that checks out "
+            "only this one repo) -- the sole thing that exempts conf/checked-floor.conf from "
+            "failing when zero entries were checked. This must be a pinned, committed, "
+            "reviewable flag in .github/workflows/guard.yml, never inferred from environment "
+            "state (an absent ~/projects, an unset $HOME) that a caller can trivially "
+            "reproduce on a fully populated workstation with zero config or code edits. "
+            "Default: not set, i.e. this environment is assumed capable of checking source "
+            "repos and the checked-floor is fully enforced."
+        ),
+    )
+    parser.add_argument(
         "--allow-floor-decrease",
         action="append",
         default=[],
@@ -1102,18 +1161,21 @@ def main(argv: list[str] | None = None) -> int:
         # a fully populated workstation with all repos checked out.
         #
         # `useful_count == 0` alone cannot tell those two apart -- it is
-        # identical in both. What DOES differ: a genuinely CI-shaped
-        # runner's ~/projects does not exist AT ALL (confirmed empirically
-        # for our own runner, see .github/workflows/guard.yml's "Verify
-        # enforcement" step comment) -- there is no config edit that can
-        # fake "this whole directory is absent from the filesystem" on a
-        # workstation that actually has it. So: the floor is fully
-        # enforced whenever projects_dir exists (including the degenerate
-        # case where it exists but is empty -- a workstation that HAS a
-        # ~/projects has no structural excuse to check nothing), and is
-        # exempted only when it is entirely absent.
-        projects_dir = default_projects_dir()
-        structurally_cannot_check = not projects_dir.is_dir()
+        # identical in both. C4f (HIGH-2): what DOES differ is no longer
+        # keyed on whether ~/projects happens to exist on disk --
+        # `default_projects_dir()` is `Path.home()/"projects"`, and
+        # `Path.home()` reads `$HOME`; a caller can reproduce "this
+        # directory is absent" on a fully populated workstation with zero
+        # config or code edits at all (e.g. `HOME=/tmp/nohomehere`), which
+        # makes directory-absence a caller-controlled signal, not a
+        # trustworthy proxy for "this is really CI". The exemption is now
+        # keyed on `--ci-no-source-repos`: an explicit, committed,
+        # reviewable flag pinned in .github/workflows/guard.yml, never an
+        # environment accident. Without it, the floor is fully enforced
+        # regardless of whether ~/projects exists (including the
+        # degenerate case where it exists but is empty, or doesn't exist
+        # at all but nobody declared why).
+        structurally_cannot_check = args.ci_no_source_repos
         total_checked = sum(totals.checked for totals in report.sources.values())
         print(
             f"enforcement-verifier: CHECKED-FLOOR: {total_checked} entries actually verified "
@@ -1124,10 +1186,10 @@ def main(argv: list[str] | None = None) -> int:
             if structurally_cannot_check:
                 print(
                     "enforcement-verifier: CHECKED-FLOOR: exempted this run -- "
-                    f"{projects_dir} does not exist on this machine at all, so nothing here "
-                    "could have been checked by construction (e.g. the CI runner, which "
-                    "checks out only this one repo). Real coverage is only verified where "
-                    "~/projects is populated.",
+                    "--ci-no-source-repos was passed, an explicit declaration that this "
+                    "environment structurally has no source repos checked out at all (e.g. "
+                    "the CI runner, which checks out only this one repo). Real coverage is "
+                    "only verified where ~/projects is populated and this flag is NOT passed.",
                     file=sys.stderr,
                 )
             else:
@@ -1137,11 +1199,14 @@ def main(argv: list[str] | None = None) -> int:
                     "actually run through the exists() check than before, even though the "
                     "enforcement-bearing total above may look unchanged (e.g. offset by "
                     "entries in an unmapped or not-checked-out source, which were never "
-                    "verified at all), and ~/projects IS present on this machine, so there is "
-                    "no structural excuse for checking fewer entries. Restore real checked "
-                    "coverage, or lower the floor explicitly (with --allow-floor-decrease "
-                    "checked-floor=\"<reason>\") and record the reason in "
-                    "conf/checked-floor.conf.",
+                    "verified at all). --ci-no-source-repos was not passed, so this "
+                    "environment is assumed capable of checking source repos and there is no "
+                    "exemption. Restore real checked coverage; or, if this environment "
+                    "genuinely cannot check anything by construction, pass "
+                    "--ci-no-source-repos from a pinned, reviewable CI config (never inferred "
+                    "from ~/projects being absent); or lower the floor explicitly (with "
+                    "--allow-floor-decrease checked-floor=\"<reason>\") and record the reason "
+                    "in conf/checked-floor.conf.",
                     file=sys.stderr,
                 )
                 return 1

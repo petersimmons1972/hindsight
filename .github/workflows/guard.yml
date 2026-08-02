@@ -9,6 +9,23 @@ jobs:
     runs-on: homelab-arc
     steps:
       - uses: actions/checkout@v4
+        with:
+          # C4f (HIGH-1): fetch-depth 1 (the previous default) gives this
+          # runner exactly ONE commit and no `origin/main` remote-tracking
+          # ref at all. previous_floor_value()'s ref lookup then silently
+          # fails to resolve origin/main, and its HEAD-history fallback
+          # walks a "log" that (in a shallow, single-commit clone) contains
+          # only the checked-out tip commit -- so the "previous" value it
+          # reads back is the SAME commit's own content as "current",
+          # always. The floor ratchet compared current >= previous, which
+          # is trivially true when they're the same commit, so
+          # check_floor_ratchet ran, found nothing to complain about, and
+          # printed NOTHING -- CI green with the ratchet silently a no-op
+          # on every single run. fetch-depth: 0 fetches full history for
+          # all branches (per actions/checkout's own docs), so
+          # `origin/main` genuinely resolves here and previous_floor_value
+          # can see real prior commits instead of only the tip.
+          fetch-depth: 0
       - name: Set up virtualenv
         run: |
           python3 -m venv --system-site-packages .venv
@@ -45,12 +62,27 @@ jobs:
         # SKIPPED and exits 0 -- a declared "not checked here", never a
         # silent "0 phantoms" that implies something was.
         #
+        # C4f (HIGH-2): --ci-no-source-repos is what actually grants the
+        # CHECKED-FLOOR exemption below -- NOT ~/projects being absent.
+        # default_projects_dir() is Path.home()/"projects", and Path.home()
+        # reads $HOME; a caller-controlled environment (HOME=/tmp/whatever,
+        # or any workstation that simply lacks ~/projects) could otherwise
+        # trip the same exemption with zero config or code edits, on a
+        # fully populated checkout, verifying nothing while claiming the
+        # honest-CI-skip message. This flag is the visible, committed,
+        # reviewable declaration that THIS pinned job -- not any ad hoc
+        # invocation -- structurally has no source repos checked out.
+        #
         # Two things this step DOES still check for real, everywhere
         # including here, with no dependency on any source repo being
         # present: (1) the corpus-wide enforcement-bearing-entry floor
         # (conf/enforcement-floor.conf) can't silently drop, so records
         # can't be deleted to make debt disappear; (2) the catalog/schema
-        # gates in the steps above this one.
+        # gates in the steps above this one; (3) the floor ratchet itself
+        # (mapped-sources-floor, enforcement-floor, checked-floor must only
+        # ever increase relative to origin/main), now able to actually
+        # evaluate here because the checkout step above fetches full
+        # history (fetch-depth: 0), so origin/main genuinely resolves.
         #
         # Real phantom-discovery against all 13 mapped roots -- including
         # the known-phantoms.conf debt-ledger gate -- only ever runs where
@@ -60,4 +92,4 @@ jobs:
         # (b) vendoring a manifest into this repo -- both are legitimate
         # but are follow-up infra work, not this PR's scope; a loud,
         # honest skip beats a vacuous pass either way it's resolved later.
-        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 1
+        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 1 --ci-no-source-repos

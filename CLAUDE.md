@@ -10,6 +10,14 @@ repo exists and what the guard enforces.
 - **Never delete a catalog row to satisfy a validator.** That is precisely how 11
   real failure modes (`FM-REC-01..11`) were nearly lost. If a row violates a
   rule, renumber or fix the rule — the rule is younger than the data.
+  **This is now enforced, not just asked.** `catalog/id-ledger.txt` records every
+  ID that has ever been canonical; the guard fails if one disappears, and
+  compares *sets* not counts, so deleting one row and renumbering another to keep
+  the tally does not get past it. An absent or empty ledger is also fatal — a
+  baseline that says nothing would make "nothing was removed" vacuously true.
+  **Never regenerate the ledger from the catalog**: a regenerated baseline cannot
+  detect a row that is already missing, which is the whole point of having one.
+  Restore it from git instead. `bin/add-failure-mode.sh` appends to it for you.
 - **Never hand-assign an ID.** Use `bin/add-failure-mode.sh`, which sources the
   next ID from the guard.
 - **An `enforcement` value of `null` is a correct answer.** Do not invent a test

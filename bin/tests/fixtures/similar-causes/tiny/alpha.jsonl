@@ -1,0 +1,2 @@
+{"id": "tiny-001", "instance": "Poller double-claim race when two hosts share a queue label.", "source_path": "alpha.md"}
+{"id": "tiny-002", "instance": "Exit status read through a pipe reports the last command not the gate.", "source_path": "alpha.md"}

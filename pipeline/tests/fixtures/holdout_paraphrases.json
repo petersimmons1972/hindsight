@@ -1,0 +1,306 @@
+{
+  "schema": "hindsight/holdout-paraphrases/v1",
+  "authored_by": "fixture author (C1d), independently of whoever repairs the engine",
+  "authoring_constraints": [
+    "The marker definitions in pipeline/cluster.py (_cause_shape_markers) were NOT read",
+    "while writing this file. Only pipeline/L1/*.jsonl entry SHAPE, the ground-truth",
+    "fixture, and the structure (not the sentences) of test_cluster.py were consulted.",
+    "",
+    "This exists because an adversarial verifier proved the existing markers were authored",
+    "to match the suite's own sentences: alternatives such as 'zero new', 'painted' and",
+    "'stayed empty' occur zero times in all 463 corpus entries, while test_cluster.py:332",
+    "contained 'the destination bucket had zero new objects'. The test was grading the",
+    "regex that had been written for it. Eight genuinely fresh paraphrases then fired zero",
+    "markers and became singletons while the fixture contract still passed.",
+    "",
+    "Every sentence below was composed fresh as natural incident prose. Vocabulary was",
+    "varied on purpose: where the corpus would say 'silently', these say 'nothing in the",
+    "logs', 'nobody noticed', 'went green anyway'. The intent is maximum lexical distance",
+    "at identical semantics. If a future engine passes this only after someone adds a",
+    "pattern quoting a sentence below, that engine has not been fixed -- the defect has",
+    "been reproduced, and this file must be retired and replaced rather than matched."
+  ],
+  "how_to_use": [
+    "Load pipeline/L1/*.jsonl, append each paraphrase as an additional entry using its",
+    "`text` as the instance, cluster, then assert:",
+    "  RECALL     -- each paraphrase lands in the same cluster as the majority of its",
+    "                expected_family's ground-truth members.",
+    "  PRECISION  -- each distractor (expected_family = null) lands in NO ground-truth",
+    "                family's cluster.",
+    "Both bounds must hold together. Recall alone is satisfied by an engine that merges",
+    "everything; the distractors are what make the recall number mean anything."
+  ],
+  "baseline_measurement": {
+    "measured_at": "2026-08-01",
+    "commit": "fix/c1c-clustering @ 5a99ff2",
+    "backend": "TfidfEmbeddingBackend (forced)",
+    "method": "load pipeline/L1, append all 41 entries as instances, cluster, compare assignment against each family's majority cluster",
+    "result": "35 of 41 fail. 0 of 35 paraphrases joined their expected family -- every single one became a singleton. 6 of 6 distractors correctly joined no family, but only trivially, because at this baseline nothing appended joins anything.",
+    "interpretation": "The distractor pass rate is meaningless until recall is nonzero. Do not report 6/41 as partial credit. A repair is only real when paraphrase recall rises while distractors stay at 6/6."
+  },
+  "why_this_is_a_product_requirement": "C3 downstream is a guard that must reject a REWORDED known failure mode. An engine that only recognises phrasings someone already wrote a pattern for does not implement that feature. This is the requirement, not a quality nit.",
+
+  "entries": [
+    {
+      "id": "hold-COMP-1",
+      "text": "Dispatch reported that the branch had been pushed and the run was green. Nobody could find the branch on the remote afterwards -- it had never been created at all.",
+      "expected_family": "completion-signal",
+      "why": "A success report about work whose deliverable does not exist: the claimed artifact (the remote branch) is absent."
+    },
+    {
+      "id": "hold-COMP-2",
+      "text": "The status endpoint returned state=succeeded for the migration. Two days later we found the target schema still had the old column layout; the worker had died partway through and something else stamped the terminal status.",
+      "expected_family": "completion-signal",
+      "why": "Terminal 'succeeded' state contradicted by the real end state, with the producing process dead -- the signal was written by something other than completed work."
+    },
+    {
+      "id": "hold-COMP-3",
+      "text": "Our overnight job wrote 'all done' into the log at 03:14. The process was still sitting in uninterruptible sleep at nine the next morning when I finally looked at ps.",
+      "expected_family": "completion-signal",
+      "why": "Self-declared completion while the process is demonstrably still alive and stuck -- the claim outran the work."
+    },
+    {
+      "id": "hold-COMP-4",
+      "text": "The CLI printed a success line for the sync. A day later the receiving side still had none of the files and its object count had not moved by one.",
+      "expected_family": "completion-signal",
+      "why": "Tool-reported success with the destination provably unchanged: reported outcome versus observed artifact."
+    },
+    {
+      "id": "hold-COMP-5",
+      "text": "The wrapper exited zero and we read that as the work being finished, but the wrapper only launched the real thing in the background. It returned before the child had done anything at all.",
+      "expected_family": "completion-signal",
+      "why": "The exit code describes the launcher, not the task; a completion signal that was never coupled to the work it purports to describe."
+    },
+    {
+      "id": "hold-COMP-6",
+      "text": "I was told the report had been generated, and nobody opened it for a week. When we did, the link pointed at a directory that did not exist on any host.",
+      "expected_family": "completion-signal",
+      "why": "Asserted deliverable, unverified for a week, then found missing -- claimed-produced artifact does not exist."
+    },
+    {
+      "id": "hold-COMP-7",
+      "text": "The agent's summary said the fix had been applied and verified. The diff was empty. Not one file on disk had changed.",
+      "expected_family": "completion-signal",
+      "why": "An agent's own claim of done-and-verified with zero corresponding change; the report is the only evidence and it is false."
+    },
+
+    {
+      "id": "hold-SMC-1",
+      "text": "Two dispatches were pointed at the same directory. The second one picked up half-written files the first had left behind and reported them as its own findings.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "Concurrent workers in one working tree observe each other's in-progress state and mistake it for their own input."
+    },
+    {
+      "id": "hold-SMC-2",
+      "text": "We ran three reviewers in parallel against a single clone. Their apparent agreement was an artifact of all three reading the same uncommitted edits sitting in that folder.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "The shared checkout is the mechanism that makes supposedly independent observations dependent -- explicitly inside this family's claim."
+    },
+    {
+      "id": "hold-SMC-3",
+      "text": "Agent B ran a checkout while agent A had unstaged work in the tree. A's edits were gone, and A carried on as though nothing had happened.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "One concurrent actor clobbers another's uncommitted state in a shared tree, undetected by the victim."
+    },
+    {
+      "id": "hold-SMC-4",
+      "text": "Both jobs used the same scratch path for their intermediate output. Whichever finished last overwrote the other's results, and what we shipped was a blend of the two.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "Shared mutable working area, last-writer-wins, silent cross-contamination of two independent runs' outputs."
+    },
+    {
+      "id": "hold-SMC-5",
+      "text": "The lanes were supposed to be isolated, but every one of them inherited the launcher's working directory, so one lane's half-applied patch turned up in another lane's test run.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "Nominal isolation that does not exist in practice; state leaks between concurrent lanes through the one directory they all share."
+    },
+    {
+      "id": "hold-SMC-6",
+      "text": "A background task committed onto the branch the interactive session was sitting on. The next command in that session quietly built on work it had never seen.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "Two actors mutating one checkout's branch state; one proceeds from a tree it did not produce and does not know changed."
+    },
+    {
+      "id": "hold-SMC-7",
+      "text": "We thought we had four separate confirmations. All four processes had been operating on the identical checkout, so it was really one observation counted four times.",
+      "expected_family": "shared-mutable-checkout",
+      "why": "Hard case, kept deliberately: the ground-truth claim for this family names 'evidence that appears independent is not', and the named mechanism here is the shared checkout, not a shared upstream document."
+    },
+
+    {
+      "id": "hold-FSG-1",
+      "text": "The check script called a helper that no longer existed. The shell came back with 127, the wrapper mapped every nonzero result to 'no issues found', and the run went green.",
+      "expected_family": "fail-silent-gate",
+      "why": "A broken check (missing binary) and a clean verdict travel the same channel, so error is read as pass."
+    },
+    {
+      "id": "hold-FSG-2",
+      "text": "Our policy gate pulled its rules file over HTTP. The endpoint answered 404, the parser got an empty document, zero rules matched, and the deploy was approved.",
+      "expected_family": "fail-silent-gate",
+      "why": "Dependency failure produces an empty rule set, which the gate cannot distinguish from a genuinely compliant change."
+    },
+    {
+      "id": "hold-FSG-3",
+      "text": "The verification step blew up before it evaluated a single assertion, and because the step's condition swallowed failures the overall status still came out passing.",
+      "expected_family": "fail-silent-gate",
+      "why": "A check that never ran to completion is scored as a passing check; the failure path resolves to the success verdict."
+    },
+    {
+      "id": "hold-FSG-4",
+      "text": "A lint stage had not actually executed for six weeks -- a config mistake had made the whole stage invisible -- and every pull request in that window merged with a clean tick.",
+      "expected_family": "fail-silent-gate",
+      "why": "Absence of the check is indistinguishable from the check passing; nothing surfaces the missing verdict."
+    },
+    {
+      "id": "hold-FSG-5",
+      "text": "The scanner crashed on startup, so its output file was empty, and the code downstream read an empty findings list as nothing being wrong.",
+      "expected_family": "fail-silent-gate",
+      "why": "Crash-produced emptiness collapses into the clean-result representation; no channel separates 'no findings' from 'no run'."
+    },
+    {
+      "id": "hold-FSG-6",
+      "text": "The auth check could not reach the identity provider, and the 'could not determine' path fell through to the allow branch rather than stopping the request.",
+      "expected_family": "fail-silent-gate",
+      "why": "Indeterminate outcome resolved as a permissive verdict instead of a loud failure of the check itself."
+    },
+    {
+      "id": "hold-FSG-7",
+      "text": "The harness reported zero failures because it had collected zero tests. Nobody on the team distinguished 'everything passed' from 'nothing ran'.",
+      "expected_family": "fail-silent-gate",
+      "why": "Vacuous success: the pass verdict is produced by the check doing nothing, and the reporting cannot tell the two apart."
+    },
+
+    {
+      "id": "hold-DIK-1",
+      "text": "Our duplicate detector keyed on the reporter's name plus the title string, so the same outage filed by two different on-call engineers stayed two tickets forever.",
+      "expected_family": "dedup-identity-key",
+      "why": "Identity coupled to the discoverer, so equivalent items can never collapse."
+    },
+    {
+      "id": "hold-DIK-2",
+      "text": "Because the fingerprint folded in the file it came from, one lesson written down in two documents never merged. The system counted it as two separate lessons.",
+      "expected_family": "dedup-identity-key",
+      "why": "Identity keyed on provenance rather than substance -- the cross-file duplicate is structurally unreachable."
+    },
+    {
+      "id": "hold-DIK-3",
+      "text": "The identity of a finding was its exact sentence. Change one adjective and you had a brand-new finding, which is how we relearned the same thing every sprint.",
+      "expected_family": "dedup-identity-key",
+      "why": "Identity coupled to surface phrasing, so rewording defeats deduplication entirely."
+    },
+    {
+      "id": "hold-DIK-4",
+      "text": "Someone loosened the matching rule to fix all the missed merges. It promptly folded two unrelated incidents into a single entry and we lost the distinction between them.",
+      "expected_family": "dedup-identity-key",
+      "why": "The escape hatch added to cure under-merging causes over-merging -- named explicitly in this family's claim as the same failure."
+    },
+    {
+      "id": "hold-DIK-5",
+      "text": "The key was derived from whoever found the thing, so our 'unique issues' number was really just a count of people who had looked.",
+      "expected_family": "dedup-identity-key",
+      "why": "Discoverer-coupled key inflates the distinct-item count; the metric measures observers, not items."
+    },
+    {
+      "id": "hold-DIK-6",
+      "text": "Deduplication compared how a report was worded rather than what had actually gone wrong, so ten write-ups of one root cause sat in the backlog as ten items.",
+      "expected_family": "dedup-identity-key",
+      "why": "Surface-form identity instead of cause identity, producing systematic failure to collapse equivalents."
+    },
+    {
+      "id": "hold-DIK-7",
+      "text": "We fixed under-merging by making the comparison fuzzy, and immediately began over-merging: distinct root causes that happened to be phrased alike collapsed into one.",
+      "expected_family": "dedup-identity-key",
+      "why": "The second half of the same oscillation -- an identity rule tuned on phrasing fails in both directions."
+    },
+
+    {
+      "id": "hold-CNC-1",
+      "text": "Four reviewers signed off and every one of them had read the same summary document. Their agreement told us nothing about whether that summary was right.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "Agreement inherited from one shared upstream input is mistaken for independent confirmation."
+    },
+    {
+      "id": "hold-CNC-2",
+      "text": "We treated three models agreeing as confirmation. All three were paraphrasing one blog post, and the blog post was wrong.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "Multiple voices, single source: N lanes citing one artifact is N=1, not N=3."
+    },
+    {
+      "id": "hold-CNC-3",
+      "text": "The writeup went out saying no evidence existed for that behaviour, but nobody had ever run the search. The absence was asserted, never established.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "A gap claimed with no negative-search artifact behind it -- the second half of this family's claim."
+    },
+    {
+      "id": "hold-CNC-4",
+      "text": "Two teams reported the same figure and we called it corroborated. Both figures had come out of the same query against the same table.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "Shared derivation path makes the two reports one measurement wearing two labels."
+    },
+    {
+      "id": "hold-CNC-5",
+      "text": "Five citations in the document traced back to a single primary source. We had been counting voices instead of independent measurements.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "Citation count treated as evidence weight when the underlying evidence is one artifact."
+    },
+    {
+      "id": "hold-CNC-6",
+      "text": "The second audit started from the first audit's assumptions, so naturally it reached the same conclusion. That was not a check, it was an echo.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "A dependent review presented as a confirming one; the premises were never varied."
+    },
+    {
+      "id": "hold-CNC-7",
+      "text": "The finding was stated as fact with no artifact attached -- no failing run, no query output, nothing that could have come back the other way.",
+      "expected_family": "convergence-not-corroboration",
+      "why": "An unfalsifiable assertion with no negative result behind it; nothing was ever run that could have disagreed."
+    },
+
+    {
+      "id": "hold-DIST-1",
+      "text": "The nightly export ran to completion and wrote its file exactly where it should have. The file was zero bytes because the source table upstream had been truncated that afternoon.",
+      "expected_family": null,
+      "why": "Near-miss for completion-signal: the completion signal is TRUE and the artifact exists. The root cause is upstream data availability, a genuinely different failure. An engine keying on 'reported done + empty result' will wrongly absorb this."
+    },
+    {
+      "id": "hold-DIST-2",
+      "text": "Two agents worked in properly separate worktrees and both passed their own tests. Merging them in either order produced a behaviour neither had tested, because the two changes interacted through an interface neither touched.",
+      "expected_family": null,
+      "why": "Near-miss for shared-mutable-checkout: isolation actually held, nothing was clobbered. The root cause is untested semantic interaction between independently-correct changes."
+    },
+    {
+      "id": "hold-DIST-3",
+      "text": "A shared build cache on network storage grew without any retention policy until it filled the volume, and every concurrent job on that host started failing on writes.",
+      "expected_family": null,
+      "why": "Near-miss for shared-mutable-checkout: shared mutable storage and concurrent jobs, but the cause is unbounded retention exhausting capacity, not cross-contamination of state. Failures here were loud, not silent."
+    },
+    {
+      "id": "hold-DIST-4",
+      "text": "A request timed out at the client after the server had already accepted it, and the retry sent the same non-idempotent write a second time, so the customer was charged twice.",
+      "expected_family": null,
+      "why": "Near-miss for fail-silent-gate: an error path is involved and nothing looked wrong at the time, but the cause is missing idempotency on retry, not a check that reads failure as pass."
+    },
+    {
+      "id": "hold-DIST-5",
+      "text": "Two records collapsed into one because the identity hash had been truncated to eight characters and the two values happened to collide.",
+      "expected_family": null,
+      "why": "Near-miss for dedup-identity-key: it is an identity-key defect in vocabulary only. The cause is hash width and birthday collision, unrelated to keying on discoverer or phrasing, and the fix is unrelated too."
+    },
+    {
+      "id": "hold-DIST-6",
+      "text": "Every reviewer on the panel approved it because the change came from a bot account the team had learned to wave through, not because any of them had read it.",
+      "expected_family": null,
+      "why": "Near-miss for convergence-not-corroboration: unanimous agreement that means nothing, but the cause is a social rubber-stamping norm rather than a shared upstream source or a missing negative-search artifact."
+    }
+  ],
+
+  "counts": {
+    "completion-signal": 7,
+    "shared-mutable-checkout": 7,
+    "fail-silent-gate": 7,
+    "dedup-identity-key": 7,
+    "convergence-not-corroboration": 7,
+    "distractors": 6,
+    "total": 41
+  }
+}

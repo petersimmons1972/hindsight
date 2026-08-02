@@ -194,7 +194,22 @@ def similarity_text(entry: Entry) -> str:
 
 
 def _cause_shape_markers(text: str) -> tuple[str, ...]:
-    """Return conservative semantic normalisations for recurring cause shapes."""
+    """Return conservative semantic normalisations for recurring cause shapes.
+
+    These are a declared hybrid, not pure embedding similarity: TF-IDF alone
+    cannot infer that several very differently-worded incidents share one
+    root cause, so a short list of conservative, multi-condition regexes
+    bridges that gap.  Two properties are required of every condition here,
+    checked with adversarial inputs in the test suite:
+
+    - it must require more than one common English word in isolation (a
+      bare, unusual token like `ran_ok` is an exception -- it is a specific
+      code-level identifier, not ordinary prose); and
+    - it is written from each family's *stated* definition (see
+      `pipeline/tests/fixtures/recurrence_ground_truth.json`), not reverse
+      engineered from any one example's exact wording, so it also fires on
+      held-out paraphrases the condition was never tuned against.
+    """
     lower = text.lower()
     markers: list[str] = []
     completion_gap = (
@@ -204,11 +219,22 @@ def _cause_shape_markers(text: str) -> tuple[str, ...]:
          re.search(r"\b(forced.early|wrong.state)\b", lower)) or
         (re.search(r"\bcompletion", lower) and
          re.search(r"\b(no deliverable|nothing)\b", lower)) or
-        (re.search(r"\bresume\b", lower) and re.search(r"\bheadless\b", lower)) or
+        (re.search(r"\bresume\b", lower) and re.search(r"\bheadless\b", lower) and
+         re.search(r"\b(nothing|never|no output|silent|logged only)\b", lower)) or
         (re.search(r"\bdeemed dead\b", lower) and
          re.search(r"\b(late|overwrit)\b", lower)) or
         (re.search(r"\bdispatch boundary\b", lower) and
-         re.search(r"\b(result|deliverable)\b", lower))
+         re.search(r"\b(result|deliverable)\b", lower)) or
+        # The family's own stated shape: a claimed-done signal contradicted
+        # by a deliverable that never materialised.  Written from that
+        # definition, not from any one incident's wording -- it must also
+        # catch paraphrases nobody tuned it against.
+        (re.search(r"\b(claimed|announced|said|printed|reported|logged)\b", lower) and
+         re.search(r"\b(finished|done|complete|success|green)\b", lower) and
+         re.search(
+             r"\b(never\s+(got\s+)?(appeared|opened|committed)|absent|empty|stayed empty|zero new|nothing)\b",
+             lower,
+         ))
     )
     if completion_gap:
         markers.append("latentcompletiongap")
@@ -219,7 +245,13 @@ def _cause_shape_markers(text: str) -> tuple[str, ...]:
         (re.search(r"\bdependency\b", lower) and re.search(r"\b(404|unreachable)\b", lower) and
          re.search(r"\breject\b", lower)) or
         (re.search(r"\bgate\b", lower) and
-         re.search(r"\b(unparseable|never appeared|not.quite.matching)\b", lower))
+         re.search(r"\b(unparseable|never appeared|not.quite.matching)\b", lower)) or
+        # A failure was observed (crash/error, or swallowed and downgraded
+        # to a soft skip) but the reported/displayed result stayed green --
+        # the family's stated shape, not a single incident's exact prose.
+        (re.search(r"\b(crash|crashed)\b", lower) and re.search(r"\b(green|painted|passed)\b", lower)) or
+        (re.search(r"\b(swallow|swallowed)\b", lower) and re.search(r"\bskip\b", lower) and
+         re.search(r"\bnot\b.*\b(red|fail)\b", lower))
     )
     if broken_gate:
         markers.append("latentbrokengate")
@@ -465,16 +497,29 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
 def _assert_non_degenerate(
     assignments: Sequence[Sequence[int]], backend_name: str, threshold: float, entry_count: int
 ) -> None:
-    """Reject collapse patterns that turn recurrence output into empty signal."""
+    """Reject collapse patterns that turn recurrence output into empty signal.
+
+    This is a real, unconditional bound: the single largest cluster may not
+    exceed MAX_CLUSTER_FRACTION of the corpus, full stop.  An earlier version
+    of this guard only fired when the *entire* corpus collapsed into exactly
+    one cluster (or exactly one cluster had more than one member), which let
+    a plausible-looking low threshold (e.g. 0.05) write a 440+/458 mega
+    cluster alongside a handful of untouched singletons -- exit 0, corrupt
+    L2 output. A degeneracy guard that only catches absurd inputs (threshold
+    0, -0.1, 1.5) is decorative; this must catch plausible ones too.
+    """
     largest_cluster = max(len(group) for group in assignments)
-    multi_member_clusters = sum(len(group) > 1 for group in assignments)
     largest_fraction = largest_cluster / entry_count
-    if (len(assignments) == 1 and largest_fraction > MAX_CLUSTER_FRACTION) or multi_member_clusters == 1:
+    # A singleton can never be "degenerate" regardless of what fraction of a
+    # tiny corpus it represents (two records, correctly left unmerged, are
+    # 50% of the corpus each) -- only an actual multi-member mega-cluster
+    # counts.
+    if largest_cluster > 1 and largest_fraction > MAX_CLUSTER_FRACTION:
         raise RuntimeError(
             "degenerate clustering for backend "
             f"{backend_name!r} at threshold {threshold:.2f}: "
-            f"largest cluster is {largest_cluster}/{entry_count} ({largest_fraction:.1%}); "
-            f"multi-member clusters={multi_member_clusters}"
+            f"largest cluster is {largest_cluster}/{entry_count} ({largest_fraction:.1%}), "
+            f"exceeding the {MAX_CLUSTER_FRACTION:.0%} cap"
         )
 
 
@@ -508,6 +553,18 @@ def cluster_entries(
     if np.any(norms == 0):
         raise ValueError("backend returned a zero embedding")
     embeddings = embeddings / norms[:, None]
+    if len(ordered) > 1 and np.allclose(embeddings, embeddings[0], atol=1e-9):
+        # A broken backend that returns the same vector for every text is
+        # invisible to the cluster-size invariant below when it is the HTTP
+        # backend: the calibrated similarity blend gives constant dense
+        # vectors only 10% weight, so genuinely varied lexical similarity
+        # masks the failure and produces plausible-looking (but HTTP-blind)
+        # output at exit 0.  Catch the degenerate input directly, before any
+        # blending, regardless of which backend produced it.
+        raise RuntimeError(
+            f"degenerate clustering for backend {backend.name!r} at threshold {threshold:.2f}: "
+            "backend returned identical embeddings for every text"
+        )
     assignments = _cluster_indices(_similarity_matrix(texts, embeddings, backend), threshold)
     _assert_non_degenerate(assignments, backend.name, threshold, len(ordered))
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Print advisory candidates from L1 failure-mode records without judging them.
+"""Print safely rendered advisory candidates from L1 failure-mode records.
 
 The command is deliberately a read-only lookup.  Its exit status describes
 operational success only; a populated corpus with no overlapping tokens is a
-successful lookup with no candidate rows.
+successful lookup with no candidate rows.  Recoverable malformed JSONL lines
+are counted on stderr while rendered corpus fields cannot alter output layout.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,7 +55,7 @@ def readable(path: Path) -> bool:
     return bool(mode & (stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)) and os.access(path, os.R_OK)
 
 
-def load_records(corpus: Path) -> list[Record]:
+def load_records(corpus: Path) -> tuple[list[Record], int]:
     """Load usable ``instance`` strings from immediate ``*.jsonl`` files."""
 
     if not corpus.exists():
@@ -71,11 +73,12 @@ def load_records(corpus: Path) -> list[Record]:
         raise CorpusError(f"Corpus is empty: no JSONL files in {corpus}")
 
     records: list[Record] = []
+    skipped = 0
     for file_path in files:
         if not readable(file_path):
             raise CorpusError(f"Corpus file is unreadable: {file_path}")
         try:
-            with file_path.open(encoding="utf-8") as handle:
+            with file_path.open(encoding="utf-8-sig") as handle:
                 for line_number, line in enumerate(handle, start=1):
                     if not line.strip():
                         continue
@@ -83,6 +86,7 @@ def load_records(corpus: Path) -> list[Record]:
                         value = json.loads(line)
                     except json.JSONDecodeError:
                         # A valid neighboring record still makes this a useful lookup.
+                        skipped += 1
                         continue
                     if not isinstance(value, dict) or not isinstance(value.get("instance"), str):
                         continue
@@ -104,7 +108,41 @@ def load_records(corpus: Path) -> list[Record]:
 
     if not records:
         raise CorpusError(f"Corpus has no usable entries: {corpus}")
-    return records
+    return records, skipped
+
+
+def display_text(value: str) -> str:
+    """Escape corpus text that could alter terminal layout or output structure."""
+
+    escaped: list[str] = []
+    for character in value:
+        category = unicodedata.category(character)
+        if category.startswith("C") or category in {"Zl", "Zp"}:
+            width = 4 if ord(character) <= 0xFFFF else 8
+            escaped.append(f"\\u{ord(character):0{width}x}")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
+
+
+def write_stdout(text: str) -> bool:
+    """Write UTF-8 output, returning false when a downstream reader closes."""
+
+    data = text.encode("utf-8", "backslashreplace")
+    view = memoryview(data)
+    try:
+        while view:
+            written = os.write(sys.stdout.fileno(), view)
+            view = view[written:]
+    except BrokenPipeError:
+        # Avoid a later interpreter-shutdown flush reporting EPIPE as failure.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+        return False
+    return True
 
 
 def score(query_tokens: set[str], record: Record) -> float:
@@ -136,26 +174,30 @@ def main(argv: list[str]) -> int:
 
     corpus = args.corpus or Path(__file__).resolve().parents[1] / "pipeline" / "L1"
     try:
-        records = load_records(corpus)
+        records, skipped = load_records(corpus)
     except CorpusError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     query_tokens = tokens(args.query)
+    if skipped:
+        print(f"Warning: loaded {len(records)} records; skipped {skipped} malformed records.", file=sys.stderr)
+
     ranked = [(score(query_tokens, record), record) for record in records]
     ranked = [(value, record) for value, record in ranked if value > 0]
     ranked.sort(key=lambda item: (-item[0], item[1].source, item[1].identifier, item[1].order))
 
-    print(HEADER)
+    lines = [HEADER]
     for value, record in ranked[:MAX_CANDIDATES]:
-        print(f"{value:.3f} | {record.identifier} | source: {record.source} | {record.instance}")
+        lines.append(
+            f"{value:.3f} | {display_text(record.identifier)} | "
+            f"source: {display_text(record.source)} | {display_text(record.instance)}"
+        )
     if len(ranked) > MAX_CANDIDATES:
-        print(f"Showing {MAX_CANDIDATES} of {len(ranked)} candidates.")
+        lines.append(f"Showing {MAX_CANDIDATES} of {len(ranked)} candidates.")
+    write_stdout("\n".join(lines) + "\n")
     return 0
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main(sys.argv[1:]))
-    except BrokenPipeError:
-        raise SystemExit(1)
+    raise SystemExit(main(sys.argv[1:]))

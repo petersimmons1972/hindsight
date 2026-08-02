@@ -234,6 +234,47 @@ never reported. C6b did not fix it.
 
 ---
 
+### G2 — STOP. The merge-base-copy design cannot work. *(measured over 3 rounds, 2026-08-01)*
+
+**Three build→adversarial-verify rounds. Round 1: 5 HIGH. Round 2: fixed those and created 3
+NEW HIGH inversions. Round 3 (fail-closed re-scope): 5 HIGH.** The retry ceiling is reached and
+the evidence points at the design, not the implementations.
+
+**The disqualifying finding (H1), confirmed by reading the code:** the tool copies each new test
+into a merge-base worktree, runs it, and counts *any* nonzero exit as discriminating. But a test
+of genuinely new code cannot even **import** at merge-base. So:
+
+```python
+from pkg.core import add
+from pkg.helpers import VERSION   # only this line makes it red at base
+def test_add_still_works():
+    assert add(1, 2) == 3          # already true at merge-base
+```
+
+passes the gate. Measured: with the import → `exit=0, discriminating: 1/1`; identical assertion
+without it → `exit=1, discriminating: 0/1`. **It is not a discrimination check. It is a
+"does this test reference something new" check — which every TDD diff satisfies by
+construction.** No amount of classification fixes this: copying a file to an older tree
+conflates "the behaviour is absent" with "the module is absent", and the second is true of
+essentially every new test.
+
+Supporting findings: `--diff-filter=AM` silently drops renames (`git mv` + edit is invisible);
+symlinked test files are materialised as text files, fail at collection, and are certified
+without ever running; files outside the four detection globs are skipped while the `N/M`
+denominator conceals them; and **the tool is referenced nowhere in `.github/` — it gates
+nothing today.** One round-3 report also contained a **materially false red-first claim** (3
+failures asserted, 2 reproduced), which is itself the failure family this repo catalogues.
+
+**Recommended replacement — revert-the-hunk mutation testing.** The question is "would this test
+fail without the fix", so ask it directly: keep the test, revert the *implementation* hunks of
+the diff, run at HEAD. That removes the import confound entirely, because the module still
+exists — only its behaviour is gone. This is exactly what the adversarial verifiers did by hand
+all night, and it is what caught every real defect this campaign found. It is a different and
+smaller tool than the one specified here.
+
+**Do not start it without a founder decision.** PRs #7 and #10 stay open, unmerged, as the
+record. Nothing downstream depends on this tool; the campaign is not blocked by it.
+
 ### G3 — drop the ordering rule, add the append-only invariant *(founder-approved 2026-08-01)*
 
 **Sequenced after #4 lands** — #4 is the only open PR that touches

@@ -1176,3 +1176,214 @@ def test_M24_non_object_known_phantoms_line_is_fatal_not_skipped(
     err = capsys.readouterr().err
     assert exit_code == 1
     assert "not an object" in err
+
+
+# ---------------------------------------------------------------------------
+# PLAN-01 / issue #18: advisory verification must disclose what it measured
+# and what it could not measure, including on the CI-shaped SKIPPED path.
+# ---------------------------------------------------------------------------
+
+
+def test_P01_skip_discloses_debt_unbacked_and_not_measured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(
+        roots_path,
+        {
+            "sample": "repo",
+            "absent-a": "not-checked-out-a",
+            "absent-b": "not-checked-out-b",
+        },
+    )
+    write_records(l1_dir, "sample", machine_record("unbacked", None))
+    write_records(
+        l1_dir,
+        "absent-a",
+        machine_record("unchecked-a", {"file": "control.py", "kind": "test"}),
+    )
+    write_records(
+        l1_dir,
+        "absent-b",
+        machine_record("unchecked-b", {"file": "control.py", "kind": "test"}),
+    )
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        known_phantoms=[
+            {
+                "source": "elsewhere",
+                "id": "known-debt",
+                "claimed_path": "missing.py",
+                "evidence": "documented fixture debt",
+                "disposition": "genuine-phantom: fixture",
+            }
+        ],
+    )
+    err = capsys.readouterr().err
+
+    assert exit_code == 0
+    assert "enforcement-verifier: PHANTOM-DEBT: 1 documented in conf/known-phantoms.conf" in err
+    assert "enforcement-verifier: UNBACKED: 1 machine entries carry enforcement: null" in err
+    assert "enforcement-verifier: UNVERIFIABLE: 2 machine entries could not be checked" in err
+    assert (
+        "enforcement-verifier: PHANTOMS-MEASURED: NOT MEASURED HERE "
+        "(ROOTS 1/3, 0 entries checked)"
+    ) in err
+    assert "SKIPPED" in err
+
+
+def test_P01_checked_run_discloses_measured_zero_not_unmeasured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("checked", {"file": "control.py", "kind": "test"}),
+        machine_record("unbacked", None),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    err = capsys.readouterr().err
+    assert "enforcement-verifier: PHANTOM-DEBT: 0 documented in conf/known-phantoms.conf" in err
+    assert "enforcement-verifier: UNBACKED: 1 machine entries carry enforcement: null" in err
+    assert "enforcement-verifier: PHANTOMS-MEASURED: 0 across 1 source roots" in err
+    assert "PHANTOMS-MEASURED: NOT MEASURED HERE" not in err
+
+
+def test_P01_checked_run_discloses_actual_measured_phantom_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("known-debt", {"file": "missing.py", "kind": "test"}),
+    )
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        known_phantoms=[
+            {
+                "source": "sample",
+                "id": "known-debt",
+                "claimed_path": "missing.py",
+                "evidence": "documented fixture debt",
+                "disposition": "genuine-phantom: fixture",
+            }
+        ],
+    )
+    err = capsys.readouterr().err
+
+    assert exit_code == 0
+    assert "enforcement-verifier: PHANTOM-DEBT: 1 documented in conf/known-phantoms.conf" in err
+    assert "enforcement-verifier: PHANTOMS-MEASURED: 1 across 1 source roots" in err
+
+
+def test_P01_summary_distinguishes_unmeasured_from_measured_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "checked-repo").mkdir(parents=True)
+    (projects / "checked-repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(
+        roots_path,
+        {"checked": "checked-repo", "unmeasured": "not-checked-out"},
+    )
+    write_records(
+        l1_dir,
+        "checked",
+        machine_record("checked", {"file": "control.py", "kind": "test"}),
+    )
+    write_records(
+        l1_dir,
+        "unmeasured",
+        machine_record("not-checked", {"file": "control.py", "kind": "test"}),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    err = capsys.readouterr().err
+    assert (
+        "summary (source machine judgment unbacked "
+        "phantoms[-=not-measured] unverifiable checked)"
+    ) in err
+    assert "  checked: 1 0 0 0 0 1" in err
+    assert "  unmeasured: 1 0 0 - 1 0" in err
+
+
+@pytest.mark.parametrize("checked", [False, True], ids=["skipped", "checked"])
+@pytest.mark.parametrize("ledger_state", ["missing", "malformed", "unreadable"])
+def test_P01_all_environment_shapes_load_known_phantoms_ledger(
+    ledger_state: str,
+    checked: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    if checked:
+        (projects / "repo" / "control.py").touch()
+        write_records(
+            l1_dir,
+            "sample",
+            machine_record("checked", {"file": "control.py", "kind": "test"}),
+        )
+    else:
+        write_records(l1_dir, "sample", machine_record("unbacked", None))
+    ledger_path = tmp_path / "known-phantoms.conf"
+
+    if ledger_state == "malformed":
+        ledger_path.write_text("{not-json}\n", encoding="utf-8")
+    elif ledger_state == "unreadable":
+        ledger_path.write_text("", encoding="utf-8")
+        original_read_text = Path.read_text
+
+        def deny_ledger_read(path: Path, *args: object, **kwargs: object) -> str:
+            if path == ledger_path:
+                raise PermissionError(13, "Permission denied", str(path))
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny_ledger_read)
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        known_phantoms_path=ledger_path,
+    )
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert str(ledger_path) in err
+    assert "known-phantoms.conf" in err

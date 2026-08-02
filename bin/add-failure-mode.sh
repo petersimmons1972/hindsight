@@ -9,18 +9,22 @@
 #   -c CLASS    Bug class letter (A-L) or explicit bug-class label.
 #   -i ISSUE    GitHub issue number (appended to the concrete-instance column).
 #   -a          Mark the row as automatable (`Auto?` = 🤖).
+#   --recurrence-of c-NNN|none
+#               Record the human recurrence decision after corpus review.
+#   --undo DIR  Restore every file recorded in a prior run's undo journal.
 #   -h          Show this help.
 #
 # TITLE is the check statement / rule (one sentence).
 # DESCRIPTION is optional concrete-instance context for the catalog row.
 #
-# A backup is made before every write.
-# The script appends only a canonical table row and relies on the catalog guard
-# to keep IDs unique and numerically ordered.
+# An undo journal is emitted before every write. Canonical adds also regenerate
+# the derived L1/L2 artifacts and reconcile them before reporting success.
 #
 # Environment:
 #   CATALOG     Override catalog path (default: <repo>/catalog/failure-modes.md).
 #               Useful for testing: CATALOG=/tmp/fms-test.md add-failure-mode.sh ...
+#   CORPUS      Override the L1 corpus directory consulted before writing.
+#   CLUSTERS    Override the L2 clusters artifact used to validate c-NNN.
 #
 # Install: ln -sf ~/projects/hindsight/bin/add-failure-mode.sh ~/bin/add-failure-mode.sh
 
@@ -35,24 +39,210 @@ usage() {
     exit 1
 }
 
+restore_journal() {
+    local journal="$1"
+    local manifest="$journal/manifest.tsv"
+    [[ -d "$journal" && -f "$manifest" && ! -L "$manifest" ]] || {
+        echo "ERROR: undo journal not found: $journal" >&2
+        return 1
+    }
+
+    local requested_catalog canonical_catalog requested_ledger
+    requested_catalog="$(realpath -m -- "$CATALOG")"
+    canonical_catalog="$(realpath -m -- "$REPO_ROOT/catalog/failure-modes.md")"
+    requested_ledger="$(dirname "$requested_catalog")/id-ledger.txt"
+
+    local -a expected=("$requested_catalog" "$requested_ledger")
+    if [[ "$requested_catalog" == "$canonical_catalog" ]]; then
+        expected+=(
+            "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
+            "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
+            "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+        )
+    fi
+
+    local -A allowed=() seen=()
+    local target
+    for target in "${expected[@]}"; do
+        target="$(realpath -m -- "$target")"
+        allowed["$target"]=1
+    done
+
+    local -a states=() targets=() backups=()
+    local state backup extra normalized line_number=0
+    while IFS=$'\t' read -r state target backup extra; do
+        line_number=$((line_number + 1))
+        [[ -z "$extra" && -n "$state" && -n "$target" && -n "$backup" ]] || {
+            echo "ERROR: malformed undo journal at line $line_number: $manifest" >&2
+            return 1
+        }
+        normalized="$(realpath -m -- "$target")"
+        [[ "$target" == "$normalized" && -n "${allowed[$normalized]:-}" ]] || {
+            echo "ERROR: undo journal target is not owned by this run: $target" >&2
+            return 1
+        }
+        [[ -z "${seen[$normalized]:-}" ]] || {
+            echo "ERROR: duplicate undo journal target: $target" >&2
+            return 1
+        }
+        case "$state" in
+            present)
+                [[ "$backup" =~ ^file-[0-9]+$ && -f "$journal/$backup" && ! -L "$journal/$backup" ]] || {
+                    echo "ERROR: undo snapshot missing: $journal/$backup" >&2
+                    return 1
+                }
+                ;;
+            absent)
+                [[ "$backup" == "-" ]] || {
+                    echo "ERROR: malformed absent-file entry in undo journal: $target" >&2
+                    return 1
+                }
+                ;;
+            *)
+                echo "ERROR: malformed undo journal: $manifest" >&2
+                return 1
+                ;;
+        esac
+        seen["$normalized"]=1
+        states+=("$state")
+        targets+=("$normalized")
+        backups+=("$backup")
+    done <"$manifest"
+
+    [[ ${#targets[@]} -eq ${#expected[@]} ]] || {
+        echo "ERROR: undo journal target set is incomplete" >&2
+        return 1
+    }
+    for target in "${expected[@]}"; do
+        target="$(realpath -m -- "$target")"
+        [[ -n "${seen[$target]:-}" ]] || {
+            echo "ERROR: undo journal is missing owned target: $target" >&2
+            return 1
+        }
+    done
+
+    local rollback_dir
+    rollback_dir="$(mktemp -d "${TMPDIR:-/tmp}/hindsight-undo-rollback.XXXXXX")"
+    local -a previous_states=() previous_backups=()
+    local index previous_backup
+    for index in "${!targets[@]}"; do
+        if [[ -e "${targets[$index]}" ]]; then
+            [[ -f "${targets[$index]}" && ! -L "${targets[$index]}" ]] || {
+                echo "ERROR: undo target is not a regular owned file: ${targets[$index]}" >&2
+                rm -r -- "$rollback_dir"
+                return 1
+            }
+            previous_backup="current-$index"
+            if ! cp "${targets[$index]}" "$rollback_dir/$previous_backup"; then
+                echo "ERROR: could not stage pre-undo recovery copy: ${targets[$index]}" >&2
+                rm -r -- "$rollback_dir"
+                return 1
+            fi
+            previous_states+=(present)
+            previous_backups+=("$previous_backup")
+        else
+            previous_states+=(absent)
+            previous_backups+=(-)
+        fi
+    done
+
+    local restore_status=0
+    for index in "${!targets[@]}"; do
+        if [[ "${states[$index]}" == "present" ]]; then
+            if cp "$journal/${backups[$index]}" "${targets[$index]}"; then
+                :
+            else
+                restore_status=$?
+                break
+            fi
+        else
+            if rm -f -- "${targets[$index]}"; then
+                :
+            else
+                restore_status=$?
+                break
+            fi
+        fi
+    done
+
+    if [[ $restore_status -ne 0 ]]; then
+        echo "ERROR: undo apply failed; restoring the complete pre-undo state" >&2
+        local rollback_failed=0
+        for index in "${!targets[@]}"; do
+            if [[ "${previous_states[$index]}" == "present" ]]; then
+                cp "$rollback_dir/${previous_backups[$index]}" "${targets[$index]}" || rollback_failed=1
+            else
+                rm -f -- "${targets[$index]}" || rollback_failed=1
+            fi
+        done
+        if [[ $rollback_failed -ne 0 ]]; then
+            echo "ERROR: compensating rollback was incomplete; recovery copies remain at $rollback_dir" >&2
+            return 1
+        fi
+        echo "add-failure-mode: compensating rollback restored pre-undo state; recovery copies remain at $rollback_dir" >&2
+        return "$restore_status"
+    fi
+
+    rm -r -- "$rollback_dir"
+    echo "add-failure-mode: restored files from $journal"
+}
+
+if [[ "${1:-}" == "--undo" ]]; then
+    [[ $# -eq 2 ]] || { echo "ERROR: --undo requires exactly one journal directory" >&2; exit 1; }
+    restore_journal "$2"
+    exit $?
+fi
+
 CLASS=""
 ISSUE=""
 AUTO=0
+RECURRENCE_OF=""
+RECURRENCE_SEEN=0
+POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -c|--class) CLASS="${2^^}"; shift 2 ;;
-        -i|--issue) ISSUE="$2"; shift 2 ;;
+        -c|--class)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
+            CLASS="${2^^}"; shift 2
+            ;;
+        -i|--issue)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
+            ISSUE="$2"; shift 2
+            ;;
         -a|--auto)  AUTO=1; shift ;;
+        --recurrence-of)
+            [[ $# -ge 2 ]] || {
+                echo "ERROR: --recurrence-of requires c-NNN or none" >&2
+                exit 1
+            }
+            [[ $RECURRENCE_SEEN -eq 0 ]] || {
+                echo "ERROR: --recurrence-of may be given once; accepted forms are c-NNN or none" >&2
+                exit 1
+            }
+            if [[ "$2" != "none" && ! "$2" =~ ^c-[0-9]{3}$ ]]; then
+                echo "ERROR: --recurrence-of accepts c-NNN or none" >&2
+                exit 1
+            fi
+            RECURRENCE_OF="$2"; shift 2
+            RECURRENCE_SEEN=1
+            ;;
         -h|--help)  usage ;;
-        --)         shift; break ;;
+        --)
+            shift
+            while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
+            ;;
         -*)         echo "unknown flag: $1" >&2; usage ;;
-        *)          break ;;
+        *)           POSITIONAL+=("$1"); shift ;;
     esac
 done
 
-TITLE="${1:-}"
-DESC="${2:-}"
+[[ ${#POSITIONAL[@]} -le 2 ]] || {
+    echo "ERROR: expected TITLE and optional DESCRIPTION" >&2
+    exit 1
+}
+TITLE="${POSITIONAL[0]:-}"
+DESC="${POSITIONAL[1]:-}"
 
 # If no title given, prompt when interactive, read line when piped
 if [[ -z "$TITLE" ]]; then
@@ -65,6 +255,94 @@ fi
 
 [[ -z "$TITLE" ]] && { echo "ERROR: title is required" >&2; exit 1; }
 [[ -f "$CATALOG" ]] || { echo "ERROR: catalog not found: $CATALOG" >&2; exit 1; }
+CATALOG="$(realpath -e -- "$CATALOG")"
+
+# Consult the corpus before interpreting the human recurrence decision. The
+# lookup is advisory: its status describes only whether measurement happened.
+LOOKUP_ARGS=()
+if [[ -n "${CORPUS+x}" ]]; then
+    LOOKUP_ARGS+=(--corpus "$CORPUS")
+fi
+LOOKUP_QUERY="$TITLE"
+[[ -n "$DESC" ]] && LOOKUP_QUERY="$TITLE $DESC"
+set +e
+LOOKUP_OUTPUT="$(python3 "$REPO_ROOT/bin/similar-causes.py" "${LOOKUP_ARGS[@]}" "$LOOKUP_QUERY" 2>&1)"
+LOOKUP_STATUS=$?
+set -e
+printf '%s\n' "$LOOKUP_OUTPUT"
+[[ $LOOKUP_STATUS -eq 0 ]] || exit "$LOOKUP_STATUS"
+
+CANDIDATE_SEEN=0
+while IFS= read -r line; do
+    if [[ "$line" =~ ^[0-9]+([.][0-9]+)?[[:space:]]*\| ]]; then
+        CANDIDATE_SEEN=1
+        break
+    fi
+done <<<"$LOOKUP_OUTPUT"
+[[ $CANDIDATE_SEEN -eq 1 ]] || echo "Corpus lookup measured; no advisory candidates found."
+
+if [[ $RECURRENCE_SEEN -eq 0 ]]; then
+    echo "ERROR: recurrence decision required; rerun with --recurrence-of c-NNN or --recurrence-of none" >&2
+    exit 1
+fi
+
+CLUSTERS="${CLUSTERS:-$REPO_ROOT/pipeline/L2/clusters.jsonl}"
+if [[ "$RECURRENCE_OF" != "none" ]]; then
+    python3 - "$CLUSTERS" "$RECURRENCE_OF" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+wanted = sys.argv[2]
+try:
+    lines = path.read_text(encoding="utf-8").splitlines()
+except OSError as exc:
+    raise SystemExit(f"ERROR: clusters artifact unavailable: {path}: {exc}")
+
+found = set()
+try:
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise ValueError(f"line {number} is not an object")
+        cluster_id = value.get("cluster_id")
+        if isinstance(cluster_id, str):
+            found.add(cluster_id)
+except (json.JSONDecodeError, ValueError) as exc:
+    raise SystemExit(f"ERROR: clusters artifact is malformed: {path}: {exc}")
+
+if wanted not in found:
+    raise SystemExit(f"ERROR: recurrence cluster {wanted} does not exist in clusters artifact: {path}")
+PYEOF
+fi
+
+CANONICAL_CATALOG="$(realpath -e -- "$REPO_ROOT/catalog/failure-modes.md")"
+RUN_FULL_LOOP=0
+if [[ "$CATALOG" == "$CANONICAL_CATALOG" ]]; then
+    RUN_FULL_LOOP=1
+    REQUIRED_TOPOLOGY=(
+        "$REPO_ROOT/../fleet/FAILURE-MODES.md"
+        "$REPO_ROOT/../fleet/orchestration/FAILURE-MODES.md"
+        "$REPO_ROOT/../fleet/CODING-INVARIANTS.md"
+        "$REPO_ROOT/../fleet/CODING-FAILURE-MODES.md"
+        "$REPO_ROOT/../claude-codex/docs/integration-failure-modes.md"
+        "$REPO_ROOT/../fleet-dispatch/migrations/0017_failure_class.sql"
+    )
+    TOPOLOGY_MISSING=0
+    for source_path in "${REQUIRED_TOPOLOGY[@]}"; do
+        if [[ ! -f "$source_path" || ! -r "$source_path" ]]; then
+            echo "ERROR: full-loop source unavailable: $source_path" >&2
+            TOPOLOGY_MISSING=1
+        fi
+    done
+    [[ $TOPOLOGY_MISSING -eq 0 ]] || {
+        echo "ERROR: canonical ingest requires the complete sibling-repository topology; no files were written" >&2
+        exit 1
+    }
+fi
 
 FM_ID="$(python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
 
@@ -95,13 +373,55 @@ AUTO_MARKER="Judgment"
 [[ $AUTO -eq 1 ]] && AUTO_MARKER="🤖"
 
 # Table row: | FM-NNN | Bug class | Concrete instance | Check that catches it | Auto? |
-TABLE_DESC="${DESC:-${TITLE}}"
+TABLE_DESC="${DESC:-${TITLE}} [recurrence_of: ${RECURRENCE_OF}]"
 [[ -n "$ISSUE" ]] && TABLE_DESC="${TABLE_DESC} (GitHub #${ISSUE})"
 TABLE_ROW="| ${FM_ID} | ${BUG_CLASS} | ${TABLE_DESC} | ${TITLE} | ${AUTO_MARKER} |"
 
-# ── Backup before write ───────────────────────────────────────────────────────
+# ── Undo journal before write ─────────────────────────────────────────────────
 
-cp "$CATALOG" "${CATALOG}.bak"
+LEDGER="$(dirname "$CATALOG")/id-ledger.txt"
+if [[ ! -f "$LEDGER" ]]; then
+    echo "ERROR: id ledger not found: $LEDGER" >&2
+    echo "  Restore it from git; do not regenerate it from the catalog." >&2
+    exit 1
+fi
+
+JOURNAL="$(mktemp -d "${TMPDIR:-/tmp}/hindsight-add-failure-mode.XXXXXX")"
+MANIFEST="$JOURNAL/manifest.tsv"
+SNAPSHOT_NUMBER=0
+snapshot_file() {
+    local target="$1"
+    local backup
+    SNAPSHOT_NUMBER=$((SNAPSHOT_NUMBER + 1))
+    backup="file-${SNAPSHOT_NUMBER}"
+    if [[ -f "$target" ]]; then
+        cp "$target" "$JOURNAL/$backup"
+        printf 'present\t%s\t%s\n' "$target" "$backup" >>"$MANIFEST"
+    else
+        printf 'absent\t%s\t-\n' "$target" >>"$MANIFEST"
+    fi
+}
+
+snapshot_file "$CATALOG"
+snapshot_file "$LEDGER"
+if [[ $RUN_FULL_LOOP -eq 1 ]]; then
+    snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
+    snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
+    snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+fi
+
+printf 'UNDO: CATALOG=%q bash %q --undo %q\n' "$CATALOG" "$0" "$JOURNAL"
+
+JOURNAL_READY=1
+rollback_on_error() {
+    local status=$?
+    if [[ $status -ne 0 && ${JOURNAL_READY:-0} -eq 1 ]]; then
+        echo "add-failure-mode: operation failed; applying undo journal" >&2
+        restore_journal "$JOURNAL" >&2 || true
+    fi
+    exit "$status"
+}
+trap rollback_on_error EXIT
 
 # ── Insert the canonical catalog row ───────────────────────────────────────────
 
@@ -134,22 +454,24 @@ PYEOF
 # script REFUSES when it is absent instead of regenerating it from the catalog:
 # reseeding from the current catalog would launder any deletion that had already
 # happened, which is precisely the failure the ledger exists to catch.
-LEDGER="$(dirname "$CATALOG")/id-ledger.txt"
-if [[ ! -f "$LEDGER" ]]; then
-  echo "ERROR: id ledger not found: $LEDGER" >&2
-  echo "  Restore it from git; do NOT regenerate it from the catalog -- a" >&2
-  echo "  regenerated baseline cannot detect a row that is already missing." >&2
-  cp "${CATALOG}.bak" "$CATALOG"
-  echo "  (catalog restored from ${CATALOG}.bak; no row was added)" >&2
-  exit 1
-fi
 printf '%s\n' "$FM_ID" >> "$LEDGER"
 
-python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
+if [[ $RUN_FULL_LOOP -eq 1 ]]; then
+    python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
+    python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
+    python3 "$REPO_ROOT/pipeline/cluster.py"
+    python3 "$REPO_ROOT/pipeline/reconcile_l1.py"
+else
+    python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
+fi
+
+JOURNAL_READY=0
+trap - EXIT
 
 # ── Report ────────────────────────────────────────────────────────────────────
 
 echo "add-failure-mode: ${FM_ID} appended to ${CATALOG}"
 echo "  class: ${BUG_CLASS}"
 [[ -n "$ISSUE" ]]  && echo "  issue: #${ISSUE}"
+echo "  recurrence_of: ${RECURRENCE_OF}"
 echo "  table:  ${TABLE_ROW}"

@@ -176,3 +176,60 @@ def test_duplicate_report_names_the_real_line_numbers() -> None:
     text = rows_text(["FM-02", "FM-02"])
     errors, _warnings = MODULE.validate_catalog(text, MODULE.parse_rows(text))
     assert any("duplicate canonical ID FM-02 on lines 1, 2" in e for e in errors), errors
+
+
+# --- Round-2 survivors: padding, grammar bounds, ledger end-anchor ----------
+
+
+def test_M16_legacy_row_id_is_rejected_whatever_the_cell_padding() -> None:
+    """S8/M16: HISTORICAL_SCHEME_RE must accept zero- and multi-space padding.
+
+    Hand-edited and tool-generated markdown routinely produce unpadded pipes.
+    A regex that only matches single-space cells reintroduces the legacy scheme
+    whose enforcement nearly lost FM-REC-01..11.
+    """
+    cases = [
+        "|FM-RC-01| legacy | row | id | Judgment |",
+        "|  FM-REC-07  | legacy | row | id | Judgment |",
+    ]
+    for extra_line in cases:
+        errors = _alias_errors(extra_line)
+        assert any("historical alias scheme" in e for e in errors), (
+            f"padding form not rejected: {extra_line!r} -> {errors}"
+        )
+
+
+def test_M15_single_digit_row_id_is_not_a_canonical_row() -> None:
+    """S11/M15: ROW_RE requires at least two digits ({2,3}).
+
+    Widening to {1,3} silently changes which rows count as canonical, which
+    shifts next_id, duplicate detection, and the append-only present-set.
+    Single-digit pseudo-rows must not parse as canonical — empty present set
+    against a ledger is fatal with the no-rows diagnostic.
+    """
+    catalog_body = "\n".join(
+        [
+            "| FM-1 | bug | class | evidence | Machine |",
+            "| FM-2 | bug | class | evidence | Machine |",
+        ]
+    )
+    # Unit path: parse_rows must see zero canonical rows.
+    assert MODULE.parse_rows(catalog_body) == []
+    errors, _ = MODULE.validate_catalog(catalog_body, MODULE.parse_rows(catalog_body))
+    assert any("no canonical FM rows found" in e for e in errors), errors
+
+
+def test_M14_trailing_garbage_on_a_ledger_line_is_rejected_cleanly(tmp_path: Path) -> None:
+    """S12/M14: ID_LEDGER_RE end-anchor rejects trailing junk.
+
+    Without `$`, `FM-02 retired-2026-08-01` is accepted and the sort key
+    `int(i.split("-")[1])` later raises an uncaught ValueError instead of the
+    intended `malformed ledger entry` diagnostic.
+    """
+    catalog = tmp_path / "failure-modes.md"
+    catalog.write_text(rows_text(["FM-01", "FM-02"]) + "\n")
+    (tmp_path / "id-ledger.txt").write_text("FM-01\nFM-02 retired-2026-08-01\n")
+
+    result = _run_guard(str(catalog))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "malformed ledger entry" in result.stderr, result.stderr

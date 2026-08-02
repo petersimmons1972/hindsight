@@ -65,6 +65,7 @@ setup() {
   # the "=== END UNDO ===" trailer still matched.
   [[ "$output" == *"git revert"* ]]
   [[ "$output" == *"gh pr reopen"* ]]
+  [[ "$output" == *"gh pr reopen 99"* ]]
   [[ "$output" == *"refs/heads/"* ]]
   # and it must precede the verdict line, not trail it
   undo_line=$(printf '%s\n' "$output" | grep -n "git revert" | head -1 | cut -d: -f1)
@@ -134,6 +135,14 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" != *"merged PR"* ]]
   [[ "$output" == *"merge failed (exit 1)"* ]]
+}
+
+@test "L5 pin: a failed gh pr merge relays its original exit code" {
+  _fake_gh 7
+  PATH="$FAKE_BIN:$PATH" run bash "$LAND" 99 --json-file "$FIXTURES/t1_all_success.json" --merge
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"merge failed (exit 7)"* ]]
+  [[ "$output" != *"merged PR"* ]]
 }
 
 @test "L13 (S8): the merge command is exactly 'pr merge <PR> --squash --delete-branch' — no --admin, no bypass of GitHub's own required-check enforcement" {

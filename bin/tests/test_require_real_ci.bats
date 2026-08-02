@@ -508,3 +508,89 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"PASS:"* ]]
 }
+
+# ---- F6: remaining ci-gate mutation survivors -----------------------------
+
+@test "R11 pin: lowercase legacy StatusContext state is not SUCCESS" {
+  legacy="$BATS_TEST_TMPDIR/lowercase_legacy_state.json"
+  printf '%s\n' '{"statusCheckRollup":[{"__typename":"StatusContext","context":"guard","state":"success"}]}' > "$legacy"
+  run "$SCRIPT" 999 --json-file "$legacy"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"legacy status context) is not SUCCESS (state='success')"* ]]
+}
+
+@test "R6 pin: a second positional argument is a usage error, never a replacement PR" {
+  run "$SCRIPT" 123 456 --json-file "$FIXTURES/t1_all_success.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unexpected extra argument: 456"* ]]
+}
+
+@test "R8 pin: contract FAIL verdict stays on stdout, never becomes an evaluator crash" {
+  run bash -c '"$1" "$2" --json-file "$3" 2>/dev/null' _ "$SCRIPT" 999 "$FIXTURES/t2_required_queued.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"FAIL: required check 'guard' is not complete"* ]]
+  [[ "$output" != *"undocumented code"* ]]
+}
+
+@test "R3 pin: exactly-at-window check is reported exceeded, not still starting up" {
+  # The evaluator reads its clock directly. Freeze that clock in a wrapper so
+  # this probes the equality boundary instead of a nearby, flaky wall-clock
+  # value; the real interpreter still evaluates the production program.
+  fixed_time="2026-08-01T12:00:00+00:00"
+  boundary="$BATS_TEST_TMPDIR/exact_wait_boundary.json"
+  printf '%s\n' '{"statusCheckRollup":[{"name":"guard","status":"QUEUED","conclusion":null,"startedAt":"2026-08-01T11:45:00Z"}]}' > "$boundary"
+  fake_bin="$BATS_TEST_TMPDIR/fixed-clock-bin"
+  mkdir -p "$fake_bin"
+  cat > "$fake_bin/python3" <<EOF
+#!/usr/bin/env bash
+if [ "\$#" -le 2 ]; then
+  exec /usr/bin/python3 "\$@"
+fi
+script="\$2"
+script="\$(printf '%s' "\$script" | sed "s|now = datetime.now(timezone.utc)|now = datetime.fromisoformat('$fixed_time')|")"
+exec /usr/bin/python3 -c "\$script" "\${@:3}"
+EOF
+  chmod +x "$fake_bin/python3"
+  PATH="$fake_bin:$PATH" run "$SCRIPT" 999 --json-file "$boundary" --max-wait-minutes 15
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"15.0m elapsed, exceeded --max-wait-minutes=15"* ]]
+  [[ "$output" != *"still starting up"* ]]
+}
+
+@test "R4 pin: createdAt supplies the stuck-check elapsed diagnostic when startedAt is absent" {
+  created_only="$BATS_TEST_TMPDIR/created_at_only.json"
+  printf '%s\n' '{"statusCheckRollup":[{"name":"guard","status":"QUEUED","conclusion":null,"createdAt":"2020-01-01T00:00:00Z"}]}' > "$created_only"
+  run "$SCRIPT" 999 --json-file "$created_only" --max-wait-minutes 15
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"m elapsed, exceeded --max-wait-minutes=15"* ]]
+}
+
+@test "R5 pin: empty --max-wait-minutes is a documented usage error" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --max-wait-minutes ''
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"must be a non-negative integer, got:"* ]]
+  [[ "$output" != *"undocumented code"* ]]
+}
+
+@test "R7 pin: an empty JSON file reports the explicit no-JSON guard" {
+  empty="$BATS_TEST_TMPDIR/empty_rollup.json"
+  : > "$empty"
+  run "$SCRIPT" 999 --json-file "$empty"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no JSON produced (empty --json-file or empty gh response)"* ]]
+}
+
+@test "R10 pin: non-dict rollup siblings are ignored rather than crashing evaluation" {
+  mixed="$BATS_TEST_TMPDIR/null_sibling.json"
+  printf '%s\n' '{"statusCheckRollup":[null,{"name":"guard","status":"COMPLETED","conclusion":"SUCCESS"}]}' > "$mixed"
+  run "$SCRIPT" 999 --json-file "$mixed"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PASS: all required checks (guard)"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "R15 pin: exactly two duplicate names report their failed-entry count" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t26_duplicate_guard_success_then_failure.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"1 of 2 entries named 'guard' failed the contract"* ]]
+}

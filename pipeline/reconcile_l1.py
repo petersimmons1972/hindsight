@@ -14,8 +14,8 @@ each source by regex, and any ID absent from the JSONL is reported. Sources whos
 entries are machine-enumerable are extracted mechanically outright -- no model in
 the loop -- because their structure already encodes the answer.
 
-Usage:  python3 reconcile_l1.py [--json]
-Exit 1 if any enumerable source is short.
+Usage:  python3 reconcile_l1.py [--json] [--allow-partial]
+Exit 0 only for COMPLETE, or for PARTIAL when explicitly waived.
 """
 from __future__ import annotations
 
@@ -108,6 +108,11 @@ def extracted(slug: str) -> tuple[set[str], int]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="accept PARTIAL after printing how many sources were not checked",
+    )
     args = ap.parse_args()
 
     report, short = [], False
@@ -131,6 +136,15 @@ def main() -> int:
                        "covered": len(truth) - len(missing), "coverage_pct": cov,
                        "resolved": resolved, "missing": missing})
     n_unresolved = len(ENUMERABLE) - n_resolved
+    n_missing = sum(len(r["missing"]) for r in report)
+    if n_resolved == 0:
+        verdict = "UNVERIFIED"
+    elif short:
+        verdict = "SHORT"
+    elif n_unresolved:
+        verdict = "PARTIAL"
+    else:
+        verdict = "COMPLETE"
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -142,15 +156,6 @@ def main() -> int:
             flag = "" if r["resolved"] else "  [UNRESOLVED -- source not on disk, nothing compared]"
             print(f"{r['slug']:<28}{r['ground_truth']:>6}{r['jsonl_lines']:>7}"
                   f"{cov_s}%  {m}{flag}")
-        n_missing = sum(len(r["missing"]) for r in report)
-        if n_resolved == 0:
-            verdict = "UNVERIFIED"
-        elif short:
-            verdict = "SHORT"
-        elif n_unresolved:
-            verdict = "PARTIAL"
-        else:
-            verdict = "COMPLETE"
         print(f"\n{verdict}: {n_missing} enumerable entries unaccounted for"
               f" ({n_resolved}/{len(ENUMERABLE)} sources resolved)")
         if verdict == "UNVERIFIED":
@@ -171,9 +176,15 @@ def main() -> int:
             "  100% coverage. They were recovered only because a model pass saw them.\n"
             "  COMPLETE means 'no enumerable entry is missing', never 'nothing is missing'."
         )
-    if n_resolved == 0:
-        return 1
-    return 1 if short else 0
+    if verdict == "PARTIAL" and args.allow_partial:
+        stream = sys.stderr if args.json else sys.stdout
+        print(
+            f"WAIVER: --allow-partial accepts this PARTIAL result; "
+            f"{n_unresolved} unresolved source(s) were NOT checked.",
+            file=stream,
+        )
+        return 0
+    return 0 if verdict == "COMPLETE" else 1
 
 
 if __name__ == "__main__":

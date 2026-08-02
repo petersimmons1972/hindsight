@@ -84,6 +84,19 @@ def run_main(monkeypatch, *argv: str) -> int:
     return reconcile_l1.main()
 
 
+def build_partial_corpus(tmp_path: Path, monkeypatch) -> None:
+    """Build one covered source and one source that is not on disk."""
+    build_corpus(
+        tmp_path,
+        monkeypatch,
+        {
+            "real": (("OPS-1",), ("OPS-1",)),
+            "ghost": (("CI-1",), None),
+        },
+    )
+    (tmp_path / "src" / "ghost.md").unlink()
+
+
 def test_shortfall_prints_short_and_exits_1(tmp_path: Path, monkeypatch, capsys) -> None:
     """A missing entry must be both named SHORT and exit 1 -- not one or the other."""
     build_corpus(
@@ -355,20 +368,7 @@ def test_some_sources_unresolved_is_PARTIAL_not_COMPLETE(tmp_path, monkeypatch, 
     its own test at the moment it is added. I introduced PARTIAL and asserted
     only the endpoints either side of it.
     """
-    l1 = tmp_path / "L1"
-    l1.mkdir()
-    (l1 / "real.jsonl").write_text('{"id": "OPS-1"}\n', encoding="utf-8")
-    md = tmp_path / "real.md"
-    md.write_text("## OPS-1\n", encoding="utf-8")
-    monkeypatch.setattr(reconcile_l1, "L1", l1)
-    monkeypatch.setattr(
-        reconcile_l1,
-        "ENUMERABLE",
-        {
-            "real": ([md], HEADING_RX),
-            "ghost": ([tmp_path / "absent.md"], HEADING_RX),
-        },
-    )
+    build_partial_corpus(tmp_path, monkeypatch)
     status = run_main(monkeypatch)
     out = capsys.readouterr().out
     verdict = [ln for ln in out.splitlines() if "unaccounted for" in ln]
@@ -376,7 +376,73 @@ def test_some_sources_unresolved_is_PARTIAL_not_COMPLETE(tmp_path, monkeypatch, 
     assert verdict[0].startswith("PARTIAL"), verdict[0]
     assert "(1/2 sources resolved)" in verdict[0], verdict[0]
     assert "were NOT checked" in out
-    assert status == 0, "a partial run with no shortfall still exits 0"
+    assert status == 1, "PARTIAL must fail unless explicitly waived"
+
+
+def test_allow_partial_waives_partial_and_names_unchecked_count(tmp_path, monkeypatch, capsys) -> None:
+    """The opt-out applies to PARTIAL only and must declare what it waived."""
+    build_partial_corpus(tmp_path, monkeypatch)
+
+    status = run_main(monkeypatch, "--allow-partial")
+    out = capsys.readouterr().out
+
+    assert status == 0
+    assert "PARTIAL: 0 enumerable entries unaccounted for (1/2 sources resolved)" in out
+    assert (
+        "WAIVER: --allow-partial accepts this PARTIAL result; "
+        "1 unresolved source(s) were NOT checked."
+    ) in out
+
+
+def test_allow_partial_does_not_waive_short(tmp_path, monkeypatch, capsys) -> None:
+    """A real shortfall remains fatal when the PARTIAL opt-out is present."""
+    build_corpus(
+        tmp_path,
+        monkeypatch,
+        {"real": (("OPS-1", "OPS-2"), ("OPS-1",))},
+    )
+
+    status = run_main(monkeypatch, "--allow-partial")
+    out = capsys.readouterr().out
+
+    assert status == 1
+    assert "SHORT: 1 enumerable entries unaccounted for" in out
+    assert "WAIVER:" not in out
+
+
+def test_allow_partial_does_not_waive_unverified(tmp_path, monkeypatch, capsys) -> None:
+    """A zero-source run remains fatal when the PARTIAL opt-out is present."""
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(
+        reconcile_l1,
+        "ENUMERABLE",
+        {"ghost": ([tmp_path / "does-not-exist.md"], HEADING_RX)},
+    )
+
+    status = run_main(monkeypatch, "--allow-partial")
+    out = capsys.readouterr().out
+
+    assert status == 1
+    assert "UNVERIFIED: 0 enumerable entries unaccounted for" in out
+    assert "WAIVER:" not in out
+
+
+def test_allow_partial_is_a_noop_for_complete(tmp_path, monkeypatch, capsys) -> None:
+    """COMPLETE succeeds on its own and must not claim to need a waiver."""
+    build_corpus(
+        tmp_path,
+        monkeypatch,
+        {"real": (("OPS-1",), ("OPS-1",))},
+    )
+
+    status = run_main(monkeypatch, "--allow-partial")
+    out = capsys.readouterr().out
+
+    assert status == 0
+    assert "COMPLETE: 0 enumerable entries unaccounted for" in out
+    assert "WAIVER:" not in out
 
 
 def test_shortfall_outranks_partial_when_another_source_is_unresolved(tmp_path, monkeypatch, capsys) -> None:

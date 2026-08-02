@@ -87,6 +87,21 @@ file_digest() {
   [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
 }
 
+@test "an invalid recurrence occurrence cannot be hidden by a later valid occurrence" {
+  catalog_before="$(file_digest "$CATALOG")"
+  ledger_before="$(file_digest "$LEDGER")"
+
+  run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
+    bash "$TOOL" -c A "repeated recurrence option" \
+      --recurrence-of bogus --recurrence-of none
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"c-NNN"* ]]
+  [[ "$output" == *"none"* ]]
+  [ "$(file_digest "$CATALOG")" = "$catalog_before" ]
+  [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
+}
+
 @test "empty missing and unreadable corpora fail loudly before any write" {
   empty="$WORK/empty"
   unreadable="$WORK/unreadable"
@@ -140,10 +155,10 @@ PY
   cat >"$STAGE/pipeline/extract_mechanical.py" <<'PY'
 import os
 from pathlib import Path
-catalog = Path(os.environ["CATALOG"])
+root = Path(__file__).resolve().parents[1]
+catalog = root / "catalog/failure-modes.md"
 if "FM-002" not in catalog.read_text():
     raise SystemExit("catalog row missing before extract")
-root = Path(__file__).resolve().parents[1]
 (root / "pipeline/L1/homelab-canon.jsonl").write_text("new-l1-canon\n")
 (root / "pipeline/L1/fleet-dispatch-schema.jsonl").write_text("new-l1-schema\n")
 with open(os.environ["TRACE"], "a") as handle:
@@ -214,4 +229,32 @@ PY
   [ "$status" -eq 0 ]
   [ ! -e "$trace" ]
   [ -z "$(git -C "$STAGE" status --short)" ]
+}
+
+@test "pre-commit fails loud until regenerated artifacts are staged" {
+  make_staged_repo
+  git -C "$STAGE" init -q
+  git -C "$STAGE" config user.name fixture
+  git -C "$STAGE" config user.email fixture@example.invalid
+  git -C "$STAGE" add .
+  git -C "$STAGE" commit -q --no-verify -m baseline
+  printf '%s\n' '| FM-002 | A | new | new | Judgment |' >>"$STAGE/catalog/failure-modes.md"
+  printf '%s\n' 'FM-002' >>"$STAGE/catalog/id-ledger.txt"
+  git -C "$STAGE" add catalog/failure-modes.md catalog/id-ledger.txt
+  trace="$WORK/changed-trace"
+
+  run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pipeline/L1/homelab-canon.jsonl"* ]]
+  [[ "$output" == *"pipeline/L1/fleet-dispatch-schema.jsonl"* ]]
+  [[ "$output" == *"pipeline/L2/clusters.jsonl"* ]]
+  [[ "$output" == *"stage"* ]]
+
+  git -C "$STAGE" add pipeline/L1/homelab-canon.jsonl \
+    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/clusters.jsonl
+  : >"$trace"
+  run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
+  [ "$status" -eq 0 ]
+  [ -z "$(git -C "$STAGE" diff --name-only)" ]
 }

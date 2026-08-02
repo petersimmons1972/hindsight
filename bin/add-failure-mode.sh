@@ -78,6 +78,7 @@ CLASS=""
 ISSUE=""
 AUTO=0
 RECURRENCE_OF=""
+RECURRENCE_SEEN=0
 POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
@@ -96,7 +97,16 @@ while [[ $# -gt 0 ]]; do
                 echo "ERROR: --recurrence-of requires c-NNN or none" >&2
                 exit 1
             }
+            [[ $RECURRENCE_SEEN -eq 0 ]] || {
+                echo "ERROR: --recurrence-of may be given once; accepted forms are c-NNN or none" >&2
+                exit 1
+            }
+            if [[ "$2" != "none" && ! "$2" =~ ^c-[0-9]{3}$ ]]; then
+                echo "ERROR: --recurrence-of accepts c-NNN or none" >&2
+                exit 1
+            fi
             RECURRENCE_OF="$2"; shift 2
+            RECURRENCE_SEEN=1
             ;;
         -h|--help)  usage ;;
         --)
@@ -151,12 +161,8 @@ while IFS= read -r line; do
 done <<<"$LOOKUP_OUTPUT"
 [[ $CANDIDATE_SEEN -eq 1 ]] || echo "Corpus lookup measured; no advisory candidates found."
 
-if [[ -z "$RECURRENCE_OF" ]]; then
+if [[ $RECURRENCE_SEEN -eq 0 ]]; then
     echo "ERROR: recurrence decision required; rerun with --recurrence-of c-NNN or --recurrence-of none" >&2
-    exit 1
-fi
-if [[ "$RECURRENCE_OF" != "none" && ! "$RECURRENCE_OF" =~ ^c-[0-9]{3}$ ]]; then
-    echo "ERROR: --recurrence-of accepts c-NNN or none" >&2
     exit 1
 fi
 
@@ -276,7 +282,10 @@ PYEOF
 printf '%s\n' "$FM_ID" >> "$LEDGER"
 
 if [[ $RUN_FULL_LOOP -eq 1 ]]; then
-    bash "$REPO_ROOT/.githooks/pre-commit"
+    python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
+    python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
+    python3 "$REPO_ROOT/pipeline/cluster.py"
+    python3 "$REPO_ROOT/pipeline/reconcile_l1.py"
 else
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
 fi

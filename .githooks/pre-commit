@@ -16,3 +16,16 @@ fi
 python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
 python3 "$REPO_ROOT/pipeline/cluster.py"
 python3 "$REPO_ROOT/pipeline/reconcile_l1.py"
+
+GENERATED=(
+    pipeline/L1/homelab-canon.jsonl
+    pipeline/L1/fleet-dispatch-schema.jsonl
+    pipeline/L2/clusters.jsonl
+)
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    && ! git -C "$REPO_ROOT" diff --quiet -- "${GENERATED[@]}"; then
+    echo "ERROR: ingest regenerated required artifacts that are not staged." >&2
+    echo "Stage these exact files, review them, and retry the commit:" >&2
+    printf '  %s\n' "${GENERATED[@]}" >&2
+    exit 1
+fi

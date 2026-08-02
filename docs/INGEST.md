@@ -33,5 +33,14 @@ For the canonical catalog, one invocation completes the full loop in order:
 
 When the catalog or ledger changes, the repository pre-commit hook runs the
 same guard, extraction, L2, and reconciliation sequence so partial ingest state
-cannot be committed. Other commits run the guard without rewriting derived
-artifacts.
+cannot be committed. If regeneration changes a required derived artifact, the
+hook exits nonzero and requires these exact files to be reviewed and staged:
+
+```bash
+git add pipeline/L1/homelab-canon.jsonl \
+  pipeline/L1/fleet-dispatch-schema.jsonl \
+  pipeline/L2/clusters.jsonl
+```
+
+Retry the commit after staging them. Other commits run the guard without
+rewriting derived artifacts.

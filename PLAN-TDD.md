@@ -571,11 +571,13 @@ Not a claim, in every case a command. Nothing below is satisfied by a review pas
 |---|---|---|
 | V1 | CI actually executes | `gh run list --repo petersimmons1972/hindsight --json status,conclusion` → a `completed` run with non-empty conclusion |
 | V2 | No check is trusted while blank | `bash bin/require-real-ci.sh <pr>` |
+| V2b | **R7 is a mechanism, not a sentence** | `bash bin/land.sh <pr>` refuses unless V2 exits 0; dry-run is the default; recovery commands print *before* the merge. Pinned by `bats bin/tests/test_land.bats` (9 tests) and mutation-tested (7 mutants, all caught). From Phase 0 until 2026-08-02 `require-real-ci.sh` gated **nothing** — it was exercised only by its own suite |
 | V3 | New tests discriminate | `bash bin/verify-discriminating.sh` → `discriminating: N/N` |
 | V4 | Catalog is sound | `python3 guard/failure_mode_catalog_guard.py` → OK |
 | V5 | Corpus coverage holds | `python3 pipeline/reconcile_l1.py` → **COMPLETE**, exit 0 (note its own printed scope limit: it cannot see non-enumerable content, and says so) |
 | V6 | Recurrence is measured, not asserted | `pytest pipeline/tests/test_recurrence_report.py` — ground-truth families surface |
-| V7 | **The decisive test** | reworded known FM is rejected naming its cluster; `--force-new-cause` lands it with justification recorded |
+| V7 | ~~**The decisive test**~~ **VOID — the capability it tests was cancelled by measurement** | Was: *reworded known FM is rejected naming its cluster; `--force-new-cause` lands it with justification recorded.* Both flags are **deleted**; no implementation can satisfy this row, so leaving it would assert a test that can never pass. Replaced by V7b |
+| V7b | The lookup surfaces prior art and **claims nothing more** | `bash bin/tests/test_similar_causes.sh` → 27/27. Pins: never exit non-zero on a match (T21 closes the flag-shaped sneak-back), never emit verdict language, the advisory header is unconditional, truncation past 10 is disclosed, read-only, deterministic — and **the two zeros are separated**: empty/unreadable corpus fails loud (T05–T07) while zero candidates from a *populated* corpus is a legitimate exit 0 (T08) |
 | V8 | No phantom mechanisms | `--verify-enforcement` → 0 phantoms |
 | V9 | Sync is safe | dry-run resolves all 12 consumers; unrecognised arg aborts; undo journal restores |
 | V10 | Provenance | no L3 law has single-repo provenance |

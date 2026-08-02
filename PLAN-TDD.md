@@ -354,6 +354,38 @@ retracted. Measured:
 - The packet suite is currently **red** (1 failed / 7 passed), and concrete FP and FN inversions
   were supplied with inputs.
 
+### MEASURED CEILING — the clustering engine cannot do what C3 needs *(2026-08-02)*
+
+C1c/C1d produced a **sound, honest, well-guarded lexical near-duplicate clusterer** — the
+adversarial verifier's own words, and it explicitly recorded "this is not a manufactured green".
+The default path gives 179 clusters, largest 7.1%, all ground-truth families recovered, all
+C(5,2) family pairs disjoint, real degeneracy bounds, loud failure on bad input. Keep all of it.
+
+**But it cannot recognise a reworded failure mode, and that is C3's entire job.**
+
+| evaluation set | backend | recall | distractor FP |
+|---|---|---|---|
+| holdout A, 35 paraphrases (blind author) | TF-IDF | **0/35** | 0/6 |
+| holdout A, 35 paraphrases | live dense (bge-m3) | **0/35** | 0/6 |
+| holdout B, 30 paraphrases (adversarial author) | TF-IDF | **1/30** | 0/6 |
+| holdout B, 30 paraphrases | live dense | **1/30** | 0/6 |
+
+**1 of 77 blind-authored paraphrases reaches any real corpus entry.** Both sets were written by
+agents that never read the marker definitions; holdout A shares **zero 5-grams** with the corpus
+or the test file. A dense-weight × threshold sweep (0.10–1.00 × 0.20–0.35) against the live
+embedder moves it nowhere without breaking ground-truth precision or collapsing the corpus. The
+author locked `0/35` as an **exact-match assertion** rather than a `>= 0` floor, so drift forces
+conscious re-measurement — that is the right way to record a ceiling.
+
+At that recall C3 would miss ~97% of reworded duplicates **while implying it catches them** —
+which is precisely the failure family this repository exists to catalogue. Average-link over
+blended cosine of hashed lexical features plus hand-written regexes cannot carry this task, and
+widening the regexes only re-commits the defect C1d was built to close.
+
+**Phase 3 therefore does not open on a repair. `C1e` is a measurement with a pre-registered
+decision rule** (retrieval-ranking vs structured cause-shape extraction vs assisted-review vs
+descope). Whichever branch fires, the honest limitation statement ships with the numbers.
+
 **Phase 3 does not open until C1c is CONFIRMED_GOOD.** This is the plan's own pre-existing gate
 ("if the report does not surface the known clusters, clustering is wrong and later waves must not
 proceed"), enforced for the first time by evidence rather than assertion.

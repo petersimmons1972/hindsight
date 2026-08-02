@@ -9,18 +9,21 @@
 #   -c CLASS    Bug class letter (A-L) or explicit bug-class label.
 #   -i ISSUE    GitHub issue number (appended to the concrete-instance column).
 #   -a          Mark the row as automatable (`Auto?` = 🤖).
+#   --recurrence-of c-NNN|none
+#               Record the human recurrence decision after corpus review.
+#   --undo DIR  Restore every file recorded in a prior run's undo journal.
 #   -h          Show this help.
 #
 # TITLE is the check statement / rule (one sentence).
 # DESCRIPTION is optional concrete-instance context for the catalog row.
 #
-# A backup is made before every write.
-# The script appends only a canonical table row and relies on the catalog guard
-# to keep IDs unique and numerically ordered.
+# An undo journal is emitted before every write. Canonical adds also regenerate
+# the derived L1/L2 artifacts and reconcile them before reporting success.
 #
 # Environment:
 #   CATALOG     Override catalog path (default: <repo>/catalog/failure-modes.md).
 #               Useful for testing: CATALOG=/tmp/fms-test.md add-failure-mode.sh ...
+#   CORPUS      Override the L1 corpus directory consulted before writing.
 #
 # Install: ln -sf ~/projects/hindsight/bin/add-failure-mode.sh ~/bin/add-failure-mode.sh
 
@@ -35,24 +38,82 @@ usage() {
     exit 1
 }
 
+restore_journal() {
+    local journal="$1"
+    local manifest="$journal/manifest.tsv"
+    [[ -d "$journal" && -f "$manifest" ]] || {
+        echo "ERROR: undo journal not found: $journal" >&2
+        return 1
+    }
+
+    local state target backup
+    while IFS=$'\t' read -r state target backup; do
+        case "$state" in
+            present)
+                [[ -f "$journal/$backup" ]] || {
+                    echo "ERROR: undo snapshot missing: $journal/$backup" >&2
+                    return 1
+                }
+                cp "$journal/$backup" "$target"
+                ;;
+            absent)
+                rm -f -- "$target"
+                ;;
+            *)
+                echo "ERROR: malformed undo journal: $manifest" >&2
+                return 1
+                ;;
+        esac
+    done <"$manifest"
+    echo "add-failure-mode: restored files from $journal"
+}
+
+if [[ "${1:-}" == "--undo" ]]; then
+    [[ $# -eq 2 ]] || { echo "ERROR: --undo requires exactly one journal directory" >&2; exit 1; }
+    restore_journal "$2"
+    exit $?
+fi
+
 CLASS=""
 ISSUE=""
 AUTO=0
+RECURRENCE_OF=""
+POSITIONAL=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        -c|--class) CLASS="${2^^}"; shift 2 ;;
-        -i|--issue) ISSUE="$2"; shift 2 ;;
+        -c|--class)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
+            CLASS="${2^^}"; shift 2
+            ;;
+        -i|--issue)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
+            ISSUE="$2"; shift 2
+            ;;
         -a|--auto)  AUTO=1; shift ;;
+        --recurrence-of)
+            [[ $# -ge 2 ]] || {
+                echo "ERROR: --recurrence-of requires c-NNN or none" >&2
+                exit 1
+            }
+            RECURRENCE_OF="$2"; shift 2
+            ;;
         -h|--help)  usage ;;
-        --)         shift; break ;;
+        --)
+            shift
+            while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
+            ;;
         -*)         echo "unknown flag: $1" >&2; usage ;;
-        *)          break ;;
+        *)           POSITIONAL+=("$1"); shift ;;
     esac
 done
 
-TITLE="${1:-}"
-DESC="${2:-}"
+[[ ${#POSITIONAL[@]} -le 2 ]] || {
+    echo "ERROR: expected TITLE and optional DESCRIPTION" >&2
+    exit 1
+}
+TITLE="${POSITIONAL[0]:-}"
+DESC="${POSITIONAL[1]:-}"
 
 # If no title given, prompt when interactive, read line when piped
 if [[ -z "$TITLE" ]]; then
@@ -65,6 +126,39 @@ fi
 
 [[ -z "$TITLE" ]] && { echo "ERROR: title is required" >&2; exit 1; }
 [[ -f "$CATALOG" ]] || { echo "ERROR: catalog not found: $CATALOG" >&2; exit 1; }
+
+# Consult the corpus before interpreting the human recurrence decision. The
+# lookup is advisory: its status describes only whether measurement happened.
+LOOKUP_ARGS=()
+if [[ -n "${CORPUS+x}" ]]; then
+    LOOKUP_ARGS+=(--corpus "$CORPUS")
+fi
+LOOKUP_QUERY="$TITLE"
+[[ -n "$DESC" ]] && LOOKUP_QUERY="$TITLE $DESC"
+set +e
+LOOKUP_OUTPUT="$(python3 "$REPO_ROOT/bin/similar-causes.py" "${LOOKUP_ARGS[@]}" "$LOOKUP_QUERY" 2>&1)"
+LOOKUP_STATUS=$?
+set -e
+printf '%s\n' "$LOOKUP_OUTPUT"
+[[ $LOOKUP_STATUS -eq 0 ]] || exit "$LOOKUP_STATUS"
+
+CANDIDATE_SEEN=0
+while IFS= read -r line; do
+    if [[ "$line" =~ ^[0-9]+([.][0-9]+)?[[:space:]]*\| ]]; then
+        CANDIDATE_SEEN=1
+        break
+    fi
+done <<<"$LOOKUP_OUTPUT"
+[[ $CANDIDATE_SEEN -eq 1 ]] || echo "Corpus lookup measured; no advisory candidates found."
+
+if [[ -z "$RECURRENCE_OF" ]]; then
+    echo "ERROR: recurrence decision required; rerun with --recurrence-of c-NNN or --recurrence-of none" >&2
+    exit 1
+fi
+if [[ "$RECURRENCE_OF" != "none" && ! "$RECURRENCE_OF" =~ ^c-[0-9]{3}$ ]]; then
+    echo "ERROR: --recurrence-of accepts c-NNN or none" >&2
+    exit 1
+fi
 
 FM_ID="$(python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
 
@@ -95,13 +189,58 @@ AUTO_MARKER="Judgment"
 [[ $AUTO -eq 1 ]] && AUTO_MARKER="🤖"
 
 # Table row: | FM-NNN | Bug class | Concrete instance | Check that catches it | Auto? |
-TABLE_DESC="${DESC:-${TITLE}}"
+TABLE_DESC="${DESC:-${TITLE}} [recurrence_of: ${RECURRENCE_OF}]"
 [[ -n "$ISSUE" ]] && TABLE_DESC="${TABLE_DESC} (GitHub #${ISSUE})"
 TABLE_ROW="| ${FM_ID} | ${BUG_CLASS} | ${TABLE_DESC} | ${TITLE} | ${AUTO_MARKER} |"
 
-# ── Backup before write ───────────────────────────────────────────────────────
+# ── Undo journal before write ─────────────────────────────────────────────────
 
-cp "$CATALOG" "${CATALOG}.bak"
+LEDGER="$(dirname "$CATALOG")/id-ledger.txt"
+if [[ ! -f "$LEDGER" ]]; then
+    echo "ERROR: id ledger not found: $LEDGER" >&2
+    echo "  Restore it from git; do not regenerate it from the catalog." >&2
+    exit 1
+fi
+
+JOURNAL="$(mktemp -d "${TMPDIR:-/tmp}/hindsight-add-failure-mode.XXXXXX")"
+MANIFEST="$JOURNAL/manifest.tsv"
+SNAPSHOT_NUMBER=0
+snapshot_file() {
+    local target="$1"
+    local backup
+    SNAPSHOT_NUMBER=$((SNAPSHOT_NUMBER + 1))
+    backup="file-${SNAPSHOT_NUMBER}"
+    if [[ -f "$target" ]]; then
+        cp "$target" "$JOURNAL/$backup"
+        printf 'present\t%s\t%s\n' "$target" "$backup" >>"$MANIFEST"
+    else
+        printf 'absent\t%s\t-\n' "$target" >>"$MANIFEST"
+    fi
+}
+
+snapshot_file "$CATALOG"
+snapshot_file "$LEDGER"
+CANONICAL_CATALOG="$REPO_ROOT/catalog/failure-modes.md"
+RUN_FULL_LOOP=0
+if [[ "$CATALOG" == "$CANONICAL_CATALOG" ]]; then
+    RUN_FULL_LOOP=1
+    snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
+    snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
+    snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+fi
+
+printf 'UNDO: bash %q --undo %q\n' "$0" "$JOURNAL"
+
+JOURNAL_READY=1
+rollback_on_error() {
+    local status=$?
+    if [[ $status -ne 0 && ${JOURNAL_READY:-0} -eq 1 ]]; then
+        echo "add-failure-mode: operation failed; applying undo journal" >&2
+        restore_journal "$JOURNAL" >&2 || true
+    fi
+    exit "$status"
+}
+trap rollback_on_error EXIT
 
 # ── Insert the canonical catalog row ───────────────────────────────────────────
 
@@ -134,22 +273,21 @@ PYEOF
 # script REFUSES when it is absent instead of regenerating it from the catalog:
 # reseeding from the current catalog would launder any deletion that had already
 # happened, which is precisely the failure the ledger exists to catch.
-LEDGER="$(dirname "$CATALOG")/id-ledger.txt"
-if [[ ! -f "$LEDGER" ]]; then
-  echo "ERROR: id ledger not found: $LEDGER" >&2
-  echo "  Restore it from git; do NOT regenerate it from the catalog -- a" >&2
-  echo "  regenerated baseline cannot detect a row that is already missing." >&2
-  cp "${CATALOG}.bak" "$CATALOG"
-  echo "  (catalog restored from ${CATALOG}.bak; no row was added)" >&2
-  exit 1
-fi
 printf '%s\n' "$FM_ID" >> "$LEDGER"
 
-python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
+if [[ $RUN_FULL_LOOP -eq 1 ]]; then
+    bash "$REPO_ROOT/.githooks/pre-commit"
+else
+    python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
+fi
+
+JOURNAL_READY=0
+trap - EXIT
 
 # ── Report ────────────────────────────────────────────────────────────────────
 
 echo "add-failure-mode: ${FM_ID} appended to ${CATALOG}"
 echo "  class: ${BUG_CLASS}"
 [[ -n "$ISSUE" ]]  && echo "  issue: #${ISSUE}"
+echo "  recurrence_of: ${RECURRENCE_OF}"
 echo "  table:  ${TABLE_ROW}"

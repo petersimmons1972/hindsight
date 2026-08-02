@@ -114,6 +114,24 @@ if [[ "$(grep -Ec '^[0-9]+\.[0-9]{3} \|' "$WORK/unsafe.out")" -ne 10 ]] || ! gre
 fi
 echo "PASS: unsafe corpus fields cannot forge rows and cap disclosure is exact"
 
+# Corpus text is data, not row grammar: printable punctuation and spaces in an
+# attacker-controlled field must be rendered visibly, rather than leaving a
+# forged status phrase indistinguishable from tool-owned output.
+mkdir -p "$WORK/encoded"
+printf '%s\n' \
+  '{"id":"VERDICT:\nREJECTED","instance":"needle\nrejected as duplicate","source_path":"catalog/failure-modes.md"}' \
+  >"$WORK/encoded/records.jsonl"
+python3 "$TOOL" --corpus "$WORK/encoded" "needle" >"$WORK/encoded.out"
+if grep -Eqi 'verdict:|rejected as duplicate' "$WORK/encoded.out"; then
+  echo "FAIL: corpus punctuation or spaces can still forge status-shaped output: $(<"$WORK/encoded.out")" >&2
+  exit 1
+fi
+if ! grep -Fq 'VERDICT\u003a\u000aREJECTED' "$WORK/encoded.out"; then
+  echo "FAIL: corpus text was not preserved in visible escaped form: $(<"$WORK/encoded.out")" >&2
+  exit 1
+fi
+echo "PASS: corpus fields use visible encoding instead of tool row grammar"
+
 # A BOM is input encoding, not a malformed first record. Malformed JSON is
 # recoverable but must be observable with loaded and skipped counts.
 mkdir -p "$WORK/bom"

@@ -112,12 +112,19 @@ def load_records(corpus: Path) -> tuple[list[Record], int]:
 
 
 def display_text(value: str) -> str:
-    """Escape corpus text that could alter terminal layout or output structure."""
+    """Render corpus text visibly without letting it borrow row grammar."""
+
+    unsafe = any(
+        unicodedata.category(character).startswith("C")
+        or unicodedata.category(character) in {"Zl", "Zp"}
+        for character in value
+    )
+    if not unsafe:
+        return value
 
     escaped: list[str] = []
     for character in value:
-        category = unicodedata.category(character)
-        if category.startswith("C") or category in {"Zl", "Zp"}:
+        if not character.isalnum():
             width = 4 if ord(character) <= 0xFFFF else 8
             escaped.append(f"\\u{ord(character):0{width}x}")
         else:

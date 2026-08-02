@@ -27,8 +27,10 @@ jobs:
         run: bats guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)
         run: bats bin/tests/*.bats
-      - name: Reconcile L1 corpus
-        run: python3 pipeline/reconcile_l1.py
+      - name: Reconcile L1 corpus (declared reduced check)
+        # CI checks out only this repo, so four sibling sources are unavailable.
+        # The explicit waiver stays loud in the step output and names that count.
+        run: python3 pipeline/reconcile_l1.py --allow-partial
       - name: Validate L1 schema
         run: python3 pipeline/validate_l1.py
       - name: Verify enforcement

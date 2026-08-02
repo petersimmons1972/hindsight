@@ -642,10 +642,18 @@ plan, so they sit above Sequencing rather than in a footnote.
    answer. Land C1c (the clusterer, PR #13) → C2 recurrence report → L2/L3. Chosen over
    "wire up what exists" and over "keep hardening". Hardening rounds are done for now; a
    clean fresh-mutant round is no longer the gating condition on new build.
-   **Status: C1c landed, L2 pinned, C2 landed (PR #17). The pipeline now runs L0→L2 and
-   the registry can, for the first time, show that a failure has recurred. W1/W2/W3 (L3
-   synthesis) is the remaining leg.**
+   **Status: DONE through L2.** C1c landed (PR #13), L2 pinned, C2 landed (PR #17), and
+   `pipeline/L2/recurrence-report.md` is committed. **The pipeline now runs L0→L2 and the
+   registry can, for the first time, show that a failure has recurred** — e.g. *"A terminal
+   SUCCESS signal was treated as proof the work succeeded — 13 times across 4 repos,
+   2026-06-12 to 2026-07-25, span 43 days."* **W1/W2/W3 (L3 synthesis) is the remaining
+   leg** and is the natural next task.
 2. **V8 enforcement step: advisory, with the count printed.** See V8 row. Not a ratchet.
+   ⚠️ **OWED — the ruling is recorded but the count is NOT yet implemented.** Until it is,
+   the step is advisory *and silent*, which is strictly worse than what the founder
+   authorised: he accepted "enforces nothing but discloses the number", and right now it
+   discloses nothing. This is the single smallest open item in the plan and should be the
+   first thing picked up.
 3. **PR #2 (`dispatch/C6-vendor-sync`): repair, do not close.** Same treatment as
    `bin/land.sh` — refuse to write without an explicit `--apply`, print the undo journal
    *before* acting, pin the contract with red-first tests. Keeps the capability, removes
@@ -683,3 +691,33 @@ invalidates the run).
   Salvage script: `~/.claude/jobs/2c17b6f5/tmp/salvage.sh`. Worth filing upstream.
 - **Stale `GH_TOKEN`** — App installation tokens expire hourly. Refresh inside scripts via
   `gh-app-token claude`; never the `$(...)` prefix on the command line.
+
+---
+
+## Session close — 2026-08-02 ~08:00 EDT. What is done, what is owed.
+
+**Done and verified on green main (`addef81`):** gates mutation-hardened across three
+cross-vendor lanes with every kill-proof re-verified by hand; C1c clusterer landed; L2
+pinned as a committed artifact; C2 recurrence report landed with its artifact committed.
+Suites: **pytest 167, bats 92, guard OK (171 IDs), reconcile COMPLETE 5/5, validate_l1 0.**
+Worktrees: **1**. Open issues: **0**. Open PRs: **3**.
+
+**Owed, in the order I would pick them up:**
+
+| # | Item | Why it is next |
+|---|---|---|
+| 1 | **V8 enforcement count** | Smallest possible unit; the founder's ruling is currently half-applied and the silent version is worse than what he agreed to |
+| 2 | **W1/W2/W3 — L3 synthesis** | The remaining leg of the recurrence spine, which is founder ruling 1 |
+| 3 | **PR #2 repair** (dry-run default, undo-before-act, red-first tests) | Founder ruling 3; the capability is wanted, the blast radius is not |
+| 4 | **PR #10 / G2 rebuild** from an attack spec written first, cross-vendor | Founder ruling 4; also discharges the standing audition debt |
+| 5 | **PR #12** — C4d/C4e gate-the-gate, defective at round 6 | No decision recorded; **blocked ≠ obsolete**, so it must not be closed on age |
+| 6 | **`bin/similar-causes.py` has no caller** | Merged, correct, and invoked by nothing |
+| 7 | **C6c** never run | Was meant to replace #2 |
+
+**Two process rules this session paid for, both now mechanised in habit rather than prose:**
+
+1. **`git push origin main` is not the end of a landing — CI on main is.** I pushed
+   `7b3a757` without checking and main sat red until PR #17's CI surfaced it.
+2. **Adding a catalog row is a two-step operation**: the row must also be extracted into
+   L1 (`pipeline/extract_mechanical.py`), or `reconcile_l1.py` correctly goes SHORT. The
+   full loop is catalog → extract → regenerate L2 → reconcile.

@@ -914,3 +914,265 @@ def test_blank_l1_record_raises_instead_of_being_skipped(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match=r"blank L1 record in .*sample\.jsonl:2"):
         MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+
+# ---------------------------------------------------------------------------
+# Round-2 survivors (briefs/survivors/guard-survivors.md S1–S10, S3–S7, S9).
+# Each test was proven to PASS on unmutated code and FAIL under its named
+# mutant; a test that is green in both states kills nothing.
+# ---------------------------------------------------------------------------
+
+
+def test_M01_ledger_entry_for_a_different_claimed_path_does_not_excuse_this_phantom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S1/M01: PhantomEntry.key() is a 3-tuple including enforcement_file.
+
+    A ledger row for (source, id, OLD path) must not silence a phantom that
+    now claims a different path. Ignoring the third element lets anyone
+    rewrite enforcement.file to a fabricated path and keep exit 0.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", machine_record("example", {"file": "bin/NEW-phantom.sh", "kind": "test"})
+    )
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        known_phantoms=[
+            {
+                "source": "sample",
+                "id": "example",
+                "claimed_path": "bin/OLD-phantom.sh",
+                "evidence": "ls showed OLD path missing once",
+                "disposition": "genuine-phantom: historical claim",
+            }
+        ],
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "undocumented" in err
+    assert "bin/NEW-phantom.sh" in err
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        "this-line-has-no-colon",
+        ":repo2",
+        "other:",
+    ],
+)
+def test_M04_M05_malformed_source_roots_line_is_fatal_not_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    bad_line: str,
+) -> None:
+    """S2/M04+M05: a typo in source-roots.conf must fail loud, not drop the map.
+
+    Skipping a malformed line demotes that source to UNVERIFIABLE and can exit
+    0 while real debt disappears from the fatal path.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    # One valid mapping so an empty-map check cannot absorb the failure;
+    # the malformed line is the only thing that must make the loader raise.
+    roots_path.write_text(f"sample:repo\n{bad_line}\n", encoding="utf-8")
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "malformed source-roots line" in err
+
+
+def test_M30_a_file_where_a_checkout_should_be_is_not_a_resolved_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S3/M30: exists-but-not-a-directory is not a resolved source root.
+
+    A stale file (or broken checkout) must hit the resolved_count == 0 hard
+    ERROR, not be counted as present and slipped into the SKIPPED (return 0)
+    branch reserved for roots that exist but check nothing.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    # A regular file where the mapped checkout directory should be.
+    (projects / "repo").write_text("i am a file not a directory\n", encoding="utf-8")
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "0 of 1 mapped source roots" in err
+    assert "SKIPPED" not in err
+
+
+def test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S4/M07: the floor counts machine-with-claim, never judgment.
+
+    Judgment entries require no enforcement at all. Adding them must not
+    satisfy a floor that machine-only work no longer meets.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("kept", {"file": "control.py", "kind": "test"}),
+        {"id": "j1", "auto": "judgment", "enforcement": None},
+        {"id": "j2", "auto": "judgment", "enforcement": None},
+        {"id": "j3", "auto": "judgment", "enforcement": None},
+        {"id": "j4", "auto": "judgment", "enforcement": None},
+        {"id": "j5", "auto": "judgment", "enforcement": None},
+    )
+
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=3
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "below floor 3" in err
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        # Missing evidence and disposition entirely.
+        {
+            "source": "sample",
+            "id": "example",
+            "claimed_path": "missing.py",
+        },
+        # Present but empty — still a silent allowlist entry.
+        {
+            "source": "sample",
+            "id": "example",
+            "claimed_path": "missing.py",
+            "evidence": "",
+            "disposition": "",
+        },
+    ],
+)
+def test_M02_M03_phantom_ledger_demands_nonempty_evidence_and_disposition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    record: dict[str, str],
+) -> None:
+    """S5/M02 + S6/M03: evidence and disposition are the ledger's load-bearing fields.
+
+    Without them the file is a silent allowlist, not a debt ledger.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", machine_record("example", {"file": "missing.py", "kind": "test"})
+    )
+
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, known_phantoms=[record]
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "known-phantoms" in err.lower() or "missing required field" in err.lower()
+
+
+def test_M13_empty_enforcement_object_is_malformed_not_relabelled_unbacked(
+    tmp_path: Path,
+) -> None:
+    """S7/M13: enforcement: {} claims a mechanism and fails to name it.
+
+    Relabelling it unbacked converts a hard corpus-integrity error into a
+    benign WARNING path — a broken claim becomes "we never claimed anything".
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    write_records(l1_dir, "sample", {"id": "bad", "auto": "machine", "enforcement": {}})
+
+    with pytest.raises(ValueError, match="invalid enforcement.file"):
+        MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+
+def test_M23_multi_value_floor_file_is_fatal_not_first_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S9/M23: an ambiguous floor file must not silently adopt the first line.
+
+    A half-resolved merge leaving two numbers can quietly weaken the gate if
+    the lower value happens to come first.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    floor_path = tmp_path / "floor.conf"
+    floor_path.write_text("0\n99\n", encoding="utf-8")
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor_path=floor_path
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "exactly one value" in err
+
+
+def test_M24_non_object_known_phantoms_line_is_fatal_not_skipped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S10/M24: a non-object JSONL line in the debt ledger is corruption.
+
+    Silently dropping it understates the printed DEBT count and removes
+    ledger-file validation for that entry.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    ledger_path = tmp_path / "known-phantoms.conf"
+    ledger_path.write_text('["s","e1","bin/nope.sh"]\n', encoding="utf-8")
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, known_phantoms_path=ledger_path
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "not an object" in err

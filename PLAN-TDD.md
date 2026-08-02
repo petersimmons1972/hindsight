@@ -397,9 +397,19 @@ proceed"), enforced for the first time by evidence rather than assertion.
 Gate is a coordinator-authored ground-truth assertion (R3), not a Codex-written test.
 
 **C1c landed 2026-08-02** (PR #13, via `bin/land.sh`). Before writing C2's gate, the
-substrate was measured against this section's original assertions on the **real 481-record
-corpus**, not a fixture. Result: 190 clusters, largest 22 (**4.6%** of corpus), 76
-singletons — healthy, neither collapsed nor atomised.
+substrate was measured against this section's original assertions on the **real corpus**,
+not a fixture. Pinned artifact as committed: **483 records → 190 clusters, largest 22
+(4.6% of corpus), 75 singletons** — healthy, neither collapsed (the old defect put all 458
+in a single cluster) nor atomised.
+
+*The corpus grew 481 → 483 mid-landing, and that is worth recording: adding FM-169/FM-170
+to the catalog made `reconcile_l1.py` go **SHORT — 2 enumerable entries unaccounted for**,
+because catalog rows must also be extracted into L1. **The gate caught a real gap, on CI,
+that every local suite passed.** Fixing it meant running `pipeline/extract_mechanical.py`
+— which turned out to carry the **identical hardcoded-`/home/psimmons` defect V12 records
+for `reconcile_l1.py`**, so on any other checkout it wrote L1 somewhere useless. Fixed the
+same way (resolve from `__file__`). L2 was then regenerated once so L1 and L2 agree at the
+moment of landing; the suite passes unchanged against the new partition.*
 
 | family | original assertion | measured |
 |---|---|---|
@@ -611,7 +621,7 @@ Not a claim, in every case a command. Nothing below is satisfied by a review pas
 | V3 | New tests discriminate | `bash bin/verify-discriminating.sh` → `discriminating: N/N` |
 | V4 | Catalog is sound | `python3 guard/failure_mode_catalog_guard.py` → OK |
 | V5 | Corpus coverage holds | `python3 pipeline/reconcile_l1.py` → **COMPLETE**, exit 0 (note its own printed scope limit: it cannot see non-enumerable content, and says so) |
-| V6 | Recurrence is measured, not asserted | `pytest pipeline/tests/test_recurrence_report.py` — ground-truth families surface |
+| V6 | Recurrence is measured, not asserted | `pytest pipeline/tests/test_recurrence_report.py` → **17 passed** (PR #17, 2026-08-02). The report emits the project's headline sentence from real data: *"A terminal SUCCESS signal was treated as proof the work succeeded — 13 times across 4 repos, 2026-06-12 to 2026-07-25, span 43 days."* Ground truth is coordinator-authored (R3), written before the implementation existed, and pins families by **named member** so a merely-large cluster cannot satisfy one by accident. **Two of those assertions were vacuous and were caught by mutation testing a 16/16-green suite — see FM-170**: the honesty check was satisfied by a corpus label containing `missing_recall` rather than by the report's own disclosure, and `len(members)==size` could not separate *derived* from *echoed* on a partition where the two already agree. Both now scoped and fixture-separated; three mutants (reassuring line, vague caveat, echoed size) verified dead |
 | V7 | ~~**The decisive test**~~ **VOID — the capability it tests was cancelled by measurement** | Was: *reworded known FM is rejected naming its cluster; `--force-new-cause` lands it with justification recorded.* Both flags are **deleted**; no implementation can satisfy this row, so leaving it would assert a test that can never pass. Replaced by V7b |
 | V7b | The lookup surfaces prior art and **claims nothing more** | `bash bin/tests/test_similar_causes.sh` → **37/37** (27 original + 10 added after stage-3 verification found the guard could be rebuilt). Pins: never exit non-zero on a match (T21 closes the flag-shaped sneak-back), never emit verdict language, the advisory header is unconditional, truncation past 10 is disclosed, read-only, deterministic — and **the two zeros are separated**: empty/unreadable corpus fails loud (T05–T07) while zero candidates from a *populated* corpus is a legitimate exit 0 (T08) |
 | V8 | No phantom mechanisms | `--verify-enforcement` → 0 phantoms. **Known gap: this does not run on CI.** Only 1 of 13 source roots resolves on the runner and it verifies zero paths, so the step declares SKIPPED and exits 0. That is the honest branch, but phantom-discovery therefore runs *nowhere* automatically. **Founder ruling 2026-08-02: stays ADVISORY, but must print the count** of rows whose claimed mechanism does not execute, on every run. Explicitly accepted trade: this enforces nothing, and "a floor that counts units present rather than units performed" is FM-155 — the exact family this repo exists to catalogue. The count is the honest disclosure that keeps it from reading as covered. Not a ratchet; do not describe it as one |
@@ -632,6 +642,9 @@ plan, so they sit above Sequencing rather than in a footnote.
    answer. Land C1c (the clusterer, PR #13) → C2 recurrence report → L2/L3. Chosen over
    "wire up what exists" and over "keep hardening". Hardening rounds are done for now; a
    clean fresh-mutant round is no longer the gating condition on new build.
+   **Status: C1c landed, L2 pinned, C2 landed (PR #17). The pipeline now runs L0→L2 and
+   the registry can, for the first time, show that a failure has recurred. W1/W2/W3 (L3
+   synthesis) is the remaining leg.**
 2. **V8 enforcement step: advisory, with the count printed.** See V8 row. Not a ratchet.
 3. **PR #2 (`dispatch/C6-vendor-sync`): repair, do not close.** Same treatment as
    `bin/land.sh` — refuse to write without an explicit `--apply`, print the undo journal

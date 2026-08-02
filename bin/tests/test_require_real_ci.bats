@@ -478,3 +478,33 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"--max-wait-minutes must be a non-negative integer, got: abc"* ]]
 }
+
+# ---- F5: how a required check NAME is matched was entirely unpinned ---------
+# An independent re-sweep with fresh mutants found three separate mutations of
+# the one name comparison that each turn a red PR green while passing all 79
+# tests. GitHub check names are case-sensitive, so a renamed or re-cased job
+# must NOT satisfy a required gate -- otherwise a check that never ran reports
+# green and land.sh merges on it. That is FM-149's class exactly.
+
+@test "R1 pin: a rollup entry differing only in CASE does not satisfy the required name" {
+  run bash "$SCRIPT" 999 --json-file "$FIXTURES/t34_name_case_mismatch.json" --required guard
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"absent from the rollup entirely"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+@test "R2 pin: a rollup entry padded with whitespace does not satisfy the required name" {
+  # The script trims the REQUIRED names on purpose; it must not trim the ROLLUP
+  # names. Nothing tested that asymmetry, so a mutant adding .strip() to the
+  # rollup side passed 79/79.
+  run bash "$SCRIPT" 999 --json-file "$FIXTURES/t35_name_whitespace_padded.json" --required guard
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"absent from the rollup entirely"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+@test "R3 pin: the exact name still matches (both directions, so R1/R2 cannot be satisfied by refusing everything)" {
+  run bash "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --required guard
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PASS:"* ]]
+}

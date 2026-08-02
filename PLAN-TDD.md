@@ -396,20 +396,56 @@ proceed"), enforced for the first time by evidence rather than assertion.
 
 Gate is a coordinator-authored ground-truth assertion (R3), not a Codex-written test.
 
+**C1c landed 2026-08-02** (PR #13, via `bin/land.sh`). Before writing C2's gate, the
+substrate was measured against this section's original assertions on the **real 481-record
+corpus**, not a fixture. Result: 190 clusters, largest 22 (**4.6%** of corpus), 76
+singletons — healthy, neither collapsed nor atomised.
+
+| family | original assertion | measured |
+|---|---|---|
+| completion-signal | ≥6 members | `c-001` size **13**, 4 source repos, 5/6 named IDs — MDL-18 clusters elsewhere |
+| shared-mutable-checkout | ≥7 members | `c-049` size **10**, 6/7 named IDs — OPS-48 clusters elsewhere |
+| dedup-identity-key | ORC-1a/b/c together | `c-045`, **3/3** ✅ |
+| fail-silent-gate | CI-1 + FM-05/FM-08/orch-FM-7 together | **scattered across 4 clusters, one a singleton** ❌ |
+
+**The `fail-silent-gate` assertion is unsatisfiable by this substrate and is therefore
+VOIDED, not relaxed** — same treatment as V7, and for the same reason: leaving an assertion
+no implementation can meet is worse than removing it, because it reads as coverage. Its
+members share an abstract *cause shape* ("a gate that fails silently") across wholly
+different surface text — a poller install bug, an nvm path break, a routing mistake, a
+prose completion report. That is the **already-measured** C1d ceiling (1/77 blind
+paraphrase recall), not a new defect and not something a threshold tweak reaches. Note
+`orch-FM-7` does not exist in the corpus in any form; the original list was never checked
+against L1.
+
+**Replaced by a pinned negative** (the C1d convention — an exact-match assertion, so drift
+forces conscious re-measurement rather than silently passing):
+
+- `test_cause_shape_families_do_not_cocluster` asserts the four fail-silent members land
+  in **exactly 4 distinct clusters**. If a future change makes them co-cluster, the test
+  goes red and someone must decide whether that is real capability or a collapse.
+
 **RED tests** (`pipeline/tests/test_recurrence_report.py`, fixture
 `pipeline/tests/fixtures/recurrence_ground_truth.json`):
-- the report surfaces a `completion-signal` cluster with **≥6 members**
-  (OPS-11/16/21/23/28, MDL-18);
-- a `shared-mutable-checkout` cluster with **≥7 members** (OPS-8/13/36/38/41/45/48);
-- `fail-silent-gate` (CI-1 + FM-5/FM-8/orch-FM-7) and `dedup-identity-key`
-  (ORC-1a/b/c) both present;
+- the report surfaces a `completion-signal` cluster of **≥6 members** spanning **≥2 source
+  repos**, containing at minimum OPS-11/16/21/23/28;
+- a `shared-mutable-checkout` cluster of **≥7 members** containing at minimum
+  OPS-8/13/36/38/41/45;
+- `dedup-identity-key` (ORC-1a/b/c) present and complete;
+- the pinned negative above;
 - ranking is by member count then date span, and each row prints member IDs, source
   repos, first/last seen;
 - **empty clusters.jsonl ⇒ exit 1**, never an empty report (R4).
 
-**If the report does not independently surface the ≥7× completion-signal cluster and the
-7× shared-checkout cluster, clustering is wrong and Phase 4 must not open.** Synthesising
-from bad clusters produces confident nonsense.
+**Direction-of-error note, and why this is still safe to build on.** Every miss observed
+is a family member landing in its *own* cluster rather than a foreign one — no false
+merges were found, and all C(5,2) family pairs stay disjoint. The engine therefore
+**under-reports recurrence and never fabricates it**. For a registry whose purpose is
+"this has happened before", a conservative error is the survivable direction: it costs
+recall, not trustworthiness. C2 must print the recall limitation on the report itself.
+
+**Phase 4 still does not open on assertion.** The gate is now the table above re-measured,
+not a review pass.
 
 ### C3 — **DESCOPED from a guard to a lookup** *(decided by measurement, 2026-08-02)*
 

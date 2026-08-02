@@ -128,6 +128,23 @@ else:
 path.write_text(''.join(lines), encoding="utf-8")
 PYEOF
 
+# ── Record the ID in the append-only ledger ───────────────────────────────────
+# The ledger is the baseline that makes "never delete a catalog row" a mechanism
+# rather than a sentence. It must be OLDER than the change it checks, so this
+# script REFUSES when it is absent instead of regenerating it from the catalog:
+# reseeding from the current catalog would launder any deletion that had already
+# happened, which is precisely the failure the ledger exists to catch.
+LEDGER="$(dirname "$CATALOG")/id-ledger.txt"
+if [[ ! -f "$LEDGER" ]]; then
+  echo "ERROR: id ledger not found: $LEDGER" >&2
+  echo "  Restore it from git; do NOT regenerate it from the catalog -- a" >&2
+  echo "  regenerated baseline cannot detect a row that is already missing." >&2
+  cp "${CATALOG}.bak" "$CATALOG"
+  echo "  (catalog restored from ${CATALOG}.bak; no row was added)" >&2
+  exit 1
+fi
+printf '%s\n' "$FM_ID" >> "$LEDGER"
+
 python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
 
 # ── Report ────────────────────────────────────────────────────────────────────

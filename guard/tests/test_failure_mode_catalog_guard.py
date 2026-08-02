@@ -46,8 +46,23 @@ def test_duplicate_ids_are_fatal() -> None:
     assert any("duplicate canonical ID FM-02" in e for e in errors)
 
 
-def test_out_of_order_is_a_warning_not_an_error() -> None:
-    """Ordering is advisory. Assert it is REPORTED but does NOT fail the guard."""
+def test_ordering_rule_is_gone_entirely() -> None:
+    """G3, 2026-08-02: the ordering rule is REMOVED, not demoted a second time.
+
+    This test previously asserted ordering was reported as a warning. That
+    contract was deliberately retired, so the test asserts the new contract
+    rather than being deleted -- per CLAUDE.md, a changed rule gets its test
+    updated in both directions, never relaxed to let a change pass.
+
+    Measured justification: on 150 rows the catalog had zero gaps and zero
+    duplicates but five out-of-order transitions, so this rule emitted five
+    warnings per run and never once indicated a defect. Noise on a gate trains
+    people to ignore the gate.
+
+    It was replaced, not merely dropped: guard/tests/test_append_only.py pins
+    the append-only ID-set invariant that took its place, which enforces the
+    property that actually matters (a row may never disappear).
+    """
     text = "\n".join(
         [
             "| FM-09 | one | two | three | four |",
@@ -55,8 +70,8 @@ def test_out_of_order_is_a_warning_not_an_error() -> None:
         ]
     )
     errors, warnings = MODULE.validate_catalog(text, MODULE.parse_rows(text))
-    assert any("out of order" in w for w in warnings), "ordering must still be reported"
-    assert not any("out of order" in e for e in errors), "ordering must not be fatal"
+    assert not any("out of order" in w for w in warnings)
+    assert not any("out of order" in e for e in errors)
 
 
 def test_legacy_scheme_as_row_id_is_rejected() -> None:

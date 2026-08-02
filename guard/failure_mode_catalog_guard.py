@@ -228,9 +228,85 @@ def parse_rows(text: str) -> list[CatalogRow]:
     return rows
 
 
-def validate_catalog(text: str, rows: list[CatalogRow]) -> tuple[list[str], list[str]]:
+# Sentinel meaning "this call is not evaluating the append-only invariant".
+# It exists ONLY so unit tests of unrelated rules need not construct a ledger.
+# The real entry point in main() always passes a real value (or None when the
+# ledger could not be read), so the gate itself is never skipped by default --
+# a fail-open default here would defeat the entire invariant.
+LEDGER_NOT_REQUESTED = object()
+
+ID_LEDGER_RE = re.compile(r"^FM-\d+$")
+
+
+def load_known_ids(path: Path) -> set[str] | None:
+    """Every canonical ID that has ever existed.
+
+    Returns None when the ledger is ABSENT -- deliberately distinct from an
+    empty set. "The baseline is missing" and "the baseline says nothing was
+    ever here" are different defects and both are fatal, but conflating them
+    would hide which one occurred.
+
+    Raises ValueError on a malformed line rather than skipping it: a dropped
+    line silently shrinks the baseline, which is the very thing this guards.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+    ids: set[str] = set()
+    for number, line in enumerate(raw.splitlines(), start=1):
+        entry = line.strip()
+        if not entry or entry.startswith("#"):
+            continue
+        if not ID_LEDGER_RE.match(entry):
+            raise ValueError(f"{path}:{number}: malformed ledger entry: {entry!r}")
+        ids.add(entry)
+    return ids
+
+
+def validate_catalog(
+    text: str,
+    rows: list[CatalogRow],
+    known_ids: set[str] | None | object = LEDGER_NOT_REQUESTED,
+) -> tuple[list[str], list[str]]:
     errors: list[str] = []
     warnings: list[str] = []
+
+    if not rows and known_ids is LEDGER_NOT_REQUESTED:
+        errors.append("no canonical FM rows found")
+        return errors, warnings
+
+    # --- append-only ID-set invariant (G3) ---------------------------------
+    # Replaces the advisory ordering rule, which fired five times per run on a
+    # catalog with zero gaps and zero duplicates and never once indicated a
+    # defect. Ordering was never the property anyone cared about; not LOSING a
+    # row is -- CLAUDE.md names it a non-negotiable because deleting rows to
+    # satisfy a validator nearly lost FM-REC-01..11.
+    if known_ids is not LEDGER_NOT_REQUESTED:
+        if known_ids is None:
+            errors.append(
+                "id ledger could not be read; refusing to certify the catalog. "
+                "A gate that cannot find its baseline must refuse, never pass."
+            )
+        elif not known_ids:
+            errors.append(
+                "id ledger is empty; 'nothing was removed' would be vacuously "
+                "true. Refusing to certify the catalog on an empty baseline."
+            )
+        else:
+            present = {row.fm_id for row in rows}
+            missing = sorted(
+                known_ids - present,
+                key=lambda i: int(i.split("-")[1]),
+            )
+            if missing:
+                errors.append(
+                    "canonical IDs removed from the catalog: "
+                    f"{', '.join(missing)}. Rows are append-only -- renumber or "
+                    "fix the rule, never delete the data (the rule is younger "
+                    "than the data)."
+                )
 
     if not rows:
         errors.append("no canonical FM rows found")
@@ -245,12 +321,12 @@ def validate_catalog(text: str, rows: list[CatalogRow]) -> tuple[list[str], list
                 f"duplicate canonical ID {fm_id} on lines {', '.join(map(str, lines))}"
             )
 
-    for previous, current in pairwise(rows):
-        if current.number < previous.number:
-            warnings.append(
-                f"catalog rows out of order: {previous.fm_id} (line {previous.line}) "
-                f"precedes {current.fm_id} (line {current.line})"
-            )
+    # G3: the advisory ordering rule was REMOVED here, not demoted again.
+    # Measured on 150 rows: zero gaps, zero duplicates, five out-of-order
+    # transitions -- so it fired five times a run and never once indicated a
+    # defect. Noise on a gate trains people to ignore the gate. Its replacement
+    # is the append-only invariant above, which pins a property that matters.
+    # Pinned in both directions by guard/tests/test_append_only.py.
 
     for line_number, line in enumerate(text.splitlines(), start=1):
         match = HISTORICAL_SCHEME_RE.search(line)
@@ -636,7 +712,18 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     rows = parse_rows(text)
-    errors, warnings = validate_catalog(text, rows)
+
+    # The gate ALWAYS evaluates the append-only invariant. load_known_ids
+    # returns None when the ledger is absent, and validate_catalog treats that
+    # as fatal -- there is no path through this entry point that skips it.
+    ledger_path = catalog_path.parent / "id-ledger.txt"
+    try:
+        known_ids = load_known_ids(ledger_path)
+    except ValueError as exc:
+        print(f"failure-mode-catalog: {exc}", file=sys.stderr)
+        return 1
+
+    errors, warnings = validate_catalog(text, rows, known_ids=known_ids)
     for warning in warnings:
         print(f"failure-mode-catalog: warning: {warning}", file=sys.stderr)
     if errors:

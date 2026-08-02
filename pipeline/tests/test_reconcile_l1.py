@@ -13,6 +13,7 @@ is loud:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -254,3 +255,66 @@ def test_unresolved_source_is_not_reported_as_100_percent(tmp_path, monkeypatch,
     row = next(r for r in json.loads(out) if r["slug"] == "ghost")
     assert row.get("coverage_pct") != 100.0, f"absent source scored 100%: {row}"
     assert row.get("resolved") is False, f"absent source must be marked unresolved: {row}"
+
+
+def test_self_source_path_follows_the_module_not_a_hardcoded_home(tmp_path) -> None:
+    """The decisive test: LOAD A COPY of the module from another path.
+
+    Asserting paths on THIS host proves nothing -- here the hardcoded
+    /home/psimmons/projects IS the checkout, so any equality check passes while
+    the bug is fully present. Even running a copy as a subprocess proves nothing,
+    because the copy still reads the hardcoded absolute path and that path still
+    exists here. Only importing the copy and inspecting where IT thinks its own
+    catalog lives discriminates.
+
+    This is FM-158 -- a mechanism verified only in the developer's environment is
+    unverified in the environment that gates -- and it is the test that would
+    have caught this before the push instead of after CI went red.
+    """
+    import importlib.util
+    import shutil
+
+    dest = tmp_path / "checkout"
+    src = Path(reconcile_l1.__file__).resolve().parents[1]
+    shutil.copytree(src / "pipeline", dest / "pipeline")
+    shutil.copytree(src / "catalog", dest / "catalog")
+
+    spec = importlib.util.spec_from_file_location(
+        "reconcile_copy", dest / "pipeline" / "reconcile_l1.py"
+    )
+    copy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copy)
+
+    self_files, _rx = copy.ENUMERABLE["homelab-canon"]
+    for f in self_files:
+        assert f.is_relative_to(dest), (
+            f"the relocated module still points its OWN catalog at {f}; "
+            f"it must resolve inside its own checkout at {dest}"
+        )
+    assert copy.L1.is_relative_to(dest), f"L1 resolved outside the checkout: {copy.L1}"
+
+
+def test_self_source_is_configured_inside_the_checkout(tmp_path) -> None:
+    """This repo's own catalog must resolve wherever the repo is checked out.
+
+    `P` was hardcoded to /home/psimmons/projects, so on a CI runner the tool
+    could not find its OWN catalog. Combined with the `else 100.0` fail-open
+    that produced a COMPLETE verdict over five unresolved sources -- the gate
+    passed for a year of runs having compared nothing. Deriving the self path
+    from __file__ is what makes the gate mean anything off the workstation.
+    """
+    files, _rx = reconcile_l1.ENUMERABLE["homelab-canon"]
+    repo_root = Path(reconcile_l1.__file__).resolve().parents[1]
+    assert files, "homelab-canon must configure at least one source file"
+    for f in files:
+        assert f.is_relative_to(repo_root), (
+            f"self source {f} is not inside the checkout at {repo_root}; "
+            "it will not resolve on any other host"
+        )
+        assert f.exists(), f"self source {f} does not exist"
+
+
+def test_l1_dir_resolves_from_the_checkout() -> None:
+    repo_root = Path(reconcile_l1.__file__).resolve().parents[1]
+    assert reconcile_l1.L1.is_relative_to(repo_root)
+    assert reconcile_l1.L1.exists()

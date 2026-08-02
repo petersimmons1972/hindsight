@@ -25,8 +25,17 @@ import re
 import sys
 from pathlib import Path
 
-P = Path("/home/psimmons/projects")
-L1 = P / "hindsight/pipeline/L1"
+# This repo, derived from THIS FILE -- never from a hardcoded home directory.
+# It was `P / "hindsight/..."`, so on any host that is not the author's
+# workstation the tool could not find its own catalog or its own corpus. On CI
+# that meant all five sources failed to resolve, and the `else 100.0` fail-open
+# turned "nothing was compared" into COMPLETE, exit 0.
+REPO = Path(__file__).resolve().parents[1]
+L1 = REPO / "pipeline/L1"
+
+# Sibling repos, which genuinely live outside this checkout. These are expected
+# to be absent on CI, and are now reported UNRESOLVED rather than scored 100%.
+P = REPO.parent
 
 # source slug -> (file(s), regex capturing the ground-truth local ID)
 ENUMERABLE = {
@@ -36,7 +45,7 @@ ENUMERABLE = {
                     P / "fleet/CODING-INVARIANTS.md",
                     P / "fleet/CODING-FAILURE-MODES.md"],
                    re.compile(r"^#{2,4} +((?:OPS|CI|ORC|MDL|FM)-\d+[a-z]?)")),
-    "homelab-canon": ([P / "hindsight/catalog/failure-modes.md"],
+    "homelab-canon": ([REPO / "catalog/failure-modes.md"],
                       re.compile(r"^\| (FM-\d{2,3}) \|")),
     "claude-codex-integration": ([P / "claude-codex/docs/integration-failure-modes.md"],
                                  re.compile(r"^#{2,4} +(FM-\d{2,3})")),

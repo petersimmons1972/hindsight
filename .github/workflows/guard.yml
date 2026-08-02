@@ -27,17 +27,35 @@ jobs:
         run: bats guard/tests/*.bats
       - name: Reconcile L1 corpus
         run: python3 pipeline/reconcile_l1.py
-      - name: Validate L1 schema when available
-        run: |
-          if [ -f pipeline/validate_l1.py ]; then
-            python3 pipeline/validate_l1.py
-          else
-            echo "pipeline/validate_l1.py is not present yet; skipping"
-          fi
-      - name: Verify enforcement when available
-        run: |
-          if [ -f guard/tests/test_verify_enforcement.py ]; then
-            python3 guard/failure_mode_catalog_guard.py --verify-enforcement
-          else
-            echo "--verify-enforcement is not present yet; skipping"
-          fi
+      - name: Validate L1 schema
+        run: python3 pipeline/validate_l1.py
+      - name: Verify enforcement
+        # This runner checks out only this one repo: ~/projects does not
+        # exist here at all, so of the 13 mapped source-roots.conf entries
+        # only SELF (homelab-canon, this checkout's own root) resolves --
+        # confirmed empirically, ROOTS: 1/13. And SELF's own L1 entries are
+        # ALL enforcement:null (see conf/source-roots.conf's homelab-canon
+        # comment), so even that one resolved root verifies zero real
+        # paths. A root that resolves but checks nothing must not satisfy
+        # --require-roots (that was the C4b bug: it counted resolution, not
+        # use, so "1 present" read as "1 verified"). With the falsifiable
+        # floor, this step now takes the HONEST branch instead: it prints
+        # SKIPPED and exits 0 -- a declared "not checked here", never a
+        # silent "0 phantoms" that implies something was.
+        #
+        # Two things this step DOES still check for real, everywhere
+        # including here, with no dependency on any source repo being
+        # present: (1) the corpus-wide enforcement-bearing-entry floor
+        # (conf/enforcement-floor.conf) can't silently drop, so records
+        # can't be deleted to make debt disappear; (2) the catalog/schema
+        # gates in the steps above this one.
+        #
+        # Real phantom-discovery against all 13 mapped roots -- including
+        # the known-phantoms.conf debt-ledger gate -- only ever runs where
+        # ~/projects is actually populated (a dev workstation). Chosen
+        # option: explicit SKIP over (a) a scheduled/pre-commit job on a
+        # workstation with a "was this checked recently" CI assertion, or
+        # (b) vendoring a manifest into this repo -- both are legitimate
+        # but are follow-up infra work, not this PR's scope; a loud,
+        # honest skip beats a vacuous pass either way it's resolved later.
+        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 1

@@ -148,7 +148,11 @@ def load_known_phantoms(path: Path) -> dict[tuple[str, str, str], dict[str, str]
     if not path.is_file():
         raise ValueError(f"known-phantoms ledger not found: {path}")
     known: dict[tuple[str, str, str], dict[str, str]] = {}
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"known-phantoms ledger unreadable: {path}: {exc}") from exc
+    for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -508,13 +512,15 @@ def print_enforcement_report(report: EnforcementReport) -> None:
         print(f"enforcement-verifier: {phantom.format()}", file=sys.stderr)
 
     print(
-        "enforcement-verifier: summary (source machine judgment unbacked phantoms unverifiable checked)",
+        "enforcement-verifier: summary (source machine judgment unbacked "
+        "phantoms[-=not-measured] unverifiable checked)",
         file=sys.stderr,
     )
     for source, totals in report.sources.items():
+        phantoms = "-" if totals.checked == 0 else str(totals.phantoms)
         print(
             f"  {source}: {totals.machine} {totals.judgment} "
-            f"{totals.unbacked} {totals.phantoms} {totals.unverifiable} {totals.checked}",
+            f"{totals.unbacked} {phantoms} {totals.unverifiable} {totals.checked}",
             file=sys.stderr,
         )
 
@@ -589,7 +595,53 @@ def main(argv: list[str] | None = None) -> int:
         except (TypeError, ValueError) as exc:
             print(f"enforcement-verifier: {exc}", file=sys.stderr)
             return 1
+
+        try:
+            known = load_known_phantoms(default_known_phantoms_path())
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+
         print_enforcement_report(report)
+
+        unbacked = sum(totals.unbacked for totals in report.sources.values())
+        resolved_count = len(report.roots_resolved)
+        useful_sources = {
+            source
+            for source, totals in report.sources.items()
+            if source in report.roots_resolved and totals.checked > 0
+        }
+        useful_count = len(useful_sources)
+        checked_count = sum(totals.checked for totals in report.sources.values())
+
+        print(
+            f"enforcement-verifier: PHANTOM-DEBT: {len(known)} documented in "
+            "conf/known-phantoms.conf",
+            file=sys.stderr,
+        )
+        print(
+            f"enforcement-verifier: DEBT: {len(known)} known phantom(s) documented in "
+            "conf/known-phantoms.conf -- this number should shame us into fixing them, "
+            "not sit as a silent allowlist.",
+            file=sys.stderr,
+        )
+        print(
+            f"enforcement-verifier: UNBACKED: {unbacked} machine entries carry "
+            "enforcement: null",
+            file=sys.stderr,
+        )
+        if checked_count == 0:
+            print(
+                "enforcement-verifier: PHANTOMS-MEASURED: NOT MEASURED HERE "
+                f"(ROOTS {resolved_count}/{report.mapped_sources}, 0 entries checked)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"enforcement-verifier: PHANTOMS-MEASURED: {len(report.phantoms)} "
+                f"across {useful_count} source roots",
+                file=sys.stderr,
+            )
 
         # 1. Universal, root-independent floor: total enforcement-bearing
         #    entries must never shrink. Computed straight from the corpus,
@@ -624,14 +676,6 @@ def main(argv: list[str] | None = None) -> int:
 
         # 2. The root floor, made falsifiable: only roots that actually
         #    verified >=1 entry count as "present" for --require-roots.
-        resolved_count = len(report.roots_resolved)
-        useful_sources = {
-            source
-            for source, totals in report.sources.items()
-            if source in report.roots_resolved and totals.checked > 0
-        }
-        useful_count = len(useful_sources)
-
         if resolved_count == 0:
             print(
                 f"enforcement-verifier: ERROR: 0 of {report.mapped_sources} mapped source "
@@ -663,21 +707,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        # 3. Phantom debt ledger: undocumented (new) phantoms are fatal;
-        #    documented ones are visible debt, not a silent allowlist.
-        try:
-            known = load_known_phantoms(default_known_phantoms_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-
         unlisted = [phantom for phantom in report.phantoms if phantom.key() not in known]
-        print(
-            f"enforcement-verifier: DEBT: {len(known)} known phantom(s) documented in "
-            f"conf/known-phantoms.conf -- this number should shame us into fixing them, "
-            "not sit as a silent allowlist.",
-            file=sys.stderr,
-        )
         if unlisted:
             print(
                 f"enforcement-verifier: {len(unlisted)} phantom(s) are NOT documented in "

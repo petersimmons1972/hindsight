@@ -60,9 +60,9 @@ file_digest() {
   run python3 "$ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
   [ "$status" -eq 0 ]
 
-  journal="$(printf '%s\n' "$add_output" | sed -n 's/^UNDO: bash .* --undo //p' | tail -n 1)"
+  journal="$(printf '%s\n' "$add_output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
-  run bash "$TOOL" --undo "$journal"
+  run env CATALOG="$CATALOG" bash "$TOOL" --undo "$journal"
   [ "$status" -eq 0 ]
   [ "$(file_digest "$CATALOG")" = "$catalog_before" ]
   [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
@@ -102,6 +102,20 @@ file_digest() {
   [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
 }
 
+@test "a well-formed recurrence ID must exist in the clusters artifact" {
+  catalog_before="$(file_digest "$CATALOG")"
+  ledger_before="$(file_digest "$LEDGER")"
+
+  run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
+    bash "$TOOL" -c A "unknown cluster recurrence" --recurrence-of c-999
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"c-999"* ]]
+  [[ "$output" == *"clusters"* ]]
+  [ "$(file_digest "$CATALOG")" = "$catalog_before" ]
+  [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
+}
+
 @test "empty missing and unreadable corpora fail loudly before any write" {
   empty="$WORK/empty"
   unreadable="$WORK/unreadable"
@@ -135,7 +149,9 @@ file_digest() {
 make_staged_repo() {
   STAGE="$WORK/stage"
   mkdir -p "$STAGE/bin" "$STAGE/.githooks" "$STAGE/guard" \
-    "$STAGE/catalog" "$STAGE/pipeline/L1" "$STAGE/pipeline/L2"
+    "$STAGE/catalog" "$STAGE/pipeline/L1" "$STAGE/pipeline/L2" \
+    "$WORK/fleet/orchestration" "$WORK/fleet-dispatch/migrations" \
+    "$WORK/claude-codex/docs"
   cp "$TOOL" "$STAGE/bin/add-failure-mode.sh"
   cp "$ROOT/.githooks/pre-commit" "$STAGE/.githooks/pre-commit"
   cp "$ROOT/bin/similar-causes.py" "$STAGE/bin/similar-causes.py"
@@ -145,7 +161,17 @@ make_staged_repo() {
     >"$STAGE/pipeline/L1/seed.jsonl"
   printf '%s\n' 'old-l1-canon' >"$STAGE/pipeline/L1/homelab-canon.jsonl"
   printf '%s\n' 'old-l1-schema' >"$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl"
-  printf '%s\n' 'old-l2' >"$STAGE/pipeline/L2/clusters.jsonl"
+  printf '%s\n' \
+    '{"_meta":{"backend":"fixture"}}' \
+    '{"cluster_id":"c-001","members":["seed"]}' \
+    >"$STAGE/pipeline/L2/clusters.jsonl"
+  printf '%s\n' '## OPS-1' >"$WORK/fleet/FAILURE-MODES.md"
+  printf '%s\n' '## OPS-2' >"$WORK/fleet/orchestration/FAILURE-MODES.md"
+  printf '%s\n' '## CI-1' >"$WORK/fleet/CODING-INVARIANTS.md"
+  printf '%s\n' '## FM-1' >"$WORK/fleet/CODING-FAILURE-MODES.md"
+  printf '%s\n' "CHECK (failure_class IN ('fixture_failure'))" \
+    >"$WORK/fleet-dispatch/migrations/0017_failure_class.sql"
+  printf '%s\n' '## FM-001' >"$WORK/claude-codex/docs/integration-failure-modes.md"
 
   cat >"$STAGE/guard/failure_mode_catalog_guard.py" <<'PY'
 import sys
@@ -203,16 +229,84 @@ PY
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
   [[ "$output" == *"COMPLETE"* ]]
-  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: bash .* --undo //p' | tail -n 1)"
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
 
-  run bash "$STAGE/bin/add-failure-mode.sh" --undo "$journal"
+  run env CATALOG="$STAGE/catalog/failure-modes.md" \
+    bash "$STAGE/bin/add-failure-mode.sh" --undo "$journal"
   [ "$status" -eq 0 ]
   [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
   [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
   [ "$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")" = "$l1_canon_before" ]
   [ "$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")" = "$l1_schema_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
+}
+
+@test "dot-dot canonical catalog alias still runs the whole loop" {
+  make_staged_repo
+  trace="$WORK/dotdot-trace"
+
+  run env CATALOG="$STAGE/catalog/../catalog/failure-modes.md" TRACE="$trace" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A "dot dot alias" --recurrence-of c-001
+
+  [ "$status" -eq 0 ]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
+  [[ "$output" == *"COMPLETE"* ]]
+}
+
+@test "symlink canonical catalog alias still runs the whole loop" {
+  make_staged_repo
+  ln -s "$STAGE/catalog" "$WORK/catalog-link"
+  trace="$WORK/symlink-trace"
+
+  run env CATALOG="$WORK/catalog-link/failure-modes.md" TRACE="$trace" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A "symlink alias" --recurrence-of c-001
+
+  [ "$status" -eq 0 ]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
+  [[ "$output" == *"COMPLETE"* ]]
+}
+
+@test "missing sibling topology fails before journal or write" {
+  make_staged_repo
+  rm "$WORK/fleet-dispatch/migrations/0017_failure_class.sql"
+  catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
+  ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$WORK/topology-trace" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A "missing topology" --recurrence-of c-001
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"fleet-dispatch/migrations/0017_failure_class.sql"* ]]
+  [[ "$output" != *"UNDO:"* ]]
+  [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
+  [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
+  [ ! -e "$WORK/topology-trace" ]
+}
+
+@test "tampered undo manifest is rejected atomically before any restore" {
+  catalog_before="$(file_digest "$CATALOG")"
+  ledger_before="$(file_digest "$LEDGER")"
+  run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
+    bash "$TOOL" -c A "tampered undo" --recurrence-of none
+  [ "$status" -eq 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
+  [ -n "$journal" ]
+  changed_catalog="$(file_digest "$CATALOG")"
+  changed_ledger="$(file_digest "$LEDGER")"
+  [ "$changed_catalog" != "$catalog_before" ]
+  [ "$changed_ledger" != "$ledger_before" ]
+  victim="$WORK/not-owned.txt"
+  printf '%s\n' 'must survive' >"$victim"
+  printf 'absent\t%s\t-\n' "$victim" >>"$journal/manifest.tsv"
+
+  run env CATALOG="$CATALOG" bash "$TOOL" --undo "$journal"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"undo journal"* ]]
+  [ "$(<"$victim")" = "must survive" ]
+  [ "$(file_digest "$CATALOG")" = "$changed_catalog" ]
+  [ "$(file_digest "$LEDGER")" = "$changed_ledger" ]
 }
 
 @test "pre-commit skips derived regeneration when canonical inputs are unchanged" {

@@ -24,6 +24,7 @@
 #   CATALOG     Override catalog path (default: <repo>/catalog/failure-modes.md).
 #               Useful for testing: CATALOG=/tmp/fms-test.md add-failure-mode.sh ...
 #   CORPUS      Override the L1 corpus directory consulted before writing.
+#   CLUSTERS    Override the L2 clusters artifact used to validate c-NNN.
 #
 # Install: ln -sf ~/projects/hindsight/bin/add-failure-mode.sh ~/bin/add-failure-mode.sh
 
@@ -41,30 +42,93 @@ usage() {
 restore_journal() {
     local journal="$1"
     local manifest="$journal/manifest.tsv"
-    [[ -d "$journal" && -f "$manifest" ]] || {
+    [[ -d "$journal" && -f "$manifest" && ! -L "$manifest" ]] || {
         echo "ERROR: undo journal not found: $journal" >&2
         return 1
     }
 
-    local state target backup
-    while IFS=$'\t' read -r state target backup; do
+    local requested_catalog canonical_catalog requested_ledger
+    requested_catalog="$(realpath -m -- "$CATALOG")"
+    canonical_catalog="$(realpath -m -- "$REPO_ROOT/catalog/failure-modes.md")"
+    requested_ledger="$(dirname "$requested_catalog")/id-ledger.txt"
+
+    local -a expected=("$requested_catalog" "$requested_ledger")
+    if [[ "$requested_catalog" == "$canonical_catalog" ]]; then
+        expected+=(
+            "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
+            "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
+            "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+        )
+    fi
+
+    local -A allowed=() seen=()
+    local target
+    for target in "${expected[@]}"; do
+        target="$(realpath -m -- "$target")"
+        allowed["$target"]=1
+    done
+
+    local -a states=() targets=() backups=()
+    local state backup extra normalized line_number=0
+    while IFS=$'\t' read -r state target backup extra; do
+        line_number=$((line_number + 1))
+        [[ -z "$extra" && -n "$state" && -n "$target" && -n "$backup" ]] || {
+            echo "ERROR: malformed undo journal at line $line_number: $manifest" >&2
+            return 1
+        }
+        normalized="$(realpath -m -- "$target")"
+        [[ "$target" == "$normalized" && -n "${allowed[$normalized]:-}" ]] || {
+            echo "ERROR: undo journal target is not owned by this run: $target" >&2
+            return 1
+        }
+        [[ -z "${seen[$normalized]:-}" ]] || {
+            echo "ERROR: duplicate undo journal target: $target" >&2
+            return 1
+        }
         case "$state" in
             present)
-                [[ -f "$journal/$backup" ]] || {
+                [[ "$backup" =~ ^file-[0-9]+$ && -f "$journal/$backup" && ! -L "$journal/$backup" ]] || {
                     echo "ERROR: undo snapshot missing: $journal/$backup" >&2
                     return 1
                 }
-                cp "$journal/$backup" "$target"
                 ;;
             absent)
-                rm -f -- "$target"
+                [[ "$backup" == "-" ]] || {
+                    echo "ERROR: malformed absent-file entry in undo journal: $target" >&2
+                    return 1
+                }
                 ;;
             *)
                 echo "ERROR: malformed undo journal: $manifest" >&2
                 return 1
                 ;;
         esac
+        seen["$normalized"]=1
+        states+=("$state")
+        targets+=("$normalized")
+        backups+=("$backup")
     done <"$manifest"
+
+    [[ ${#targets[@]} -eq ${#expected[@]} ]] || {
+        echo "ERROR: undo journal target set is incomplete" >&2
+        return 1
+    }
+    for target in "${expected[@]}"; do
+        target="$(realpath -m -- "$target")"
+        [[ -n "${seen[$target]:-}" ]] || {
+            echo "ERROR: undo journal is missing owned target: $target" >&2
+            return 1
+        }
+    done
+
+    local index
+    for index in "${!targets[@]}"; do
+        if [[ "${states[$index]}" == "present" ]]; then
+            cp "$journal/${backups[$index]}" "${targets[$index]}"
+        else
+            rm -f -- "${targets[$index]}"
+        fi
+    done
     echo "add-failure-mode: restored files from $journal"
 }
 
@@ -136,6 +200,7 @@ fi
 
 [[ -z "$TITLE" ]] && { echo "ERROR: title is required" >&2; exit 1; }
 [[ -f "$CATALOG" ]] || { echo "ERROR: catalog not found: $CATALOG" >&2; exit 1; }
+CATALOG="$(realpath -e -- "$CATALOG")"
 
 # Consult the corpus before interpreting the human recurrence decision. The
 # lookup is advisory: its status describes only whether measurement happened.
@@ -164,6 +229,64 @@ done <<<"$LOOKUP_OUTPUT"
 if [[ $RECURRENCE_SEEN -eq 0 ]]; then
     echo "ERROR: recurrence decision required; rerun with --recurrence-of c-NNN or --recurrence-of none" >&2
     exit 1
+fi
+
+CLUSTERS="${CLUSTERS:-$REPO_ROOT/pipeline/L2/clusters.jsonl}"
+if [[ "$RECURRENCE_OF" != "none" ]]; then
+    python3 - "$CLUSTERS" "$RECURRENCE_OF" <<'PYEOF'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+wanted = sys.argv[2]
+try:
+    lines = path.read_text(encoding="utf-8").splitlines()
+except OSError as exc:
+    raise SystemExit(f"ERROR: clusters artifact unavailable: {path}: {exc}")
+
+found = set()
+try:
+    for number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise ValueError(f"line {number} is not an object")
+        cluster_id = value.get("cluster_id")
+        if isinstance(cluster_id, str):
+            found.add(cluster_id)
+except (json.JSONDecodeError, ValueError) as exc:
+    raise SystemExit(f"ERROR: clusters artifact is malformed: {path}: {exc}")
+
+if wanted not in found:
+    raise SystemExit(f"ERROR: recurrence cluster {wanted} does not exist in clusters artifact: {path}")
+PYEOF
+fi
+
+CANONICAL_CATALOG="$(realpath -e -- "$REPO_ROOT/catalog/failure-modes.md")"
+RUN_FULL_LOOP=0
+if [[ "$CATALOG" == "$CANONICAL_CATALOG" ]]; then
+    RUN_FULL_LOOP=1
+    REQUIRED_TOPOLOGY=(
+        "$REPO_ROOT/../fleet/FAILURE-MODES.md"
+        "$REPO_ROOT/../fleet/orchestration/FAILURE-MODES.md"
+        "$REPO_ROOT/../fleet/CODING-INVARIANTS.md"
+        "$REPO_ROOT/../fleet/CODING-FAILURE-MODES.md"
+        "$REPO_ROOT/../claude-codex/docs/integration-failure-modes.md"
+        "$REPO_ROOT/../fleet-dispatch/migrations/0017_failure_class.sql"
+    )
+    TOPOLOGY_MISSING=0
+    for source_path in "${REQUIRED_TOPOLOGY[@]}"; do
+        if [[ ! -f "$source_path" || ! -r "$source_path" ]]; then
+            echo "ERROR: full-loop source unavailable: $source_path" >&2
+            TOPOLOGY_MISSING=1
+        fi
+    done
+    [[ $TOPOLOGY_MISSING -eq 0 ]] || {
+        echo "ERROR: canonical ingest requires the complete sibling-repository topology; no files were written" >&2
+        exit 1
+    }
 fi
 
 FM_ID="$(python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
@@ -226,16 +349,13 @@ snapshot_file() {
 
 snapshot_file "$CATALOG"
 snapshot_file "$LEDGER"
-CANONICAL_CATALOG="$REPO_ROOT/catalog/failure-modes.md"
-RUN_FULL_LOOP=0
-if [[ "$CATALOG" == "$CANONICAL_CATALOG" ]]; then
-    RUN_FULL_LOOP=1
+if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
 fi
 
-printf 'UNDO: bash %q --undo %q\n' "$0" "$JOURNAL"
+printf 'UNDO: CATALOG=%q bash %q --undo %q\n' "$CATALOG" "$0" "$JOURNAL"
 
 JOURNAL_READY=1
 rollback_on_error() {

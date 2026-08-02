@@ -24,6 +24,17 @@ the system temporary directory. Running that command restores the catalog,
 ledger, mechanically extracted L1 files, and L2 cluster artifact to their
 pre-add state.
 
+Canonical ingest requires the sibling repositories used by extraction and
+reconciliation (`fleet`, `fleet-dispatch`, and `claude-codex`) beside the
+`hindsight` checkout. The command resolves catalog aliases before deciding
+whether this is a canonical run and checks every required sibling source before
+creating an undo journal or writing. A standalone checkout therefore fails
+loudly with the missing paths and leaves the catalog and ledger untouched.
+
+For `--recurrence-of c-NNN`, the ID must already exist in
+`pipeline/L2/clusters.jsonl` (or the `CLUSTERS` environment override). A
+well-formed but unknown cluster ID is an error and does not write.
+
 For the canonical catalog, one invocation completes the full loop in order:
 
 1. append the catalog row and ledger ID;

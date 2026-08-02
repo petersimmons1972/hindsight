@@ -131,9 +131,29 @@ for run_dir in sorted(glob.glob(os.path.join(D, "wf_*"))):
 out_dir = sys.argv[1] if len(sys.argv) > 1 else "."
 os.makedirs(out_dir, exist_ok=True)
 out_p = os.path.join(out_dir, "actor-results.jsonl")
+
+# Rows this script did NOT produce -- cross-vendor actors run through
+# cli-dispatch, not through workflows, so they have no journal to harvest and
+# are appended by hand. A plain overwrite would delete them, which is the
+# silent-data-loss family this repo exists to catalogue. Preserve anything
+# whose run_id is not a workflow id, and say how many were carried over.
+carried = []
+if os.path.exists(out_p):
+    for line in open(out_p):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if not str(r.get("run_id", "")).startswith("wf_"):
+            carried.append(r)
+
 with open(out_p, "w") as fh:
-    for r in rows:
+    for r in rows + carried:
         fh.write(json.dumps(r) + "\n")
+print(f"carried over {len(carried)} non-workflow row(s)")
 
 # ---- summary ----
 print(f"rows: {len(rows)} -> {out_p}")
@@ -149,10 +169,19 @@ for role, rs in sorted(by_role.items()):
             vs[x["verdict"]] = vs.get(x["verdict"], 0) + 1
     print(f"{role:12} {len(rs):4}   {models:16}  {vs}")
 
+# Denominator is rows that emitted a LITERAL verdict line, not every
+# verify-role row. An actor that returned no verdict has not failed a
+# verification -- it has failed to report one, which is a different defect and
+# is counted separately below. Dividing by all verify-role rows understates the
+# acceptance rate and hides the reporting gap inside it.
 verifies = [r for r in rows if r["role"] == "verify"]
-good = [r for r in verifies if r["verdict"] == "CONFIRMED_GOOD"]
-print(f"\nADVERSARIAL VERIFY PASSES: {len(good)}/{len(verifies)} "
-      f"({100*len(good)/max(1,len(verifies)):.0f}%) -- same-vendor arm")
+judged = [r for r in verifies if r["verdict"]]
+silent = len(verifies) - len(judged)
+good = [r for r in judged if r["verdict"] == "CONFIRMED_GOOD"]
+print(f"\nADVERSARIAL VERIFY PASSES: {len(good)}/{len(judged)} "
+      f"({100*len(good)/max(1,len(judged)):.0f}%) of actors that returned a verdict")
+print(f"NO VERDICT LINE EMITTED:   {silent}/{len(verifies)} verify-role actors "
+      f"-- the landing gate matches on that string, so these are unlandable by construction")
 print("HIGH findings by verifies:", sum(r["sev_high"] for r in verifies))
 
 lineage = {}

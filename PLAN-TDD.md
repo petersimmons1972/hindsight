@@ -419,9 +419,17 @@ guard cannot be built. Applying it as written:
 - **Branch 1 (retrieval ranking) FAILS on both legs.** Recall@5 = 0.543 main / 0.500 adversarial
   (pooled 34/65 = 0.523) against ≥0.70; distractor FP = **0.75 pooled** against ≤0.10, off by
   7.5×.
-- **Branch 2 (structured extraction) CANNOT FIRE** — Arm B produced no measurement (it stalled
-  waiting on a notification). **Undetermined, not refuted.** Its sample was also 83/463 entries,
-  which would have made any number inadmissible; a re-run must rank against the full corpus.
+- **Branch 2 (structured extraction) FAILS.** *(Re-run landed after this section was first written;
+  the earlier reading — "undetermined, not refuted" — is superseded. It is now refuted.)* Ranked
+  against the **full 463-entry corpus**, no sampling, weights frozen on holdout-1 before holdout-2
+  was scored once: pooled recall@5 = **17/65 = 0.262** against ≥0.70, and **worse than Branch 1's
+  0.523** — extracting structure lost information rather than adding it. Distractor separation AUC
+  = **0.543 / 0.350**, chance and *below* chance.
+  **The root cause is vocabulary coverage, not scoring.** `contradiction_type` was `unclassified`
+  for **90.2% / 91.7% of holdout queries** (68.9% of the corpus), so the type term contributed
+  nothing and the score collapsed to plain cosine — which independently measures recall@5 = 0.200.
+  All four weight settings landed within 0.20–0.23, so no weighting rescues it. Cost is a genuine
+  lookup profile (0.08 ms/entry extract, 1.2 ms/query rank), which is moot at this accuracy.
 - **Branch 3 fires exactly on the boundary.** Honest held-out reading (weight fixed on set A,
   scored on set B) = **0.500 to three decimals**; pooled 0.523, 95% CI **[0.40, 0.64]** — straddles
   0.50, excludes 0.70. At a pre-specified `w=0.5` both sets fall to 0.400/0.433, i.e. branch 4.

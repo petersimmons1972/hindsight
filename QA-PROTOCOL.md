@@ -21,6 +21,7 @@ verifies (opus)**. Every actor result is captured in `qa-ledger/actor-results.js
 | rounds to acceptance, G1 lineage | 5 |
 | rounds to halt, G2 lineage | 3 (design abandoned) |
 | vendor on both sides of QA | **100% anthropic** |
+| verify-role actors that emitted **no verdict line at all** | **16 / 31** |
 
 Three things that baseline says:
 
@@ -35,6 +36,13 @@ family, same training, same priors. The single highest-yield review of the campa
 markers-authored-from-tests defect that four same-vendor rounds had missed. This is our own
 `convergence-is-not-corroboration` lesson turned on ourselves: N reviewers from one vendor is
 closer to N=1 than to N.
+
+**2b. Half the verifiers never returned a verdict.** 16 of 31 verify-role actors emitted no
+`VERDICT:` line. Rule 4 exists because the landing gate matches on that literal string, so those
+runs were **unlandable by construction** — the work was done and then could not be acted on. This
+is not a failed verification; it is a failed *report*, and the two must never share a denominator
+(dividing acceptance by all 31 gives a false 6% and hides the reporting gap inside the quality
+number). The acceptance figures above divide by the 15 actors that actually returned a verdict.
 
 **3. The one stage that worked in a single pass was adversary-first.** C1d's blind holdout — the
 fixture author was a *different agent* that was forbidden to read the implementation it would

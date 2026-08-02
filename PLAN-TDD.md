@@ -196,7 +196,7 @@ packets before the expensive ones.
 | 1 | #5 | C5 L1 schema validator | review pass | Land once `require-real-ci` is green. Add R4 test: zero-entry input must FAIL, not report "0 invalid". |
 | 2 | #4 | C4 enforcement verifier | review pass | Land. Its measured output (24 phantom paths, 200 unenforced `machine` entries) becomes Phase 5 input. |
 | 3 | #1 | C7 CI wiring | re-review required | Land only after Phase 0 proves the workflow executes. |
-| 4 | #3 | C1 clustering | **unreviewed** | Adversarial cross-vendor review (Grok) before landing — see below. |
+| 4 | #3 | C1 clustering | **REVIEWED → FAIL** | **Do not land.** Superseded by C1c. |
 | 5 | #2 | C6 vendor sync | **review FAIL** | Do not land. Superseded by C6c. |
 
 ### PR #3 — adversarial review brief (the one place vendor diversity is reserved)
@@ -328,6 +328,35 @@ T6 is the one that matters most: the natural implementation of an append-only ch
 degrades to a silent pass exactly when it cannot find its baseline.
 
 ---
+
+### C1c — clustering repair *(BLOCKS Phase 3; cross-vendor review returned `VERDICT: fail`)*
+
+The Grok review (PR #11, 330 lines) re-derived the claims rather than accepting them and
+**falsified the record**. The previous "C1 REPAIRED + VERIFIED / Waves 2-5 unblocked" entry is
+retracted. Measured:
+
+- **The default path collapses the corpus.** `--backend auto` → HTTP @ `DEFAULT_THRESHOLD=0.17`
+  puts all 458 entries in **one cluster**, and that output is committed at `pipeline/L2/
+  clusters.jsonl`. HTTP clears the ground-truth contract at **no** threshold in
+  {0.17 … 0.85}. (An earlier record claims "180 clusters, largest 34" — C1c must re-derive and
+  say which is true; trust neither.)
+- **"Both backends agree, therefore corroboration" was asserted, not measured** — and it was the
+  sentence that unblocked four waves. The suite forces TF-IDF for the only ground-truth gate and
+  never exercises HTTP quality, so the default path's nonsense was invisible.
+  Textbook `convergence-is-not-corroboration`.
+- **The ground-truth gate measures itself.** TF-IDF success is load-bearing on hand-authored
+  regex markers tuned to the fixture's own wording; disable them and completion-signal recall
+  falls to ~0.29. A bucketing regex would outscore a real vectorizer and the suite could not
+  tell. Either drop the markers, or keep them as a declared hybrid and evaluate ground truth on
+  a **held-out set the markers were not tuned on**.
+- **The degeneracy invariant is decorative** — fires on 0/-0.1/1.5, but a *plausible* 0.05 exits
+  0 and writes a 440/458 cluster.
+- The packet suite is currently **red** (1 failed / 7 passed), and concrete FP and FN inversions
+  were supplied with inputs.
+
+**Phase 3 does not open until C1c is CONFIRMED_GOOD.** This is the plan's own pre-existing gate
+("if the report does not surface the known clusters, clustering is wrong and later waves must not
+proceed"), enforced for the first time by evidence rather than assertion.
 
 ## Phase 3 — Wave 2: the packets that are the point
 

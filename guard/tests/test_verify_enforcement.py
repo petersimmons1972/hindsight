@@ -890,6 +890,116 @@ def test_root_that_is_ancestor_of_another_mapped_root_is_rejected(
 
 
 # ---------------------------------------------------------------------------
+# C4e (finding 1): validate_source_roots() used to judge the raw config
+# STRING (relpath == "." exactly, and PurePosixPath ancestor comparisons
+# over unresolved text). Anything not already in canonical "." form sailed
+# through untouched -- `./`, `./.`, `..`, `fleet/..` all resolve to
+# projects_dir exactly like "." does, and an ABSOLUTE relpath defeated the
+# check completely, because `(projects_dir / absolute_path)` DISCARDS
+# projects_dir under pathlib's join semantics. The fix resolves each
+# candidate to a real Path first and judges THAT. Each variant below is
+# tested directly against validate_source_roots(), not through main(), so
+# the exact rejection reason is pinned per-shape rather than relying on
+# main()'s generic "malformed root" catch-all.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [".", "./", "./.", "..", "fleet/.."],
+    ids=["dot", "dot-slash", "dot-slash-dot", "dotdot", "subdir-dotdot"],
+)
+def test_dot_equivalent_roots_are_all_rejected_after_resolution(
+    tmp_path: Path, relpath: str
+) -> None:
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "fleet").mkdir(parents=True)
+    with pytest.raises(ValueError, match="forbidden"):
+        MODULE.validate_source_roots(
+            {"sample": relpath}, tmp_path / "source-roots.conf", projects_dir
+        )
+
+
+def test_absolute_root_identical_to_projects_dir_is_rejected(tmp_path: Path) -> None:
+    """The literal C4e repro: `fleet-dispatch-schema:/home/psimmons/projects`
+    -- an ABSOLUTE relpath equal to projects_dir itself. A lexical
+    `relpath == "."` check never even looks at this; only resolving the
+    candidate and comparing the resulting Path catches it."""
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    with pytest.raises(ValueError, match="forbidden"):
+        MODULE.validate_source_roots(
+            {"sample": str(projects_dir)}, tmp_path / "source-roots.conf", projects_dir
+        )
+
+
+def test_absolute_root_outside_projects_dir_is_rejected(tmp_path: Path) -> None:
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    outside = tmp_path / "not-under-projects"
+    outside.mkdir()
+    with pytest.raises(ValueError, match="forbidden"):
+        MODULE.validate_source_roots(
+            {"sample": str(outside)}, tmp_path / "source-roots.conf", projects_dir
+        )
+
+
+def test_absolute_root_inside_projects_dir_is_accepted(tmp_path: Path) -> None:
+    """An absolute path is not inherently forbidden -- only one that
+    resolves to projects_dir itself, an ancestor of it, or outside it
+    entirely. An absolute path to a genuine repo subdirectory strictly
+    inside ~/projects is exactly equivalent to a relative one and must
+    pass."""
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "fleet").mkdir(parents=True)
+    MODULE.validate_source_roots(
+        {"sample": str(projects_dir / "fleet")}, tmp_path / "source-roots.conf", projects_dir
+    )  # must not raise
+
+
+def test_ancestor_check_uses_resolved_paths_not_raw_strings(tmp_path: Path) -> None:
+    """Two config strings that are lexically unrelated (`fleet` vs
+    `nested/../fleet/sub`) can still resolve to an ancestor/descendant pair.
+    A PurePosixPath comparison over the raw text would miss this."""
+    projects_dir = tmp_path / "projects"
+    (projects_dir / "fleet" / "sub").mkdir(parents=True)
+    with pytest.raises(ValueError, match="ancestor"):
+        MODULE.validate_source_roots(
+            {"outer": "fleet", "inner": "nested/../fleet/sub"},
+            tmp_path / "source-roots.conf",
+            projects_dir,
+        )
+
+
+def test_full_repro_absolute_root_defeats_lexical_check_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The exact end-to-end C4e repro via main(): an absolute root
+    identical to projects_dir, with an unrelated repo's file claimed as
+    the enforcement mechanism -- must now be rejected at config-validation
+    time, before the leaked file is ever even printed."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "substack").mkdir(parents=True)
+    (projects / "substack" / "README.md").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"fleet-dispatch-schema": str(projects)})
+    write_records(
+        l1_dir,
+        "fleet-dispatch-schema",
+        machine_record("leak", {"file": "substack/README.md", "kind": "test"}),
+    )
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path)
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "phantom:" not in err
+    assert "substack/README.md" not in err
+    assert "forbidden" in err.lower()
+
+
+# ---------------------------------------------------------------------------
 # C4d D2: every L1 source must be mapped, or explicitly declared unmappable
 # with a reason -- an unmapped, undeclared source used to be a free pass.
 # ---------------------------------------------------------------------------
@@ -1034,25 +1144,56 @@ def test_checked_floor_at_or_above_is_fine(
     assert exit_code == 0
 
 
-def test_checked_floor_is_not_consulted_in_the_skip_state(
+def test_checked_floor_is_exempt_only_when_projects_dir_is_entirely_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """An environment that structurally cannot check anything (checked == 0
-    everywhere) must take the declared SKIP path, not be penalized by the
-    checked floor -- that floor only applies "wherever roots resolve"."""
+    """C4e (finding 2): the ONLY environment exempted from the checked
+    floor is one where ~/projects does not exist on disk AT ALL -- the
+    real CI runner's actual shape (confirmed empirically: `~/projects does
+    not exist here at all`, .github/workflows/guard.yml). SELF is the one
+    root that resolves regardless (this checkout's own root), so this is
+    the true CI shape: SELF resolves, checked == 0 (all its entries
+    unbacked), and projects_dir itself is nowhere on disk."""
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
-    projects = tmp_path / "projects"
-    (projects / "repo").mkdir(parents=True)  # root resolves...
+    projects = tmp_path / "does-not-exist-at-all"  # never created
     roots_path = tmp_path / "source-roots.conf"
-    write_source_roots(roots_path, {"sample": "repo"})
-    write_records(l1_dir, "sample", machine_record("example", None))  # ...but unbacked, checked=0
+    write_source_roots(roots_path, {"sample": "SELF"})
+    write_records(l1_dir, "sample", machine_record("example", None))  # unbacked, checked=0
 
     exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, checked_floor=99)
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "SKIPPED" in err
     assert "checked entry count dropped" not in err
+    assert "CHECKED-FLOOR: exempted" in err
+
+
+def test_checked_floor_still_fires_in_skip_shape_when_projects_dir_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """C4e (finding 2), the exploit this closes: a workstation where
+    ~/projects DOES exist, but source-roots.conf was narrowed until every
+    remaining mapped root has checked == 0. `useful_count == 0` looks
+    IDENTICAL to the genuine CI shape above from that signal alone -- the
+    only thing that tells them apart is whether ~/projects is actually
+    present on disk, and here it is. This must be a hard ERROR, not a
+    silent SKIPPED pass -- and critically, it must fail BEFORE the SKIPPED
+    line ever prints (mutation-bar item (b): moving this check back after
+    the SKIPPED return must go red)."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)  # ~/projects genuinely exists...
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", None))  # ...but checked=0
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, checked_floor=1)
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "SKIPPED" not in err
+    assert "checked entry count dropped to 0, below floor 1" in err
 
 
 def test_missing_checked_floor_file_fails_loud(
@@ -1266,3 +1407,148 @@ def test_empty_known_phantoms_ledger_is_a_valid_zero_debt_state(
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "DEBT: 0 known phantom(s)" in err
+
+
+# ---------------------------------------------------------------------------
+# C4e (finding 3): "a floor the same change can lower is not a floor." Every
+# floor file (mapped-sources-floor, enforcement-floor, checked-floor) must
+# only ever increase relative to what was committed at origin/main -- a
+# decrease is a hard ERROR unless explicitly authorized via
+# --allow-floor-decrease NAME=REASON, which still prints loudly. The
+# git-history lookup itself (previous_floor_value) is mocked here so these
+# tests are hermetic -- they don't depend on this checkout's real git log.
+# ---------------------------------------------------------------------------
+
+
+def _fake_previous(values: dict[str, int]):
+    def _lookup(path: Path, ref: str) -> int | None:
+        return values.get(path.name)
+
+    return _lookup
+
+
+@pytest.mark.parametrize(
+    ("label", "kwarg", "path_name"),
+    [
+        ("mapped-sources-floor", "mapped_sources_floor", "mapped-sources-floor.conf"),
+        ("enforcement-floor", "enforcement_floor", "enforcement-floor.conf"),
+        ("checked-floor", "checked_floor", "checked-floor.conf"),
+    ],
+)
+def test_floor_ratchet_blocks_silent_decrease_mutation_bar_c(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+    kwarg: str,
+    path_name: str,
+) -> None:
+    monkeypatch.setattr(MODULE, "previous_floor_value", _fake_previous({path_name: 33}))
+
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, **{kwarg: 10})
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert f"{label} dropped from 33" in err
+    assert "--allow-floor-decrease" in err
+
+
+@pytest.mark.parametrize(
+    ("label", "kwarg", "path_name"),
+    [
+        ("mapped-sources-floor", "mapped_sources_floor", "mapped-sources-floor.conf"),
+        ("enforcement-floor", "enforcement_floor", "enforcement-floor.conf"),
+        ("checked-floor", "checked_floor", "checked-floor.conf"),
+    ],
+)
+def test_floor_ratchet_allows_decrease_with_explicit_flag_and_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+    kwarg: str,
+    path_name: str,
+) -> None:
+    monkeypatch.setattr(MODULE, "previous_floor_value", _fake_previous({path_name: 33}))
+
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        extra_args=["--allow-floor-decrease", f"{label}=deliberate test decrease"],
+        **{kwarg: 1},
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 0
+    assert f"WARNING: {label} dropped from 33 to 1" in err
+    assert "deliberate test decrease" in err
+
+
+def test_floor_ratchet_is_silent_when_current_is_at_or_above_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        MODULE, "previous_floor_value", _fake_previous({"checked-floor.conf": 1})
+    )
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
+
+    exit_code = run_verifier(monkeypatch, l1_dir, projects, roots_path, checked_floor=1)
+    err = capsys.readouterr().err
+    assert exit_code == 0
+    assert "dropped from" not in err
+
+
+def test_floor_ratchet_malformed_allow_flag_fails_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("example", None))
+
+    exit_code = run_verifier(
+        monkeypatch,
+        l1_dir,
+        projects,
+        roots_path,
+        extra_args=["--allow-floor-decrease", "no-equals-sign-here"],
+    )
+    err = capsys.readouterr().err
+    assert exit_code != 0
+    assert "malformed --allow-floor-decrease" in err
+
+
+def test_previous_floor_value_returns_none_for_a_file_outside_this_repo(tmp_path: Path) -> None:
+    """The ratchet must fail OPEN (skip enforcement, never raise or block a
+    run) when it cannot determine history at all -- a file outside this
+    checkout entirely (as every sandboxed test fixture is) is exactly that
+    case."""
+    assert MODULE.previous_floor_value(tmp_path / "checked-floor.conf", "origin/main") is None

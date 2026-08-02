@@ -11,10 +11,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from itertools import pairwise
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
@@ -111,7 +112,7 @@ def default_unmapped_sources_path() -> Path:
     return Path(__file__).resolve().parents[1] / "conf" / "unmapped-sources.conf"
 
 
-def load_source_roots(path: Path) -> dict[str, str]:
+def load_source_roots(path: Path, projects_dir: Path | None = None) -> dict[str, str]:
     """Load the source -> repo-root mapping. Fails loud, never "no map, so all fine".
 
     An L1 source with no entry here is not an error by itself -- it falls
@@ -138,51 +139,84 @@ def load_source_roots(path: Path) -> dict[str, str]:
         mapping[source] = relpath
     if not mapping:
         raise ValueError(f"source-roots map is empty: {path}")
-    validate_source_roots(mapping, path)
+    validate_source_roots(mapping, path, projects_dir or default_projects_dir())
     return mapping
 
 
-def validate_source_roots(mapping: dict[str, str], path: Path) -> None:
+def validate_source_roots(mapping: dict[str, str], path: Path, projects_dir: Path) -> None:
     """Reject roots that would reopen the cross-repo phantom leak this area
     exists to close, at CONFIG-VALIDATION time -- before any path on disk is
     even looked at, so this fires in every environment including one where
     no source repo is checked out.
 
-    A root of "." (i.e. projects_dir itself, ~/projects) makes every file
-    under EVERY OTHER mapped repo resolve as "enforced" for whichever source
-    carries that root -- a substack/README.md entry would pass as an
-    enforced fleet-dispatch mechanism. Same defect, different shape, if any
-    mapped root is a strict ancestor of another mapped root (the ancestor's
-    source could resolve into the descendant's files). SELF is exempt: it
-    resolves to this checkout's own root, not a subdirectory of
-    projects_dir, so it cannot contain another mapped root.
-    """
-    for source, relpath in mapping.items():
-        if relpath == ".":
-            raise ValueError(
-                f"source-roots entry {source!r} in {path} maps to '.' (projects_dir itself, "
-                "i.e. ~/projects) -- forbidden: this reopens the cross-repo phantom leak this "
-                "check exists to close (any file anywhere under ~/projects would resolve as "
-                f"enforced for {source!r}). Map to a specific repo subdirectory, or declare "
-                f"{source!r} unmappable in conf/unmapped-sources.conf with a reason if its "
-                "enforcement paths genuinely cannot be scoped to one repo."
-            )
+    C4e (D3): this MUST resolve each candidate before judging it, never
+    compare the raw config string. A lexical check (`relpath == "."`, or
+    ancestor comparison over `PurePosixPath` strings built straight from the
+    config text) is defeated by anything that isn't already in canonical
+    form: `./`, `./.`, `..`, `fleet/..` all resolve to projects_dir itself
+    exactly like `.` does, and an ABSOLUTE relpath defeats it completely --
+    `(projects_dir / relpath).resolve()` uses pathlib's absolute-join
+    semantics, which silently DISCARD the left operand, so an absolute path
+    anywhere on the filesystem (inside or outside ~/projects) sailed through
+    a lexical `is_relative_to(PurePosixPath("."))`-style check untouched.
+    Resolving first and judging the resulting real `Path` closes all of
+    these at once, in one place, instead of pattern-matching each string
+    shape individually.
 
+    A root that resolves to projects_dir itself (or an ancestor of it, e.g.
+    `..`) makes every file under EVERY OTHER mapped repo resolve as
+    "enforced" for whichever source carries that root -- a
+    substack/README.md entry would pass as an enforced fleet-dispatch
+    mechanism. Same for any root resolving OUTSIDE projects_dir entirely
+    (an absolute path to a sibling directory, another disk, anywhere): nothing
+    scopes what such a root's entries can resolve against. Same defect,
+    different shape, if any mapped root is a strict ancestor of another
+    mapped root (the ancestor's source could resolve into the descendant's
+    files) -- that comparison is now also done on resolved `Path`s, not
+    `PurePosixPath` strings built from the raw config text, for the same
+    reason. SELF is exempt from both checks: it resolves to this checkout's
+    own root via `_repo_root()`, never through `projects_dir`, so it cannot
+    be projects_dir, an ancestor of it, or a subdirectory of another mapped
+    root's resolved path (and it cannot contain one either -- SELF's root
+    is not derived from projects_dir at all).
+    """
+    projects_root = projects_dir.resolve()
     non_self = {s: r for s, r in mapping.items() if r != SELF_ROOT_TOKEN}
-    for source_a, relpath_a in non_self.items():
-        path_a = PurePosixPath(relpath_a)
-        for source_b, relpath_b in non_self.items():
+
+    resolved: dict[str, Path] = {}
+    for source, relpath in non_self.items():
+        candidate = (projects_dir / relpath).resolve()
+        if (
+            candidate == projects_root
+            or projects_root.is_relative_to(candidate)
+            or not candidate.is_relative_to(projects_root)
+        ):
+            raise ValueError(
+                f"source-roots entry {source!r} in {path} maps to {relpath!r}, which resolves "
+                f"to {candidate} -- forbidden: that is not a proper subdirectory strictly "
+                f"inside ~/projects ({projects_root}); it is either projects_dir itself, an "
+                "ancestor of it, or outside it entirely. This reopens the cross-repo phantom "
+                f"leak this check exists to close (any file under {candidate} could resolve "
+                f"as enforced for {source!r}). Map to a specific repo subdirectory strictly "
+                f"inside ~/projects, or declare {source!r} unmappable in "
+                "conf/unmapped-sources.conf with a reason if its enforcement paths genuinely "
+                "cannot be scoped to one repo."
+            )
+        resolved[source] = candidate
+
+    for source_a, path_a in resolved.items():
+        for source_b, path_b in resolved.items():
             if source_a == source_b:
                 continue
-            path_b = PurePosixPath(relpath_b)
             if path_a == path_b:
                 continue
             if path_b.is_relative_to(path_a):
                 raise ValueError(
-                    f"source-roots entry {source_a!r} ({relpath_a}) in {path} is an ancestor "
-                    f"of {source_b!r} ({relpath_b}) -- forbidden: {source_a}'s entries could "
-                    f"resolve against {source_b}'s files too, reopening the cross-repo "
-                    "phantom leak this check exists to close."
+                    f"source-roots entry {source_a!r} ({mapping[source_a]}) in {path}, "
+                    f"resolving to {path_a}, is an ancestor of {source_b!r} "
+                    f"({mapping[source_b]}, resolving to {path_b}) -- forbidden: "
+                    f"{source_a}'s entries could resolve against {source_b}'s files too, "
+                    "reopening the cross-repo phantom leak this check exists to close."
                 )
 
 
@@ -301,12 +335,15 @@ def load_checked_floor(path: Path) -> int:
     the exists() test, wherever roots resolve -- so padding an unverifiable
     source cannot buy cover for shrinking real, verified coverage.
 
-    Unlike the enforcement-bearing floor, this one is only meaningful in an
-    environment where at least one root usefully resolved (see
-    `useful_count` in main()); an environment that cannot check anything
-    (CI with no source repos) legitimately has checked == 0 and must not be
-    penalized for that -- it takes the declared SKIP path instead, before
-    this floor is ever consulted.
+    Unlike the enforcement-bearing floor, this one is only fully enforced in
+    an environment where ~/projects actually exists on disk (see
+    `structurally_cannot_check` in main()); an environment where it is
+    entirely ABSENT (CI with no source repos checked out at all) legitimately
+    has checked == 0 and is exempted for that specific, narrow reason -- see
+    main()'s CHECKED-FLOOR block. C4e (finding 2): this is deliberately
+    narrower than "useful_count == 0" -- a workstation that HAS ~/projects
+    but was configured (via source-roots.conf / unmapped-sources.conf edits)
+    to check nothing is NOT exempt; only the directory's outright absence is.
 
     Missing or malformed -> ValueError (fail loud), same idiom as the other
     floor loaders.
@@ -324,6 +361,119 @@ def load_checked_floor(path: Path) -> int:
         return int(lines[0])
     except ValueError as exc:
         raise ValueError(f"checked floor value is not an integer: {lines[0]!r}") from exc
+
+
+def default_git_ref() -> str:
+    """The git ref floor files are ratcheted against.
+
+    `origin/main`, not `HEAD~1`: floors must only grow relative to the
+    branch this work will land on. A `HEAD~1` comparison would miss an
+    unauthorized decrease made one commit earlier on the SAME feature
+    branch (that decrease would already be "the previous commit" by the
+    time anyone re-runs this).
+    """
+    return "origin/main"
+
+
+def previous_floor_value(path: Path, ref: str) -> int | None:
+    """Best-effort read of a floor file's single integer value as committed
+    at `ref`, for ratchet enforcement (C4e, finding 3).
+
+    Returns None -- never raises -- when the previous value cannot be
+    determined at all: this checkout isn't a git repository, `ref` doesn't
+    exist (a shallow clone missing history, or a brand-new floor file with
+    no prior commit to compare against), git isn't installed, or the file's
+    content at `ref` doesn't parse as a single integer. `None` means "ratchet
+    enforcement is skipped for this run" -- it must NEVER make the floor
+    file's own value unreadable or the run fail for a reason unrelated to
+    the floor itself; the absolute-minimum check (`load_*_floor` above) is
+    what actually gates correctness, this only adds "don't shrink it
+    quietly" on top of an already-working floor.
+    """
+    try:
+        repo_root = _repo_root()
+        relpath = path.resolve().relative_to(repo_root)
+    except (OSError, ValueError):
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{relpath.as_posix()}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if len(lines) != 1:
+        return None
+    try:
+        return int(lines[0])
+    except ValueError:
+        return None
+
+
+def parse_floor_decrease_flags(raw: list[str]) -> dict[str, str]:
+    """Parse repeated `--allow-floor-decrease NAME=REASON` values.
+
+    Fails loud on a malformed entry (no `=`, or an empty name/reason) --
+    same idiom as every other config parser in this file: a flag that
+    silently did nothing would be worse than not having the escape hatch
+    at all, because it would look like the reason was recorded when it
+    wasn't.
+    """
+    parsed: dict[str, str] = {}
+    for entry in raw:
+        name, sep, reason = entry.partition("=")
+        name = name.strip()
+        reason = reason.strip()
+        if not sep or not name or not reason:
+            raise ValueError(
+                f"malformed --allow-floor-decrease value {entry!r}: expected NAME=REASON "
+                "with both halves non-empty"
+            )
+        parsed[name] = reason
+    return parsed
+
+
+def check_floor_ratchet(
+    label: str,
+    path: Path,
+    current: int,
+    previous: int | None,
+    decrease_reasons: dict[str, str],
+) -> tuple[bool, str | None]:
+    """Returns (ok, message). `ok` is False only for a SILENT, unauthorized
+    decrease -- never for a missing `previous` (see previous_floor_value)
+    or for `current >= previous`, both of which are fine and produce no
+    message at all. An authorized decrease (present in decrease_reasons)
+    is `ok = True` but still returns a loud message: the whole point of
+    C4d's `--accept-phantom` idiom, reused here, is that widening an escape
+    hatch must never be quiet just because it was permitted.
+    """
+    if previous is None or current >= previous:
+        return True, None
+    reason = decrease_reasons.get(label)
+    if reason is None:
+        return False, (
+            f"{label} dropped from {previous} (at {default_git_ref()}) to {current} in "
+            f"{path} without --allow-floor-decrease {label}=\"<reason>\" -- floors may only "
+            "shrink as an explicit, deliberate, loud act, never as a silent side effect of "
+            "an unrelated edit. If this decrease is genuinely intended, pass "
+            f"--allow-floor-decrease {label}=\"<reason>\" and record the same reason in "
+            f"{path}'s own comments."
+        )
+    return True, (
+        f"WARNING: {label} dropped from {previous} to {current} in {path}, authorized via "
+        f"--allow-floor-decrease with reason: {reason!r}. This flag does not persist -- the "
+        "reason must also be recorded in the conf file's own comments before this lands."
+    )
 
 
 def load_unmapped_sources(path: Path) -> dict[str, dict[str, str]]:
@@ -721,6 +871,21 @@ def build_parser() -> argparse.ArgumentParser:
             "growing the debt is always a deliberate, visible act, never silent."
         ),
     )
+    parser.add_argument(
+        "--allow-floor-decrease",
+        action="append",
+        default=[],
+        metavar="NAME=REASON",
+        help=(
+            "C4e (finding 3): floors (mapped-sources-floor, enforcement-floor, checked-floor) "
+            "may only ever increase relative to conf.default_git_ref() (origin/main) -- a "
+            "decrease is otherwise a hard ERROR, never silent. Pass this once per floor being "
+            "deliberately lowered, e.g. --allow-floor-decrease checked-floor=\"demapped a "
+            "source, see PR body\". Does not persist anything -- record the same reason in "
+            "the conf file's own comments before merging. NAME must be one of "
+            "mapped-sources-floor, enforcement-floor, checked-floor."
+        ),
+    )
     return parser
 
 
@@ -741,7 +906,7 @@ def main(argv: list[str] | None = None) -> int:
         # fails loud in EVERY environment, including one that structurally
         # cannot verify a single path (no source repos checked out).
         try:
-            source_roots = load_source_roots(default_source_roots_path())
+            source_roots = load_source_roots(default_source_roots_path(), default_projects_dir())
         except ValueError as exc:
             print(f"enforcement-verifier: {exc}", file=sys.stderr)
             return 1
@@ -775,6 +940,35 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"enforcement-verifier: {exc}", file=sys.stderr)
             return 1
+        try:
+            decrease_reasons = parse_floor_decrease_flags(args.allow_floor_decrease)
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+        git_ref = default_git_ref()
+
+        # C4e (finding 3): "a floor the same change can lower is not a
+        # floor." Every floor file may only ever increase relative to what
+        # was committed at `git_ref` (origin/main) -- a decrease is a hard
+        # ERROR unless explicitly authorized via --allow-floor-decrease,
+        # which still prints loudly (never a silent pass). This runs
+        # before any of the floors are actually applied below, so a
+        # decrease is caught regardless of which specific gate would have
+        # been affected by it.
+        for label, floor_path, current_value in (
+            ("mapped-sources-floor", default_mapped_sources_floor_path(), mapped_sources_floor),
+            ("enforcement-floor", default_enforcement_floor_path(), floor),
+            ("checked-floor", default_checked_floor_path(), checked_floor),
+        ):
+            previous_value = previous_floor_value(floor_path, git_ref)
+            ok, message = check_floor_ratchet(
+                label, floor_path, current_value, previous_value, decrease_reasons
+            )
+            if message is not None:
+                prefix = "enforcement-verifier: " if ok else "enforcement-verifier: ERROR: "
+                print(f"{prefix}{message}", file=sys.stderr)
+            if not ok:
+                return 1
 
         # 0. D1: the map that decides what gets checked must itself be
         #    gated. Computed straight off the loaded mapping -- no
@@ -854,6 +1048,61 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
+        # 2b. C4e (finding 2): the CHECKED-FLOOR must be evaluated here, in
+        # EVERY environment, BEFORE the SKIPPED decision below -- not after
+        # it. The old position (after the `useful_count == 0` return) meant
+        # this floor was dead code whenever nothing got checked, for ANY
+        # reason. That is exactly the exploit: reduce source-roots.conf
+        # until every remaining mapped root has checked == 0, and the run
+        # takes the same SKIPPED, exit-0 branch a genuinely CI-shaped
+        # runner takes -- with the config edit, none of it real config, on
+        # a fully populated workstation with all repos checked out.
+        #
+        # `useful_count == 0` alone cannot tell those two apart -- it is
+        # identical in both. What DOES differ: a genuinely CI-shaped
+        # runner's ~/projects does not exist AT ALL (confirmed empirically
+        # for our own runner, see .github/workflows/guard.yml's "Verify
+        # enforcement" step comment) -- there is no config edit that can
+        # fake "this whole directory is absent from the filesystem" on a
+        # workstation that actually has it. So: the floor is fully
+        # enforced whenever projects_dir exists (including the degenerate
+        # case where it exists but is empty -- a workstation that HAS a
+        # ~/projects has no structural excuse to check nothing), and is
+        # exempted only when it is entirely absent.
+        projects_dir = default_projects_dir()
+        structurally_cannot_check = not projects_dir.is_dir()
+        total_checked = sum(totals.checked for totals in report.sources.values())
+        print(
+            f"enforcement-verifier: CHECKED-FLOOR: {total_checked} entries actually verified "
+            f"against a resolved root (floor {checked_floor})",
+            file=sys.stderr,
+        )
+        if total_checked < checked_floor:
+            if structurally_cannot_check:
+                print(
+                    "enforcement-verifier: CHECKED-FLOOR: exempted this run -- "
+                    f"{projects_dir} does not exist on this machine at all, so nothing here "
+                    "could have been checked by construction (e.g. the CI runner, which "
+                    "checks out only this one repo). Real coverage is only verified where "
+                    "~/projects is populated.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"enforcement-verifier: ERROR: checked entry count dropped to "
+                    f"{total_checked}, below floor {checked_floor} -- fewer entries were "
+                    "actually run through the exists() check than before, even though the "
+                    "enforcement-bearing total above may look unchanged (e.g. offset by "
+                    "entries in an unmapped or not-checked-out source, which were never "
+                    "verified at all), and ~/projects IS present on this machine, so there is "
+                    "no structural excuse for checking fewer entries. Restore real checked "
+                    "coverage, or lower the floor explicitly (with --allow-floor-decrease "
+                    "checked-floor=\"<reason>\") and record the reason in "
+                    "conf/checked-floor.conf.",
+                    file=sys.stderr,
+                )
+                return 1
+
         if useful_count == 0:
             print(
                 "enforcement-verifier: SKIPPED: roots are present on this machine but NONE "
@@ -872,32 +1121,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"{report.mapped_sources} mapped source roots actually verified an entry on "
                 f"this machine (require >= {args.require_roots}); refusing to report success "
                 "on a check that could not see enough of its own inputs.",
-                file=sys.stderr,
-            )
-            return 1
-
-        # 2b. D2/mutation-bar(d): the floor on entries actually CHECKED, not
-        #     merely present as an enforcement-bearing claim. Only
-        #     meaningful once we know this environment can check ANYTHING
-        #     (useful_count > 0, just established above) -- a source with no
-        #     root, or a root that resolves but backs nothing, contributes
-        #     0 here regardless of how many non-null `enforcement` values it
-        #     carries elsewhere, so padding an unmapped/uncheckable source
-        #     cannot buy headroom against deleting a genuinely checked entry.
-        total_checked = sum(totals.checked for totals in report.sources.values())
-        print(
-            f"enforcement-verifier: CHECKED-FLOOR: {total_checked} entries actually verified "
-            f"against a resolved root (floor {checked_floor})",
-            file=sys.stderr,
-        )
-        if total_checked < checked_floor:
-            print(
-                f"enforcement-verifier: ERROR: checked entry count dropped to {total_checked}, "
-                f"below floor {checked_floor} -- fewer entries were actually run through the "
-                "exists() check than before, even though the enforcement-bearing total above "
-                "may look unchanged (e.g. offset by entries in an unmapped or not-checked-out "
-                "source, which were never verified at all). Restore real checked coverage, or "
-                "lower the floor explicitly in conf/checked-floor.conf with a recorded reason.",
                 file=sys.stderr,
             )
             return 1

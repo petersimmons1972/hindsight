@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Self
@@ -16,12 +17,26 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "pipeline" / "tests" / "fixtures" / "recurrence_ground_truth.json"
+HOLDOUT_FIXTURE = ROOT / "pipeline" / "tests" / "fixtures" / "holdout_paraphrases.json"
 MODULE_PATH = ROOT / "pipeline" / "cluster.py"
 SPEC = importlib.util.spec_from_file_location("hindsight_cluster", MODULE_PATH)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+def _corpus_marker_texts() -> list[str]:
+    """The exact text `_cause_shape_markers` is ever allowed to see: instance,
+    check, and class_hint -- never id or source_path (identity leakage) and
+    never source_anchor (a field markers do not read, so grounding there
+    would prove nothing about what the regex can actually match at runtime).
+    """
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    return [
+        " ".join(filter(None, [entry.instance, entry.check, entry.class_hint])).lower()
+        for entry in entries
+    ]
 
 
 def test_clustering_engine_exists() -> None:
@@ -269,94 +284,193 @@ def test_false_positive_novel_failure_does_not_join_an_existing_family() -> None
         assert assignments["novel-CTRL-1"] not in {assignments[member] for member in members}
 
 
-def test_false_negative_paraphrased_family_members_still_join_their_family() -> None:
-    """Reviewer-supplied inversion 2: known duplicate shapes must not read as novel.
+def test_corpus_grounds_every_marker_alternative() -> None:
+    """H2 (C1d, 2026-08-01): a regex alternative that matches no real record
+    can only have been authored to match a sentence in this test suite.
 
-    These paraphrase the completion-signal and fail-silent-gate definitions
-    (a claimed-done signal contradicted by an absent deliverable; a real
-    failure silently reported as green) without using any of the reviewer's
-    or fixture's exact wording -- `held-COMP-*` in particular were authored
-    fresh for this test, never used to tune `_cause_shape_markers`.
+    Every literal alternative declared through `MODULE._lit()` in
+    `_cause_shape_markers` must occur at least once in the actual
+    instance/check/class_hint text of a real `pipeline/L1/*.jsonl` record --
+    the exact text the marker function is ever given at runtime. This is a
+    mechanical, standing gate: it fails immediately, and names the offending
+    fragment, the moment anyone (human or agent) widens a marker with an
+    alternative lifted from a test sentence rather than the corpus.
+    """
+    corpus_texts = _corpus_marker_texts()
+    ungrounded = [
+        fragment
+        for fragment in MODULE.MARKER_TEXT_FRAGMENTS
+        if not any(re.search(fragment, text) for text in corpus_texts)
+    ]
+    assert not ungrounded, (
+        f"marker alternative(s) with zero corpus occurrences: {ungrounded!r} -- "
+        "these can only have been authored from a test sentence, not the corpus"
+    )
+
+
+def test_false_positive_distractor_paraphrases_do_not_join_any_family() -> None:
+    """Precision half of the C1d held-out gate (fixtures/holdout_paraphrases.json).
+
+    This fixture was authored by a different agent who never read
+    `_cause_shape_markers` (see the fixture's own `authoring_constraints`), so
+    it cannot be graded by markers written to match it -- the process defect
+    named in the C1d brief. Each of its 6 near-miss distractors
+    (`expected_family: null`) must land in none of the five ground-truth
+    families' clusters. Recall alone is trivially satisfiable by merging
+    everything; this is what makes a recall number mean anything.
     """
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    families = {family["key"]: family["members"] for family in fixture["families"]}
+    ground_truth = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    families = {family["key"]: family["members"] for family in ground_truth["families"]}
+    holdout = json.loads(HOLDOUT_FIXTURE.read_text(encoding="utf-8"))
 
-    def make(entry_id: str, instance: str) -> MODULE.Entry:
+    def make(entry_id: str, text: str) -> MODULE.Entry:
         return MODULE.Entry(
-            id=entry_id,
-            instance=instance,
-            check=None,
-            class_hint=None,
-            first_seen=None,
-            source_path="novel/paraphrase",
+            id=entry_id, instance=text, check=None, class_hint=None,
+            first_seen=None, source_path="novel/holdout",
         )
 
-    paraphrases = [
-        make(
-            "fn-COMP-1",
-            "The agent claimed the task was finished, but the file it was "
-            "supposed to create never appeared on disk.",
-        ),
-        make(
-            "fn-COMP-2",
-            "Automation said success while the expected output directory "
-            "stayed empty the whole time.",
-        ),
-        make(
-            "fn-COMP-3",
-            "Worker process announced done; the promised patch set was "
-            "absent from the branch.",
-        ),
-        make(
-            "fn-COMP-4",
-            "Subagent printed complete in the log, yet the PR body it owed "
-            "never got opened.",
-        ),
-        make(
-            "fn-GATE-1",
-            "Missing credentials made the checker crash; dashboard painted "
-            "the cell green anyway.",
-        ),
-        make(
-            "fn-GATE-2",
-            "Network blip during the probe was swallowed; operators saw "
-            "only a soft skip, not a red failure.",
-        ),
-        # Held-out: authored independently of the reviewer's wording, to
-        # prove this generalises from the family's stated definition rather
-        # than being tuned to these exact sentences.
-        make(
-            "held-COMP-1",
-            "The pipeline reported the export as finished, yet the "
-            "destination bucket had zero new objects.",
-        ),
-        make(
-            "held-COMP-2",
-            "The runner logged a green summary line although the changelog "
-            "entry it promised was never committed.",
-        ),
-    ]
-
-    clusters = MODULE.cluster_entries([*entries, *paraphrases], MODULE.TfidfEmbeddingBackend())
+    holdout_entries = [make(item["id"], item["text"]) for item in holdout["entries"]]
+    clusters = MODULE.cluster_entries([*entries, *holdout_entries], MODULE.TfidfEmbeddingBackend())
     assignments = _assignments(clusters)
-    _assert_fixture_contract(clusters)
 
-    completion = families["completion-signal"]
-    comp_cluster = max(
-        (assignments[member] for member in completion),
-        key=lambda cluster_id: sum(assignments[member] == cluster_id for member in completion),
-    )
-    gate = families["fail-silent-gate"]
-    gate_cluster = max(
-        (assignments[member] for member in gate),
-        key=lambda cluster_id: sum(assignments[member] == cluster_id for member in gate),
+    family_cluster_ids = {
+        assignments[member] for members in families.values() for member in members
+    }
+    distractors = [item["id"] for item in holdout["entries"] if item["expected_family"] is None]
+    assert distractors, "fixture must declare at least one distractor"
+    false_positives = [d for d in distractors if assignments[d] in family_cluster_ids]
+    assert not false_positives, (
+        f"distractor(s) wrongly absorbed into a ground-truth family cluster: {false_positives!r}"
     )
 
-    for entry_id in ("fn-COMP-1", "fn-COMP-2", "fn-COMP-3", "fn-COMP-4", "held-COMP-1", "held-COMP-2"):
-        assert assignments[entry_id] == comp_cluster, entry_id
-    for entry_id in ("fn-GATE-1", "fn-GATE-2"):
-        assert assignments[entry_id] == gate_cluster, entry_id
+
+def _held_out_recall(clusters: list[object], families: dict[str, list[str]], holdout_entries: list[dict]) -> tuple[int, int]:
+    assignments = _assignments(clusters)
+    family_majority_cluster = {
+        family: max(
+            (assignments[member] for member in members),
+            key=lambda cluster_id: sum(assignments[member] == cluster_id for member in members),
+        )
+        for family, members in families.items()
+    }
+    non_distractors = [item for item in holdout_entries if item["expected_family"] is not None]
+    hits = sum(
+        1
+        for item in non_distractors
+        if assignments[item["id"]] == family_majority_cluster[item["expected_family"]]
+    )
+    return hits, len(non_distractors)
+
+
+def test_held_out_paraphrase_recall_meets_the_measured_floor() -> None:
+    """Recall half of the C1d held-out gate: fresh paraphrases nobody tuned against.
+
+    Unlike the ground-truth fixture (whose members the markers were repaired
+    against), every non-distractor entry in `holdout_paraphrases.json` was
+    written by an agent who had not read `_cause_shape_markers`.
+
+    Measured, honest result on this commit (TF-IDF backend, forced -- the
+    only backend CI can run deterministically): **0/35 recall, 0/6 distractor
+    false positives.** This is not a regression introduced by removing H2's
+    ungrounded markers -- none of those markers ever fired on a real corpus
+    entry, so removing them cannot have changed this number; it was already
+    0/35 in the fixture author's own `baseline_measurement`.
+
+    Before accepting 0 as the floor, the blend was actually swept: dense
+    weight in {0.10..0.30} crossed with threshold in {0.20..0.35} against the
+    real, reachable HTTP embedding backend (BAAI/bge-m3). Every setting that
+    raised holdout recall above 0 (weight >= 0.30 at low thresholds) broke
+    the ground-truth precision contract (families incorrectly merged) or, at
+    weight >= 0.50, collapsed the entire 504-entry corpus into one cluster --
+    this backend's raw cosine similarity has too high and too uniform a
+    baseline across unrelated incidents to discriminate at any threshold
+    that also keeps the calibrated recall/precision contract intact (see
+    `cluster.py`'s module docstring, itself already the record of that
+    finding for the *default* threshold). No (weight, threshold) point in
+    that grid does better than the current 179-cluster / 0.10-weight
+    default without failing ground truth. That is the honest ceiling of
+    this architecture's average-link-over-blended-cosine design against
+    heavily reworded, never-tuned-against phrasing; closing it needs either
+    a fundamentally different dense encoder/similarity calibration or a
+    non-lexical signal this pipeline does not yet have -- not a wider regex
+    (which the corpus-grounding test above exists specifically to block) and
+    not a higher dense weight (measured above to break precision first).
+
+    This assertion locks the measurement rather than setting an aspirational
+    floor: any change, up or down, means the architecture changed and this
+    comment needs a fresh measurement, not a silent bump.
+    """
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    ground_truth = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    families = {family["key"]: family["members"] for family in ground_truth["families"]}
+    holdout = json.loads(HOLDOUT_FIXTURE.read_text(encoding="utf-8"))
+
+    def make(entry_id: str, text: str) -> MODULE.Entry:
+        return MODULE.Entry(
+            id=entry_id, instance=text, check=None, class_hint=None,
+            first_seen=None, source_path="novel/holdout",
+        )
+
+    holdout_entries = [make(item["id"], item["text"]) for item in holdout["entries"]]
+    clusters = MODULE.cluster_entries([*entries, *holdout_entries], MODULE.TfidfEmbeddingBackend())
+    hits, total = _held_out_recall(clusters, families, holdout["entries"])
+
+    documented_hits = 0
+    assert hits == documented_hits, (
+        f"held-out paraphrase recall changed from the documented {documented_hits}/{total} "
+        f"to {hits}/{total} -- this backend/threshold configuration's generalisation "
+        "changed; re-measure and update the documented number and its justification above, "
+        "don't just widen this assertion"
+    )
+
+
+def test_active_http_backend_held_out_gate_when_reachable() -> None:
+    """Same held-out gate against the real production (`auto`) backend, when reachable.
+
+    Skips (does not fail) when the authorised HTTP embedding service is
+    offline, matching the existing pattern for
+    `test_active_http_backend_meets_the_ground_truth_contract_when_reachable`.
+    Measured result when reachable, at the calibrated 0.10 dense weight /
+    0.20 threshold: 0/35 recall, 0/6 distractor false positives -- identical
+    to the TF-IDF-only path, because 10% dense weight is not enough signal
+    to move any assignment (see the weight sweep documented in
+    `test_held_out_paraphrase_recall_meets_the_measured_floor`).
+    """
+    backend = MODULE.HttpEmbeddingBackend()
+    if not backend.available:
+        pytest.skip("authorised HTTP embedding backend is unreachable")
+
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    ground_truth = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    families = {family["key"]: family["members"] for family in ground_truth["families"]}
+    holdout = json.loads(HOLDOUT_FIXTURE.read_text(encoding="utf-8"))
+
+    def make(entry_id: str, text: str) -> MODULE.Entry:
+        return MODULE.Entry(
+            id=entry_id, instance=text, check=None, class_hint=None,
+            first_seen=None, source_path="novel/holdout",
+        )
+
+    holdout_entries = [make(item["id"], item["text"]) for item in holdout["entries"]]
+    clusters = MODULE.cluster_entries([*entries, *holdout_entries], backend)
+    assignments = _assignments(clusters)
+
+    family_cluster_ids = {
+        assignments[member] for members in families.values() for member in members
+    }
+    distractors = [item["id"] for item in holdout["entries"] if item["expected_family"] is None]
+    false_positives = [d for d in distractors if assignments[d] in family_cluster_ids]
+    assert not false_positives, (
+        f"live HTTP backend: distractor(s) wrongly absorbed into a family cluster: {false_positives!r}"
+    )
+
+    hits, total = _held_out_recall(clusters, families, holdout["entries"])
+    documented_hits = 0
+    assert hits == documented_hits, (
+        f"live HTTP backend held-out recall changed from the documented {documented_hits}/{total} "
+        f"to {hits}/{total} -- re-measure and update the documented number, don't just widen this"
+    )
 
 
 def test_same_input_produces_identical_assignment() -> None:

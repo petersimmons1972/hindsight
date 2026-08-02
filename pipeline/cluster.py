@@ -193,72 +193,117 @@ def similarity_text(entry: Entry) -> str:
     return " ".join(parts)
 
 
+MARKER_TEXT_FRAGMENTS: list[str] = []
+
+
+def _lit(*fragments: str) -> tuple[str, ...]:
+    """Declare the literal regex alternatives one marker condition requires.
+
+    Every fragment declared here is registered in `MARKER_TEXT_FRAGMENTS` and
+    is checked by `test_corpus_grounds_every_marker_alternative` in
+    `test_cluster.py` against the real `instance`/`check`/`class_hint` text of
+    every `pipeline/L1/*.jsonl` record -- the only fields a marker is ever
+    allowed to read.  A fragment grounded nowhere in that corpus can only have
+    been authored to match a sentence in the test suite rather than a real
+    incident: an adversarial review (C1d, 2026-08-01) found exactly that --
+    `zero new`, `painted`, `stayed empty`, and `never got opened`/`committed`
+    occurred zero times across all 463 corpus entries and existed solely to
+    satisfy sentences the review itself had written in `test_cluster.py`. They
+    have been removed below, not widened; do not re-add an alternative here
+    without it clearing the grounding test on real L1 text first.
+
+    Write each fragment as a complete, self-contained regex (its own `\b`
+    boundaries) so the grounding test can search it independently, and so the
+    same fragment is what the runtime actually matches -- one source of
+    truth, not a registry that can drift from the matcher.
+    """
+    MARKER_TEXT_FRAGMENTS.extend(fragments)
+    return fragments
+
+
+def _any(fragments: Sequence[str], text: str) -> bool:
+    return any(re.search(fragment, text) for fragment in fragments)
+
+
+_EXIT_ARTIFACT = _lit(r"\bembedded\s+0\b", r"\bartifact\b", r"\bledger\b")
+_FORCED_STATE = _lit(r"\bforced.early\b", r"\bwrong.state\b")
+_NO_DELIVERABLE = _lit(r"\bno deliverable\b", r"\bnothing\b")
+_RESUME_SILENT = _lit(r"\bnothing\b", r"\bnever\b", r"\bno output\b", r"\bsilent\b", r"\blogged only\b")
+_DEAD_LATE = _lit(r"\blate\b", r"\boverwrit")
+_CLAIM_WORDS = _lit(r"\bclaimed\b", r"\bannounced\b", r"\bsaid\b", r"\bprinted\b", r"\breported\b", r"\blogged\b")
+_DONE_WORDS = _lit(r"\bfinished\b", r"\bdone\b", r"\bcomplete\b", r"\bsuccess\b", r"\bgreen\b")
+# `opened`/`committed` and `stayed empty`/`zero new` were the exact ungrounded
+# branches H2 named -- removed, leaving only the one nested variant
+# (`appeared`) that is genuinely present in the corpus (fleet-CI-1).
+_ABSENT_DELIVERABLE = _lit(r"\bnever\s+(got\s+)?appeared\b", r"\babsent\b", r"\bempty\b", r"\bnothing\b")
+
+_EXIT_FAIL_STATUS = _lit(r"\bfail\b", r"\bstatus\b")
+_DEP_CODE = _lit(r"\b404\b", r"\bunreachable\b")
+# `not.quite.matching` was ungrounded -- it only ever occurred in an L1
+# `source_anchor` field, which markers never read; removed.
+_GATE_UNPARSEABLE = _lit(r"\bunparseable\b", r"\bnever appeared\b")
+_CRASH_WORDS = _lit(r"\bcrash\b", r"\bcrashed\b")
+# `painted` was ungrounded -- removed.
+_GREEN_WORDS = _lit(r"\bgreen\b", r"\bpassed\b")
+# Prefix, not `\b(swallow|swallowed)\b`: the trailing boundary in the original
+# regex could never match "swallowed" (no boundary between "swallow" and
+# "ed"), so the alternative was silently dead weight. One prefix fragment
+# covers both real inflections without adding a second, narrower literal.
+_SWALLOW_WORD = _lit(r"\bswallow")
+
+_CLAIM_DOCTRINE = _lit(r"\bclaim\b", r"\bdoctrine\b")
+_INDEP_SHARED = _lit(r"\bindependent\b", r"\bshared\b")
+
+
 def _cause_shape_markers(text: str) -> tuple[str, ...]:
     """Return conservative semantic normalisations for recurring cause shapes.
 
     These are a declared hybrid, not pure embedding similarity: TF-IDF alone
     cannot infer that several very differently-worded incidents share one
     root cause, so a short list of conservative, multi-condition regexes
-    bridges that gap.  Two properties are required of every condition here,
-    checked with adversarial inputs in the test suite:
-
-    - it must require more than one common English word in isolation (a
-      bare, unusual token like `ran_ok` is an exception -- it is a specific
-      code-level identifier, not ordinary prose); and
-    - it is written from each family's *stated* definition (see
-      `pipeline/tests/fixtures/recurrence_ground_truth.json`), not reverse
-      engineered from any one example's exact wording, so it also fires on
-      held-out paraphrases the condition was never tuned against.
+    bridges that gap.  Every OR-alternative used below is declared through
+    `_lit()` and mechanically checked against real corpus text (see
+    `MARKER_TEXT_FRAGMENTS` and its docstring) -- a condition that only ever
+    matched sentences in this test suite is the exact defect an adversarial
+    review (H2, C1d) found and this refactor exists to close.
     """
     lower = text.lower()
     markers: list[str] = []
     completion_gap = (
-        (re.search(r"\bexit(?:ed)?\s+0\b", lower) and
-         re.search(r"\b(embedded\s+0|artifact|ledger)\b", lower)) or
-        (re.search(r"\breport\b", lower) and
-         re.search(r"\b(forced.early|wrong.state)\b", lower)) or
-        (re.search(r"\bcompletion", lower) and
-         re.search(r"\b(no deliverable|nothing)\b", lower)) or
+        (re.search(r"\bexit(?:ed)?\s+0\b", lower) and _any(_EXIT_ARTIFACT, lower)) or
+        (re.search(r"\breport\b", lower) and _any(_FORCED_STATE, lower)) or
+        (re.search(r"\bcompletion", lower) and _any(_NO_DELIVERABLE, lower)) or
         (re.search(r"\bresume\b", lower) and re.search(r"\bheadless\b", lower) and
-         re.search(r"\b(nothing|never|no output|silent|logged only)\b", lower)) or
-        (re.search(r"\bdeemed dead\b", lower) and
-         re.search(r"\b(late|overwrit)\b", lower)) or
-        (re.search(r"\bdispatch boundary\b", lower) and
-         re.search(r"\b(result|deliverable)\b", lower)) or
+         _any(_RESUME_SILENT, lower)) or
+        (re.search(r"\bdeemed dead\b", lower) and _any(_DEAD_LATE, lower)) or
         # The family's own stated shape: a claimed-done signal contradicted
         # by a deliverable that never materialised.  Written from that
         # definition, not from any one incident's wording -- it must also
         # catch paraphrases nobody tuned it against.
-        (re.search(r"\b(claimed|announced|said|printed|reported|logged)\b", lower) and
-         re.search(r"\b(finished|done|complete|success|green)\b", lower) and
-         re.search(
-             r"\b(never\s+(got\s+)?(appeared|opened|committed)|absent|empty|stayed empty|zero new|nothing)\b",
-             lower,
-         ))
+        (_any(_CLAIM_WORDS, lower) and _any(_DONE_WORDS, lower) and _any(_ABSENT_DELIVERABLE, lower))
     )
     if completion_gap:
         markers.append("latentcompletiongap")
 
     broken_gate = (
         re.search(r"\bran_ok\b", lower) or
-        (re.search(r"\bexit(?:ed)?\s+0\b", lower) and re.search(r"\b(fail|status)\b", lower)) or
-        (re.search(r"\bdependency\b", lower) and re.search(r"\b(404|unreachable)\b", lower) and
+        (re.search(r"\bexit(?:ed)?\s+0\b", lower) and _any(_EXIT_FAIL_STATUS, lower)) or
+        (re.search(r"\bdependency\b", lower) and _any(_DEP_CODE, lower) and
          re.search(r"\breject\b", lower)) or
-        (re.search(r"\bgate\b", lower) and
-         re.search(r"\b(unparseable|never appeared|not.quite.matching)\b", lower)) or
+        (re.search(r"\bgate\b", lower) and _any(_GATE_UNPARSEABLE, lower)) or
         # A failure was observed (crash/error, or swallowed and downgraded
         # to a soft skip) but the reported/displayed result stayed green --
         # the family's stated shape, not a single incident's exact prose.
-        (re.search(r"\b(crash|crashed)\b", lower) and re.search(r"\b(green|painted|passed)\b", lower)) or
-        (re.search(r"\b(swallow|swallowed)\b", lower) and re.search(r"\bskip\b", lower) and
+        (_any(_CRASH_WORDS, lower) and _any(_GREEN_WORDS, lower)) or
+        (_any(_SWALLOW_WORD, lower) and re.search(r"\bskip\b", lower) and
          re.search(r"\bnot\b.*\b(red|fail)\b", lower))
     )
     if broken_gate:
         markers.append("latentbrokengate")
 
     nonindependent_evidence = (
-        (re.search(r"\bnegative.search\b", lower) and re.search(r"\b(claim|doctrine)\b", lower)) or
-        (re.search(r"\bconverg", lower) and re.search(r"\b(independent|shared)\b", lower))
+        (re.search(r"\bnegative.search\b", lower) and _any(_CLAIM_DOCTRINE, lower)) or
+        (re.search(r"\bconverg", lower) and _any(_INDEP_SHARED, lower))
     )
     if nonindependent_evidence:
         markers.append("latentnonindependentevidence")

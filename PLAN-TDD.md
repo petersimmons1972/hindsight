@@ -411,7 +411,55 @@ Gate is a coordinator-authored ground-truth assertion (R3), not a Codex-written 
 7× shared-checkout cluster, clustering is wrong and Phase 4 must not open.** Synthesising
 from bad clusters produces confident nonsense.
 
-### C3 — duplicate-cause guard *(the decisive packet)*
+### C3 — **DESCOPED from a guard to a lookup** *(decided by measurement, 2026-08-02)*
+
+The pre-registered decision rule was written before the numbers existed, and the numbers say the
+guard cannot be built. Applying it as written:
+
+- **Branch 1 (retrieval ranking) FAILS on both legs.** Recall@5 = 0.543 main / 0.500 adversarial
+  (pooled 34/65 = 0.523) against ≥0.70; distractor FP = **0.75 pooled** against ≤0.10, off by
+  7.5×.
+- **Branch 2 (structured extraction) CANNOT FIRE** — Arm B produced no measurement (it stalled
+  waiting on a notification). **Undetermined, not refuted.** Its sample was also 83/463 entries,
+  which would have made any number inadmissible; a re-run must rank against the full corpus.
+- **Branch 3 fires exactly on the boundary.** Honest held-out reading (weight fixed on set A,
+  scored on set B) = **0.500 to three decimals**; pooled 0.523, 95% CI **[0.40, 0.64]** — straddles
+  0.50, excludes 0.70. At a pre-specified `w=0.5` both sets fall to 0.400/0.433, i.e. branch 4.
+
+**The binding constraint is a missing signal, not a threshold.** Measured: the **maximum distractor
+score exceeds the maximum true-positive score**, so no cutoff separates them at any operating
+point, and every score-derived rejection feature scores AUC 0.53–0.57 — chance. **Do not sweep
+more weights, k values or thresholds against these holdouts.** Any further sweep is fitting the
+evaluation set, which is the defect this campaign spent the night fighting.
+
+Retrieval *ranking* is nonetheless a large real gain over the clusterer: pooled recall@10 = 0.662
+versus the partitioner's 1-of-77. The signal is there; what is absent is the ability to *decide*.
+
+**What C3 becomes.** Rejection semantics are **removed, not weakened**:
+- **Delete** `--check-duplicate-cause`'s reject path and `--force-new-cause`. An override exists
+  only because a gate exists; there is no gate.
+- **Replace with `--similar-causes`**: for a proposed entry, print the **top 10** corpus entries
+  by blended cosine — each with cluster, recurrence count, member IDs, first/last seen — under a
+  header stating literally *"Candidates for human review. This tool does not determine
+  duplication."* A ranked list only, **never** a single highlighted "duplicate found" row:
+  recall@1 is 0.154, and 75% of genuine non-duplicates surface a plausible family member in their
+  top 5.
+- **k = 10, not 5** — where the measurement is least bad, at the cost of showing 2% of the corpus.
+- **Fail-loud survives as the only hard assertion:** missing or empty `clusters.jsonl` ⇒ exit 1.
+  "No clusters, so nothing is similar" remains the most dangerous silent-failure path here.
+- **C2 (recurrence report) is unaffected and keeps full strength** — it operates on known clusters,
+  not on reworded proposals, and it is where most of the registry's value actually lives.
+
+**Acceptance tests** (replacing T1–T4/T6; T5 survives intact): A1 — for ≥8 coordinator-authored
+reworded duplicates, a correct-family entry appears in the top 10 for **≥6 of 8**, asserted as an
+exact count so drift forces re-measurement. A2 — for ≥8 genuinely novel causes the tool exits 0,
+emits a ranked list, and uses **no rejection verb** anywhere in its output.
+
+**This is the honest outcome, not a retreat.** A registry that reliably *surfaces* prior art is
+worth more than a guard that silently misses ~85% of reworded duplicates while implying it catches
+them — that implication is the exact failure family this repository exists to catalogue.
+
+### C3 — original specification *(superseded, kept for trace)*
 
 `--check-duplicate-cause`: embed a proposed entry, match against `clusters.jsonl`, reject
 on threshold hit, printing matching IDs and that cluster's recurrence count.

@@ -48,48 +48,57 @@ jobs:
         run: python3 pipeline/reconcile_l1.py
       - name: Validate L1 schema
         run: python3 pipeline/validate_l1.py
-      - name: Verify enforcement
-        # This runner checks out only this one repo: ~/projects does not
-        # exist here at all, so of the 13 mapped source-roots.conf entries
-        # only SELF (homelab-canon, this checkout's own root) resolves --
-        # confirmed empirically, ROOTS: 1/13. And SELF's own L1 entries are
-        # ALL enforcement:null (see conf/source-roots.conf's homelab-canon
-        # comment), so even that one resolved root verifies zero real
-        # paths. A root that resolves but checks nothing must not satisfy
-        # --require-roots (that was the C4b bug: it counted resolution, not
-        # use, so "1 present" read as "1 verified"). With the falsifiable
-        # floor, this step now takes the HONEST branch instead: it prints
-        # SKIPPED and exits 0 -- a declared "not checked here", never a
-        # silent "0 phantoms" that implies something was.
+      - name: Verify enforcement attestation
+        # C4g: five successive rounds (C4b..C4f) each closed one
+        # manufactured-green layer -- data, config, control flow,
+        # environment, scope -- and the pressure just found the next one.
+        # The structural problem was never any single check: this runner
+        # checks out only this one repo, ~/projects does not exist here at
+        # all, and NO check that needs the mapped source repos can ever run
+        # here, no matter how it's gated. Every previous round's fix
+        # (--ci-no-source-repos, the CHECKED-FLOOR exemption, --require-roots)
+        # was still CI pretending to run a check it structurally cannot --
+        # the shortest path to "CI green, nothing verified" was ONE config
+        # edit (repoint conf/source-roots.conf's non-SELF roots to decoys),
+        # because CI had no way to tell a real 0 apart from a manufactured
+        # one.
         #
-        # C4f (HIGH-2): --ci-no-source-repos is what actually grants the
-        # CHECKED-FLOOR exemption below -- NOT ~/projects being absent.
-        # default_projects_dir() is Path.home()/"projects", and Path.home()
-        # reads $HOME; a caller-controlled environment (HOME=/tmp/whatever,
-        # or any workstation that simply lacks ~/projects) could otherwise
-        # trip the same exemption with zero config or code edits, on a
-        # fully populated checkout, verifying nothing while claiming the
-        # honest-CI-skip message. This flag is the visible, committed,
-        # reviewable declaration that THIS pinned job -- not any ad hoc
-        # invocation -- structurally has no source repos checked out.
+        # So CI no longer runs the real check at all. It verifies a
+        # committed ATTESTATION instead: a workstation with the mapped
+        # source repos actually checked out runs the full verification
+        # (`--write-attestation`, driven by the exact same run_verification()
+        # this step used to call directly) and, only on a genuinely clean
+        # result, writes attestation/enforcement-attestation.json recording
+        # a config_digest -- a hash over the exact bytes of every
+        # scope-defining input: conf/source-roots.conf,
+        # conf/unmapped-sources.conf, all three floor files,
+        # conf/known-phantoms.conf, and pipeline/L1/*.jsonl.
         #
-        # Two things this step DOES still check for real, everywhere
-        # including here, with no dependency on any source repo being
-        # present: (1) the corpus-wide enforcement-bearing-entry floor
-        # (conf/enforcement-floor.conf) can't silently drop, so records
-        # can't be deleted to make debt disappear; (2) the catalog/schema
-        # gates in the steps above this one; (3) the floor ratchet itself
-        # (mapped-sources-floor, enforcement-floor, checked-floor must only
-        # ever increase relative to origin/main), now able to actually
-        # evaluate here because the checkout step above fetches full
-        # history (fetch-depth: 0), so origin/main genuinely resolves.
+        # This step recomputes that same digest from the CURRENT working
+        # tree and fails unless it matches -- the one-file decoy-roots
+        # attack changes conf/source-roots.conf, so the digest no longer
+        # matches, and this step demands a fresh real run instead of
+        # accepting the stale claim. It also fails if the attestation is
+        # missing, older than --max-attestation-age-days, or its recorded
+        # results (checked count, enforcement-bearing count, mapped-source
+        # count, undocumented-phantom count) violate the floors loaded
+        # FRESH from conf/*.conf here -- never trusting the attestation's
+        # own "floors" section, which (unlike config_digest) isn't bound to
+        # anything and could be hand-edited without touching a single
+        # config file.
         #
-        # Real phantom-discovery against all 13 mapped roots -- including
-        # the known-phantoms.conf debt-ledger gate -- only ever runs where
-        # ~/projects is actually populated (a dev workstation). Chosen
-        # option: explicit SKIP over (a) a scheduled/pre-commit job on a
-        # workstation with a "was this checked recently" CI assertion, or
-        # (b) vendoring a manifest into this repo -- both are legitimate
-        # but are follow-up infra work, not this PR's scope; a loud,
-        # honest skip beats a vacuous pass either way it's resolved later.
-        run: python3 guard/failure_mode_catalog_guard.py --verify-enforcement --require-roots 1 --ci-no-source-repos
+        # What this deliberately does NOT defend against: someone forging
+        # a SHA-256 preimage by hand to fake a matching config_digest
+        # without ever running a real check. That is a different threat
+        # (deliberate cryptographic forgery) and out of scope -- the
+        # binding closes "an ordinary edit or a lazy optimization slips
+        # through unnoticed," not "a determined attacker with a hash
+        # collision."
+        #
+        # Regenerating is meant to be the path of least resistance, not an
+        # afterthought: .githooks/pre-commit regenerates the attestation
+        # automatically whenever any of the files above are staged. The
+        # one command a human runs by hand if that ever needs doing
+        # manually: `python3 guard/failure_mode_catalog_guard.py
+        # --write-attestation`.
+        run: python3 guard/failure_mode_catalog_guard.py --verify-attestation

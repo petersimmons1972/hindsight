@@ -2,4 +2,47 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py"
+
+python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py"
+
+# C4g: a gate that is painful to satisfy gets routed around. Any file that
+# determines the SCOPE of --verify-enforcement (which conf/*.conf files
+# guard/failure_mode_catalog_guard.py's compute_config_digest() hashes,
+# plus pipeline/L1/*.jsonl) must carry a freshly-regenerated
+# attestation/enforcement-attestation.json into the SAME commit, or CI's
+# --verify-attestation step will reject it as a digest MISMATCH on the
+# next push. Regenerate automatically here rather than making a human
+# remember a second command.
+SCOPE_FILES=(
+  "conf/source-roots.conf"
+  "conf/unmapped-sources.conf"
+  "conf/enforcement-floor.conf"
+  "conf/mapped-sources-floor.conf"
+  "conf/checked-floor.conf"
+  "conf/known-phantoms.conf"
+)
+
+STAGED="$(cd "$REPO_ROOT" && git diff --cached --name-only)"
+
+NEEDS_ATTESTATION=0
+for scope_file in "${SCOPE_FILES[@]}"; do
+  if grep -qxF "$scope_file" <<<"$STAGED"; then
+    NEEDS_ATTESTATION=1
+    break
+  fi
+done
+if grep -q '^pipeline/L1/.*\.jsonl$' <<<"$STAGED"; then
+  NEEDS_ATTESTATION=1
+fi
+
+if [[ "$NEEDS_ATTESTATION" == "1" ]]; then
+  echo "pre-commit: a scope-defining config file changed -- regenerating the enforcement attestation" >&2
+  if ! python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" --write-attestation; then
+    echo "pre-commit: ERROR: could not regenerate attestation/enforcement-attestation.json (see errors above)." >&2
+    echo "pre-commit: this usually means the change itself needs fixing (a floor violation, an undocumented phantom, an unmappable root) -- the one command to re-run by hand once it's fixed:" >&2
+    echo "pre-commit:   python3 guard/failure_mode_catalog_guard.py --write-attestation" >&2
+    exit 1
+  fi
+  git -C "$REPO_ROOT" add "$REPO_ROOT/attestation/enforcement-attestation.json"
+  echo "pre-commit: attestation regenerated and staged" >&2
+fi

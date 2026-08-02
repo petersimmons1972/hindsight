@@ -9,11 +9,14 @@ as unbacked must remain visible without being treated as build failures.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
+import socket
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -74,6 +77,32 @@ class EnforcementReport:
     roots_resolved: dict[str, Path]
     roots_unresolved: dict[str, str]
     mapped_sources: int
+
+
+@dataclass
+class VerificationRun:
+    """The measured outcome of one full --verify-enforcement pass.
+
+    C4g: factored out of main() so --write-attestation can drive the exact
+    same real check main() has always run for a human on a workstation --
+    never a second, hand-rolled implementation that could quietly drift
+    from it -- and capture its measured results for the attestation
+    payload. `exit_code` and the printed stderr trail are unchanged from
+    before this existed; this is purely an additional return channel.
+    """
+
+    exit_code: int
+    skipped: bool = False
+    report: EnforcementReport | None = None
+    mapped_sources_floor: int = 0
+    enforcement_floor: int = 0
+    checked_floor: int = 0
+    total_checked: int = 0
+    total_bearing: int = 0
+    resolved_count: int = 0
+    useful_count: int = 0
+    known_count: int = 0
+    unlisted_phantoms: list[PhantomEntry] = field(default_factory=list)
 
 
 def default_catalog_path() -> Path:
@@ -974,6 +1003,46 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--write-attestation",
+        action="store_true",
+        help=(
+            "C4g: perform the full local verification (source repos must actually be "
+            "checked out -- refuses if --ci-no-source-repos is set, the run would be "
+            "SKIPPED, or undocumented phantoms are present even under --accept-phantom) "
+            "and, only on a genuinely clean result, write "
+            "attestation/enforcement-attestation.json recording a config_digest over "
+            "every scope-defining input (conf/source-roots.conf, "
+            "conf/unmapped-sources.conf, the three floor files, conf/known-phantoms.conf, "
+            "pipeline/L1/*.jsonl) plus the measured results. Run this whenever any of "
+            "those files change (.githooks/pre-commit does it automatically) and commit "
+            "the result."
+        ),
+    )
+    parser.add_argument(
+        "--verify-attestation",
+        action="store_true",
+        help=(
+            "C4g: verify attestation/enforcement-attestation.json instead of running the "
+            "enforcement check directly -- for CI, which has no mapped source repos "
+            "checked out and cannot perform the real check itself. Fails if the "
+            "attestation is missing, unparseable, older than "
+            "--max-attestation-age-days, its config_digest does not match what the "
+            "current working tree computes, or its recorded results violate the current "
+            "floors (checked count below checked-floor, undocumented phantoms, etc.)."
+        ),
+    )
+    parser.add_argument(
+        "--max-attestation-age-days",
+        type=int,
+        default=DEFAULT_ATTESTATION_MAX_AGE_DAYS,
+        metavar="N",
+        help=(
+            "--verify-attestation rejects an attestation older than this many days "
+            f"(default {DEFAULT_ATTESTATION_MAX_AGE_DAYS}). A gate that never expires is "
+            "a gate that can be satisfied once and then forgotten."
+        ),
+    )
+    parser.add_argument(
         "--allow-floor-decrease",
         action="append",
         default=[],
@@ -991,281 +1060,722 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_verification(args: argparse.Namespace) -> VerificationRun:
+    # ---------------------------------------------------------------
+    # Load and validate EVERY config input that decides what gets
+    # checked, up front, unconditionally -- before any root-resolution
+    # or "can this environment check anything at all" branching below.
+    # This is deliberate: every one of these files controls the SCOPE
+    # of the check (which sources are mapped, which sources are
+    # excused, how low the debt floors may go, which phantoms are
+    # already known) and a scope input that only gets read on the
+    # "happy path" is exactly how D4 let known-phantoms.conf go missing
+    # invisibly on CI -- the SKIPPED return used to happen before its
+    # load. Loading everything here means a config file vanishing
+    # fails loud in EVERY environment, including one that structurally
+    # cannot verify a single path (no source repos checked out).
+    try:
+        source_roots = load_source_roots(default_source_roots_path(), default_projects_dir())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        mapped_sources_floor = load_mapped_sources_floor(default_mapped_sources_floor_path())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        unmapped_sources = load_unmapped_sources(default_unmapped_sources_path())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        validate_source_coverage(default_l1_dir(), source_roots, unmapped_sources)
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        floor = load_enforcement_floor(default_enforcement_floor_path())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        checked_floor = load_checked_floor(default_checked_floor_path())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        known = load_known_phantoms(default_known_phantoms_path())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    try:
+        decrease_reasons = parse_floor_decrease_flags(args.allow_floor_decrease)
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    git_ref = default_git_ref()
+
+    # C4e (finding 3): "a floor the same change can lower is not a
+    # floor." Every floor file may only ever increase relative to what
+    # was committed at `git_ref` (origin/main) -- a decrease is a hard
+    # ERROR unless explicitly authorized via --allow-floor-decrease,
+    # which still prints loudly (never a silent pass). This runs
+    # before any of the floors are actually applied below, so a
+    # decrease is caught regardless of which specific gate would have
+    # been affected by it.
+    for label, floor_path, current_value in (
+        ("mapped-sources-floor", default_mapped_sources_floor_path(), mapped_sources_floor),
+        ("enforcement-floor", default_enforcement_floor_path(), floor),
+        ("checked-floor", default_checked_floor_path(), checked_floor),
+    ):
+        previous_value = previous_floor_value(floor_path, git_ref)
+        ok, message = check_floor_ratchet(
+            label, floor_path, current_value, previous_value, decrease_reasons
+        )
+        if message is not None:
+            prefix = "enforcement-verifier: " if ok else "enforcement-verifier: ERROR: "
+            print(f"{prefix}{message}", file=sys.stderr)
+        if not ok:
+            return VerificationRun(exit_code=1)
+
+    # 0. D1: the map that decides what gets checked must itself be
+    #    gated. Computed straight off the loaded mapping -- no
+    #    dependency on any root resolving -- so, like the
+    #    enforcement-bearing floor below, this is a real check that
+    #    runs identically everywhere. Without it, deleting a
+    #    source-roots.conf line (or reducing the whole file to one
+    #    trivially-satisfied entry) makes its phantoms UNVERIFIABLE,
+    #    exits 0, and *improves* the ROOTS ratio, because the
+    #    denominator shrinks along with the numerator.
+    mapped_count = len(source_roots)
+    print(
+        f"enforcement-verifier: MAPPED-SOURCES-FLOOR: {mapped_count} sources mapped in "
+        f"conf/source-roots.conf (floor {mapped_sources_floor})",
+        file=sys.stderr,
+    )
+    if mapped_count < mapped_sources_floor:
+        print(
+            f"enforcement-verifier: ERROR: mapped source count dropped to {mapped_count}, "
+            f"below floor {mapped_sources_floor} -- a source-roots.conf line was deleted "
+            "(or the whole map shrunk) instead of a source being fixed or explicitly "
+            "declared unmappable. Restore the mapping, or lower the floor explicitly in "
+            "conf/mapped-sources-floor.conf with a recorded reason.",
+            file=sys.stderr,
+        )
+        return VerificationRun(exit_code=1)
+
+    try:
+        report = verify_enforcement(default_l1_dir(), default_projects_dir(), source_roots)
+    except (TypeError, ValueError) as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return VerificationRun(exit_code=1)
+    print_enforcement_report(report, unmapped_sources)
+
+    # 1. Universal, root-independent floor: total enforcement-bearing
+    #    entries must never shrink. Computed straight from the corpus,
+    #    so this is a REAL check that runs identically everywhere,
+    #    including a CI runner with none of the source repos present --
+    #    unlike everything below, which needs a resolved root to mean
+    #    anything. This is the fleet#152 defense: a debt ledger can
+    #    shrink because a phantom was genuinely fixed, or because the
+    #    flagged record was quietly deleted. Only the corpus-wide count
+    #    not dropping distinguishes the two.
+    total_bearing = total_enforcement_bearing(report)
+    print(
+        f"enforcement-verifier: DEBT-FLOOR: {total_bearing} total enforcement-bearing "
+        f"entries (floor {floor})",
+        file=sys.stderr,
+    )
+    if total_bearing < floor:
+        print(
+            f"enforcement-verifier: ERROR: enforcement-bearing entry count dropped to "
+            f"{total_bearing}, below floor {floor} -- an entry was deleted or its "
+            "enforcement value was removed rather than the underlying gap being fixed. "
+            "Raise real coverage, or lower the floor explicitly in "
+            "conf/enforcement-floor.conf with a recorded reason.",
+            file=sys.stderr,
+        )
+        return VerificationRun(exit_code=1)
+
+    # 2. The root floor, made falsifiable: only roots that actually
+    #    verified >=1 entry count as "present" for --require-roots.
+    resolved_count = len(report.roots_resolved)
+    useful_sources = {
+        source
+        for source, totals in report.sources.items()
+        if source in report.roots_resolved and totals.checked > 0
+    }
+    useful_count = len(useful_sources)
+
+    if resolved_count == 0:
+        print(
+            f"enforcement-verifier: ERROR: 0 of {report.mapped_sources} mapped source "
+            "roots are present on this machine at all; refusing to report success on a "
+            "check that could not see any of its own inputs.",
+            file=sys.stderr,
+        )
+        return VerificationRun(exit_code=1)
+
+    # 2b. C4e (finding 2): the CHECKED-FLOOR must be evaluated here, in
+    # EVERY environment, BEFORE the SKIPPED decision below -- not after
+    # it. The old position (after the `useful_count == 0` return) meant
+    # this floor was dead code whenever nothing got checked, for ANY
+    # reason. That is exactly the exploit: reduce source-roots.conf
+    # until every remaining mapped root has checked == 0, and the run
+    # takes the same SKIPPED, exit-0 branch a genuinely CI-shaped
+    # runner takes -- with the config edit, none of it real config, on
+    # a fully populated workstation with all repos checked out.
+    #
+    # `useful_count == 0` alone cannot tell those two apart -- it is
+    # identical in both. C4f (HIGH-2): what DOES differ is no longer
+    # keyed on whether ~/projects happens to exist on disk --
+    # `default_projects_dir()` is `Path.home()/"projects"`, and
+    # `Path.home()` reads `$HOME`; a caller can reproduce "this
+    # directory is absent" on a fully populated workstation with zero
+    # config or code edits at all (e.g. `HOME=/tmp/nohomehere`), which
+    # makes directory-absence a caller-controlled signal, not a
+    # trustworthy proxy for "this is really CI". The exemption is now
+    # keyed on `--ci-no-source-repos`: an explicit, committed,
+    # reviewable flag pinned in .github/workflows/guard.yml, never an
+    # environment accident. Without it, the floor is fully enforced
+    # regardless of whether ~/projects exists (including the
+    # degenerate case where it exists but is empty, or doesn't exist
+    # at all but nobody declared why).
+    structurally_cannot_check = args.ci_no_source_repos
+    total_checked = sum(totals.checked for totals in report.sources.values())
+    print(
+        f"enforcement-verifier: CHECKED-FLOOR: {total_checked} entries actually verified "
+        f"against a resolved root (floor {checked_floor})",
+        file=sys.stderr,
+    )
+    if total_checked < checked_floor:
+        if structurally_cannot_check:
+            print(
+                "enforcement-verifier: CHECKED-FLOOR: exempted this run -- "
+                "--ci-no-source-repos was passed, an explicit declaration that this "
+                "environment structurally has no source repos checked out at all (e.g. "
+                "the CI runner, which checks out only this one repo). Real coverage is "
+                "only verified where ~/projects is populated and this flag is NOT passed.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"enforcement-verifier: ERROR: checked entry count dropped to "
+                f"{total_checked}, below floor {checked_floor} -- fewer entries were "
+                "actually run through the exists() check than before, even though the "
+                "enforcement-bearing total above may look unchanged (e.g. offset by "
+                "entries in an unmapped or not-checked-out source, which were never "
+                "verified at all). --ci-no-source-repos was not passed, so this "
+                "environment is assumed capable of checking source repos and there is no "
+                "exemption. Restore real checked coverage; or, if this environment "
+                "genuinely cannot check anything by construction, pass "
+                "--ci-no-source-repos from a pinned, reviewable CI config (never inferred "
+                "from ~/projects being absent); or lower the floor explicitly (with "
+                "--allow-floor-decrease checked-floor=\"<reason>\") and record the reason "
+                "in conf/checked-floor.conf.",
+                file=sys.stderr,
+            )
+            return VerificationRun(exit_code=1)
+
+    if useful_count == 0:
+        print(
+            "enforcement-verifier: SKIPPED: roots are present on this machine but NONE "
+            "of them had a single machine entry with non-null enforcement to actually "
+            "check -- this environment cannot verify ANY enforcement claim right now. "
+            "This is a declared skip, not a pass: rerun where the mapped source repos "
+            "are checked out (e.g. a dev workstation with ~/projects populated) for a "
+            "real phantom-detection signal.",
+            file=sys.stderr,
+        )
+        return VerificationRun(
+            exit_code=0,
+            skipped=True,
+            report=report,
+            mapped_sources_floor=mapped_sources_floor,
+            enforcement_floor=floor,
+            checked_floor=checked_floor,
+            total_checked=total_checked,
+            total_bearing=total_bearing,
+            resolved_count=resolved_count,
+            useful_count=0,
+            known_count=len(known),
+        )
+
+    if useful_count < args.require_roots:
+        print(
+            f"enforcement-verifier: ERROR: only {useful_count} of "
+            f"{report.mapped_sources} mapped source roots actually verified an entry on "
+            f"this machine (require >= {args.require_roots}); refusing to report success "
+            "on a check that could not see enough of its own inputs.",
+            file=sys.stderr,
+        )
+        return VerificationRun(exit_code=1)
+
+    # 3. Phantom debt ledger: undocumented (new) phantoms are fatal;
+    #    documented ones are visible debt, not a silent allowlist.
+    unlisted = [phantom for phantom in report.phantoms if phantom.key() not in known]
+    print(
+        f"enforcement-verifier: DEBT: {len(known)} known phantom(s) documented in "
+        f"conf/known-phantoms.conf -- this number should shame us into fixing them, "
+        "not sit as a silent allowlist.",
+        file=sys.stderr,
+    )
+    if unlisted:
+        print(
+            f"enforcement-verifier: {len(unlisted)} phantom(s) are NOT documented in "
+            "conf/known-phantoms.conf:",
+            file=sys.stderr,
+        )
+        for phantom in unlisted:
+            print(f"enforcement-verifier: undocumented: {phantom.format()}", file=sys.stderr)
+        if not args.accept_phantom:
+            print(
+                "enforcement-verifier: ERROR: new phantoms cannot land silently. Add each "
+                "one to conf/known-phantoms.conf with evidence and a disposition, or pass "
+                "--accept-phantom to force this run through (does not update the ledger).",
+                file=sys.stderr,
+            )
+            return VerificationRun(exit_code=1)
+        print(
+            "enforcement-verifier: WARNING: --accept-phantom set -- allowing "
+            f"{len(unlisted)} undocumented phantom(s) through THIS RUN ONLY. Add them to "
+            "conf/known-phantoms.conf before merging.",
+            file=sys.stderr,
+        )
+
+    return VerificationRun(
+        exit_code=0,
+        skipped=False,
+        report=report,
+        mapped_sources_floor=mapped_sources_floor,
+        enforcement_floor=floor,
+        checked_floor=checked_floor,
+        total_checked=total_checked,
+        total_bearing=total_bearing,
+        resolved_count=resolved_count,
+        useful_count=useful_count,
+        known_count=len(known),
+        unlisted_phantoms=unlisted,
+    )
+
+
+# ---------------------------------------------------------------------------
+# C4g: attestation -- CI cannot check out the source repos, so it cannot run
+# the real check itself. A workstation that DOES have them runs
+# run_verification() above and, on a clean result, writes a signed record of
+# what it measured (--write-attestation); CI verifies that record instead of
+# faking the run (--verify-attestation).
+# ---------------------------------------------------------------------------
+
+DEFAULT_ATTESTATION_MAX_AGE_DAYS = 14
+
+
+def default_attestation_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "attestation" / "enforcement-attestation.json"
+
+
+def compute_config_digest(
+    l1_dir: Path,
+    source_roots_path: Path,
+    unmapped_sources_path: Path,
+    enforcement_floor_path: Path,
+    mapped_sources_floor_path: Path,
+    checked_floor_path: Path,
+    known_phantoms_path: Path,
+) -> str:
+    """A hash over the exact bytes of every input that determines the SCOPE
+    of the enforcement check: which sources are mapped
+    (source-roots.conf), which are declared unmappable
+    (unmapped-sources.conf), how low each floor may go (the three floor
+    files), which phantoms are already documented (known-phantoms.conf),
+    and the full corpus of claimed enforcement paths itself (l1_dir's
+    *.jsonl files).
+
+    This -- not the attestation's recorded commit or timestamp -- is the
+    property CI actually gates on in --verify-attestation. The one-file
+    decoy-roots attack this design exists to close edits
+    conf/source-roots.conf; that changes this digest, so a stale attestation
+    immediately reads as MISMATCH regardless of how convincing its recorded
+    numbers look. An ordinary, honest edit to any of these files (fixing a
+    root, adding a floor headroom, documenting a phantom, extracting a new
+    L1 record) changes the digest too -- that is the point: it forces a
+    fresh --write-attestation before the next CI run will pass, so
+    regenerating is the path of least resistance, never an afterthought.
+
+    Deliberately does NOT hash catalog/failure-modes.md, guard/, bin/, or
+    .githooks/ -- none of those change WHICH entries get checked or how low
+    a floor may go, so hashing them would force needless churn without
+    closing anything.
+
+    Takes explicit paths (mirroring every other loader in this file, all of
+    which take a `path` rather than reaching for the real repo layout
+    directly) rather than a repo root plus hardcoded relative paths, so
+    tests can sandbox it exactly like load_source_roots/load_known_phantoms/
+    etc. -- and production callers simply pass the real default_*_path()
+    functions' results, unchanged.
+
+    Raises ValueError (never silently hashes a partial input set) if any
+    required file is missing -- a digest computed over less than the full
+    scope would look complete while actually being wrong.
+    """
+    hasher = hashlib.sha256()
+    hasher.update(b"hindsight-config-digest-v1\0")
+
+    labeled_paths: list[tuple[str, Path]] = [
+        ("source-roots.conf", source_roots_path),
+        ("unmapped-sources.conf", unmapped_sources_path),
+        ("enforcement-floor.conf", enforcement_floor_path),
+        ("mapped-sources-floor.conf", mapped_sources_floor_path),
+        ("checked-floor.conf", checked_floor_path),
+        ("known-phantoms.conf", known_phantoms_path),
+    ]
+
+    if not l1_dir.is_dir():
+        raise ValueError(f"config_digest: L1 directory not found: {l1_dir}")
+    l1_paths = sorted(l1_dir.glob("*.jsonl"))
+    if not l1_paths:
+        raise ValueError(f"config_digest: no *.jsonl files found under {l1_dir}")
+    labeled_paths.extend((f"L1/{jsonl_path.name}", jsonl_path) for jsonl_path in l1_paths)
+
+    for label, file_path in labeled_paths:
+        if not file_path.is_file():
+            raise ValueError(f"config_digest: required scope input missing: {file_path}")
+        data = file_path.read_bytes()
+        hasher.update(label.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(str(len(data)).encode("ascii"))
+        hasher.update(b"\0")
+        hasher.update(data)
+        hasher.update(b"\0")
+
+    return f"sha256:{hasher.hexdigest()}"
+
+
+def _current_config_digest() -> str:
+    """compute_config_digest() driven by the real default_*_path() /
+    default_l1_dir() functions -- the production entry point both
+    write_attestation() and verify_attestation() call. Factored out once so
+    both share the exact same input set with no risk of the two drifting
+    apart from each other.
+    """
+    return compute_config_digest(
+        default_l1_dir(),
+        default_source_roots_path(),
+        default_unmapped_sources_path(),
+        default_enforcement_floor_path(),
+        default_mapped_sources_floor_path(),
+        default_checked_floor_path(),
+        default_known_phantoms_path(),
+    )
+
+
+def _current_commit(repo_root: Path) -> str | None:
+    """`git rev-parse HEAD`, or None on any failure. Never raises."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_attestation(args: argparse.Namespace) -> int:
+    """Run the real, full verification and -- only on a genuinely clean
+    result -- write attestation/enforcement-attestation.json.
+
+    Deliberately refuses to write (never writes a partial or compromised
+    record) when: this environment declared itself unable to check source
+    repos (--ci-no-source-repos -- an attestation must come from a REAL
+    run); the run was SKIPPED (verified nothing); the run failed outright;
+    or undocumented phantoms are present even if --accept-phantom forced
+    the exit code to 0 -- an attestation is a claim that a clean run
+    happened, and --accept-phantom's whole contract is "let this one run
+    through, but never pretend the debt wasn't there."
+    """
+    if args.ci_no_source_repos:
+        print(
+            "enforcement-verifier: ERROR: --write-attestation cannot be combined with "
+            "--ci-no-source-repos -- an attestation must be written from a real run where "
+            "the mapped source repos are actually checked out, never a declared "
+            "can't-check environment.",
+            file=sys.stderr,
+        )
+        return 1
+
+    run = run_verification(args)
+    if run.exit_code != 0:
+        print(
+            "enforcement-verifier: ERROR: not writing attestation -- the underlying "
+            "verification failed (see errors above). Fix them, then re-run.",
+            file=sys.stderr,
+        )
+        return run.exit_code
+    if run.skipped:
+        print(
+            "enforcement-verifier: ERROR: not writing attestation -- this run verified "
+            "nothing (SKIPPED: no mapped root had a single checkable entry on this "
+            "machine). Run --write-attestation where the mapped source repos are "
+            "actually checked out (a dev workstation with ~/projects populated).",
+            file=sys.stderr,
+        )
+        return 1
+    if run.unlisted_phantoms:
+        print(
+            f"enforcement-verifier: ERROR: not writing attestation -- "
+            f"{len(run.unlisted_phantoms)} undocumented phantom(s) are present (this run "
+            "only reached exit 0 because --accept-phantom was passed). Add them to "
+            "conf/known-phantoms.conf with evidence and a disposition first: an "
+            "attestation is a claim that a real, CLEAN run happened, not a run that was "
+            "forced through.",
+            file=sys.stderr,
+        )
+        return 1
+
+    report = run.report
+    assert report is not None  # exit_code == 0 and not skipped guarantees this
+
+    try:
+        digest = _current_config_digest()
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return 1
+
+    commit = _current_commit(_repo_root())
+    if commit is None:
+        print(
+            "enforcement-verifier: ERROR: could not determine the current git commit ('git "
+            "rev-parse HEAD' failed) -- an attestation not bound to a specific commit is "
+            "meaningless.",
+            file=sys.stderr,
+        )
+        return 1
+
+    per_source = {
+        source: {
+            "machine": totals.machine,
+            "judgment": totals.judgment,
+            "unbacked": totals.unbacked,
+            "phantoms": totals.phantoms,
+            "unverifiable": totals.unverifiable,
+            "checked": totals.checked,
+        }
+        for source, totals in sorted(report.sources.items())
+    }
+    payload = {
+        "version": 1,
+        "generated_at": _utc_now_iso(),
+        "hostname": socket.gethostname(),
+        "commit": commit,
+        "config_digest": digest,
+        "results": {
+            "mapped_sources": report.mapped_sources,
+            "roots_resolved": run.resolved_count,
+            "total_checked": run.total_checked,
+            "total_enforcement_bearing": run.total_bearing,
+            "phantom_count": len(report.phantoms),
+            "unlisted_phantom_count": len(run.unlisted_phantoms),
+            "known_phantom_count": run.known_count,
+            "per_source": per_source,
+        },
+        "floors": {
+            "mapped_sources_floor": run.mapped_sources_floor,
+            "enforcement_floor": run.enforcement_floor,
+            "checked_floor": run.checked_floor,
+        },
+    }
+
+    attestation_path = default_attestation_path()
+    attestation_path.parent.mkdir(parents=True, exist_ok=True)
+    attestation_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        f"enforcement-verifier: ATTESTATION: wrote {attestation_path} -- commit {commit}, "
+        f"{run.total_checked} entries checked, config_digest {digest}. Stage it as part of "
+        "this commit (.githooks/pre-commit does this automatically when a scope-defining "
+        "config file is staged).",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def verify_attestation(args: argparse.Namespace) -> int:
+    """CI's replacement for running the real check it cannot run: verify a
+    committed attestation instead of faking the check itself.
+
+    Fails (never a bare, silent pass) when: the attestation is missing or
+    unparseable; its config_digest does not match what the CURRENT working
+    tree computes (a scope-defining config file changed since it was
+    generated); it is older than --max-attestation-age-days; or its
+    recorded results violate the floors loaded fresh from the CURRENT conf
+    files (never the attestation's own "floors" section, which -- unlike
+    config_digest -- is not bound to anything and could be hand-edited
+    without touching a single config file's bytes) or contain any
+    undocumented phantom.
+    """
+    path = default_attestation_path()
+    if not path.is_file():
+        print(
+            f"enforcement-verifier: ERROR: no attestation at {path} -- CI cannot verify "
+            "enforcement without one (it has no mapped source repos checked out and cannot "
+            "run the real check itself). Run `python3 guard/failure_mode_catalog_guard.py "
+            "--write-attestation` on a workstation with the mapped source repos checked "
+            "out, then commit the result (.githooks/pre-commit does this automatically "
+            "when scope-defining config changes).",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"enforcement-verifier: ERROR: attestation at {path} is unparseable: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if not isinstance(data, dict):
+        print(
+            f"enforcement-verifier: ERROR: attestation at {path} is not a JSON object",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        generated_at = data["generated_at"]
+        hostname = data["hostname"]
+        commit = data["commit"]
+        config_digest = data["config_digest"]
+        results = data["results"]
+        total_checked = int(results["total_checked"])
+        total_bearing = int(results["total_enforcement_bearing"])
+        mapped_sources = int(results["mapped_sources"])
+        unlisted_phantom_count = int(results["unlisted_phantom_count"])
+        if not isinstance(generated_at, str) or not isinstance(config_digest, str):
+            raise TypeError("generated_at/config_digest must be strings")
+    except (KeyError, TypeError, ValueError) as exc:
+        print(
+            f"enforcement-verifier: ERROR: attestation at {path} is missing or has a "
+            f"malformed required field: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        current_digest = _current_config_digest()
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return 1
+
+    if config_digest != current_digest:
+        print(
+            f"enforcement-verifier: ERROR: attestation config_digest MISMATCH -- "
+            f"attestation has {config_digest}, current working tree computes "
+            f"{current_digest}. A scope-defining config file (conf/source-roots.conf, "
+            "conf/unmapped-sources.conf, the three floor files, "
+            "conf/known-phantoms.conf, or pipeline/L1/*.jsonl) changed since this "
+            "attestation was generated, without regenerating it. Run `python3 "
+            "guard/failure_mode_catalog_guard.py --write-attestation` and commit the "
+            "result.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        generated_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except ValueError:
+        print(
+            f"enforcement-verifier: ERROR: attestation generated_at {generated_at!r} is "
+            "not a parseable ISO-8601 timestamp",
+            file=sys.stderr,
+        )
+        return 1
+    if generated_dt.tzinfo is None:
+        generated_dt = generated_dt.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - generated_dt
+    max_age = timedelta(days=args.max_attestation_age_days)
+    if age > max_age:
+        print(
+            f"enforcement-verifier: ERROR: attestation is {age} old, past the "
+            f"{args.max_attestation_age_days}-day max age -- regenerate it: `python3 "
+            "guard/failure_mode_catalog_guard.py --write-attestation`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Recompute current floors fresh from conf/*.conf -- never trust the
+    # attestation's own "floors" section, which is not bound to anything by
+    # config_digest (only conf/*.conf and pipeline/L1/*.jsonl bytes are).
+    try:
+        mapped_sources_floor = load_mapped_sources_floor(default_mapped_sources_floor_path())
+        enforcement_floor = load_enforcement_floor(default_enforcement_floor_path())
+        checked_floor = load_checked_floor(default_checked_floor_path())
+    except ValueError as exc:
+        print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        return 1
+
+    failures: list[str] = []
+    if mapped_sources < mapped_sources_floor:
+        failures.append(
+            f"recorded mapped_sources {mapped_sources} below mapped-sources-floor "
+            f"{mapped_sources_floor}"
+        )
+    if total_bearing < enforcement_floor:
+        failures.append(
+            f"recorded total_enforcement_bearing {total_bearing} below enforcement-floor "
+            f"{enforcement_floor}"
+        )
+    if total_checked < checked_floor:
+        failures.append(
+            f"recorded total_checked {total_checked} below checked-floor {checked_floor}"
+        )
+    if unlisted_phantom_count != 0:
+        failures.append(
+            f"recorded {unlisted_phantom_count} undocumented phantom(s) not in the ledger"
+        )
+
+    if failures:
+        print(
+            "enforcement-verifier: ERROR: attestation's recorded results violate the "
+            "current floors:",
+            file=sys.stderr,
+        )
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+
+    print(
+        f"enforcement-verifier: ATTESTATION: from {hostname} at {generated_at}, commit "
+        f"{commit}, {total_checked} entries checked ({total_bearing} enforcement-bearing, "
+        f"{mapped_sources} mapped sources), digest MATCHES current config, age {age} <= "
+        f"{args.max_attestation_age_days}d, floors satisfied (mapped-sources-floor "
+        f"{mapped_sources_floor}, enforcement-floor {enforcement_floor}, checked-floor "
+        f"{checked_floor}), 0 undocumented phantoms.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.write_attestation:
+        return write_attestation(args)
+    if args.verify_attestation:
+        return verify_attestation(args)
     if args.verify_enforcement:
-        # ---------------------------------------------------------------
-        # Load and validate EVERY config input that decides what gets
-        # checked, up front, unconditionally -- before any root-resolution
-        # or "can this environment check anything at all" branching below.
-        # This is deliberate: every one of these files controls the SCOPE
-        # of the check (which sources are mapped, which sources are
-        # excused, how low the debt floors may go, which phantoms are
-        # already known) and a scope input that only gets read on the
-        # "happy path" is exactly how D4 let known-phantoms.conf go missing
-        # invisibly on CI -- the SKIPPED return used to happen before its
-        # load. Loading everything here means a config file vanishing
-        # fails loud in EVERY environment, including one that structurally
-        # cannot verify a single path (no source repos checked out).
-        try:
-            source_roots = load_source_roots(default_source_roots_path(), default_projects_dir())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            mapped_sources_floor = load_mapped_sources_floor(default_mapped_sources_floor_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            unmapped_sources = load_unmapped_sources(default_unmapped_sources_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            validate_source_coverage(default_l1_dir(), source_roots, unmapped_sources)
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            floor = load_enforcement_floor(default_enforcement_floor_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            checked_floor = load_checked_floor(default_checked_floor_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            known = load_known_phantoms(default_known_phantoms_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        try:
-            decrease_reasons = parse_floor_decrease_flags(args.allow_floor_decrease)
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        git_ref = default_git_ref()
-
-        # C4e (finding 3): "a floor the same change can lower is not a
-        # floor." Every floor file may only ever increase relative to what
-        # was committed at `git_ref` (origin/main) -- a decrease is a hard
-        # ERROR unless explicitly authorized via --allow-floor-decrease,
-        # which still prints loudly (never a silent pass). This runs
-        # before any of the floors are actually applied below, so a
-        # decrease is caught regardless of which specific gate would have
-        # been affected by it.
-        for label, floor_path, current_value in (
-            ("mapped-sources-floor", default_mapped_sources_floor_path(), mapped_sources_floor),
-            ("enforcement-floor", default_enforcement_floor_path(), floor),
-            ("checked-floor", default_checked_floor_path(), checked_floor),
-        ):
-            previous_value = previous_floor_value(floor_path, git_ref)
-            ok, message = check_floor_ratchet(
-                label, floor_path, current_value, previous_value, decrease_reasons
-            )
-            if message is not None:
-                prefix = "enforcement-verifier: " if ok else "enforcement-verifier: ERROR: "
-                print(f"{prefix}{message}", file=sys.stderr)
-            if not ok:
-                return 1
-
-        # 0. D1: the map that decides what gets checked must itself be
-        #    gated. Computed straight off the loaded mapping -- no
-        #    dependency on any root resolving -- so, like the
-        #    enforcement-bearing floor below, this is a real check that
-        #    runs identically everywhere. Without it, deleting a
-        #    source-roots.conf line (or reducing the whole file to one
-        #    trivially-satisfied entry) makes its phantoms UNVERIFIABLE,
-        #    exits 0, and *improves* the ROOTS ratio, because the
-        #    denominator shrinks along with the numerator.
-        mapped_count = len(source_roots)
-        print(
-            f"enforcement-verifier: MAPPED-SOURCES-FLOOR: {mapped_count} sources mapped in "
-            f"conf/source-roots.conf (floor {mapped_sources_floor})",
-            file=sys.stderr,
-        )
-        if mapped_count < mapped_sources_floor:
-            print(
-                f"enforcement-verifier: ERROR: mapped source count dropped to {mapped_count}, "
-                f"below floor {mapped_sources_floor} -- a source-roots.conf line was deleted "
-                "(or the whole map shrunk) instead of a source being fixed or explicitly "
-                "declared unmappable. Restore the mapping, or lower the floor explicitly in "
-                "conf/mapped-sources-floor.conf with a recorded reason.",
-                file=sys.stderr,
-            )
-            return 1
-
-        try:
-            report = verify_enforcement(default_l1_dir(), default_projects_dir(), source_roots)
-        except (TypeError, ValueError) as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
-        print_enforcement_report(report, unmapped_sources)
-
-        # 1. Universal, root-independent floor: total enforcement-bearing
-        #    entries must never shrink. Computed straight from the corpus,
-        #    so this is a REAL check that runs identically everywhere,
-        #    including a CI runner with none of the source repos present --
-        #    unlike everything below, which needs a resolved root to mean
-        #    anything. This is the fleet#152 defense: a debt ledger can
-        #    shrink because a phantom was genuinely fixed, or because the
-        #    flagged record was quietly deleted. Only the corpus-wide count
-        #    not dropping distinguishes the two.
-        total_bearing = total_enforcement_bearing(report)
-        print(
-            f"enforcement-verifier: DEBT-FLOOR: {total_bearing} total enforcement-bearing "
-            f"entries (floor {floor})",
-            file=sys.stderr,
-        )
-        if total_bearing < floor:
-            print(
-                f"enforcement-verifier: ERROR: enforcement-bearing entry count dropped to "
-                f"{total_bearing}, below floor {floor} -- an entry was deleted or its "
-                "enforcement value was removed rather than the underlying gap being fixed. "
-                "Raise real coverage, or lower the floor explicitly in "
-                "conf/enforcement-floor.conf with a recorded reason.",
-                file=sys.stderr,
-            )
-            return 1
-
-        # 2. The root floor, made falsifiable: only roots that actually
-        #    verified >=1 entry count as "present" for --require-roots.
-        resolved_count = len(report.roots_resolved)
-        useful_sources = {
-            source
-            for source, totals in report.sources.items()
-            if source in report.roots_resolved and totals.checked > 0
-        }
-        useful_count = len(useful_sources)
-
-        if resolved_count == 0:
-            print(
-                f"enforcement-verifier: ERROR: 0 of {report.mapped_sources} mapped source "
-                "roots are present on this machine at all; refusing to report success on a "
-                "check that could not see any of its own inputs.",
-                file=sys.stderr,
-            )
-            return 1
-
-        # 2b. C4e (finding 2): the CHECKED-FLOOR must be evaluated here, in
-        # EVERY environment, BEFORE the SKIPPED decision below -- not after
-        # it. The old position (after the `useful_count == 0` return) meant
-        # this floor was dead code whenever nothing got checked, for ANY
-        # reason. That is exactly the exploit: reduce source-roots.conf
-        # until every remaining mapped root has checked == 0, and the run
-        # takes the same SKIPPED, exit-0 branch a genuinely CI-shaped
-        # runner takes -- with the config edit, none of it real config, on
-        # a fully populated workstation with all repos checked out.
-        #
-        # `useful_count == 0` alone cannot tell those two apart -- it is
-        # identical in both. C4f (HIGH-2): what DOES differ is no longer
-        # keyed on whether ~/projects happens to exist on disk --
-        # `default_projects_dir()` is `Path.home()/"projects"`, and
-        # `Path.home()` reads `$HOME`; a caller can reproduce "this
-        # directory is absent" on a fully populated workstation with zero
-        # config or code edits at all (e.g. `HOME=/tmp/nohomehere`), which
-        # makes directory-absence a caller-controlled signal, not a
-        # trustworthy proxy for "this is really CI". The exemption is now
-        # keyed on `--ci-no-source-repos`: an explicit, committed,
-        # reviewable flag pinned in .github/workflows/guard.yml, never an
-        # environment accident. Without it, the floor is fully enforced
-        # regardless of whether ~/projects exists (including the
-        # degenerate case where it exists but is empty, or doesn't exist
-        # at all but nobody declared why).
-        structurally_cannot_check = args.ci_no_source_repos
-        total_checked = sum(totals.checked for totals in report.sources.values())
-        print(
-            f"enforcement-verifier: CHECKED-FLOOR: {total_checked} entries actually verified "
-            f"against a resolved root (floor {checked_floor})",
-            file=sys.stderr,
-        )
-        if total_checked < checked_floor:
-            if structurally_cannot_check:
-                print(
-                    "enforcement-verifier: CHECKED-FLOOR: exempted this run -- "
-                    "--ci-no-source-repos was passed, an explicit declaration that this "
-                    "environment structurally has no source repos checked out at all (e.g. "
-                    "the CI runner, which checks out only this one repo). Real coverage is "
-                    "only verified where ~/projects is populated and this flag is NOT passed.",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"enforcement-verifier: ERROR: checked entry count dropped to "
-                    f"{total_checked}, below floor {checked_floor} -- fewer entries were "
-                    "actually run through the exists() check than before, even though the "
-                    "enforcement-bearing total above may look unchanged (e.g. offset by "
-                    "entries in an unmapped or not-checked-out source, which were never "
-                    "verified at all). --ci-no-source-repos was not passed, so this "
-                    "environment is assumed capable of checking source repos and there is no "
-                    "exemption. Restore real checked coverage; or, if this environment "
-                    "genuinely cannot check anything by construction, pass "
-                    "--ci-no-source-repos from a pinned, reviewable CI config (never inferred "
-                    "from ~/projects being absent); or lower the floor explicitly (with "
-                    "--allow-floor-decrease checked-floor=\"<reason>\") and record the reason "
-                    "in conf/checked-floor.conf.",
-                    file=sys.stderr,
-                )
-                return 1
-
-        if useful_count == 0:
-            print(
-                "enforcement-verifier: SKIPPED: roots are present on this machine but NONE "
-                "of them had a single machine entry with non-null enforcement to actually "
-                "check -- this environment cannot verify ANY enforcement claim right now. "
-                "This is a declared skip, not a pass: rerun where the mapped source repos "
-                "are checked out (e.g. a dev workstation with ~/projects populated) for a "
-                "real phantom-detection signal.",
-                file=sys.stderr,
-            )
-            return 0
-
-        if useful_count < args.require_roots:
-            print(
-                f"enforcement-verifier: ERROR: only {useful_count} of "
-                f"{report.mapped_sources} mapped source roots actually verified an entry on "
-                f"this machine (require >= {args.require_roots}); refusing to report success "
-                "on a check that could not see enough of its own inputs.",
-                file=sys.stderr,
-            )
-            return 1
-
-        # 3. Phantom debt ledger: undocumented (new) phantoms are fatal;
-        #    documented ones are visible debt, not a silent allowlist.
-        unlisted = [phantom for phantom in report.phantoms if phantom.key() not in known]
-        print(
-            f"enforcement-verifier: DEBT: {len(known)} known phantom(s) documented in "
-            f"conf/known-phantoms.conf -- this number should shame us into fixing them, "
-            "not sit as a silent allowlist.",
-            file=sys.stderr,
-        )
-        if unlisted:
-            print(
-                f"enforcement-verifier: {len(unlisted)} phantom(s) are NOT documented in "
-                "conf/known-phantoms.conf:",
-                file=sys.stderr,
-            )
-            for phantom in unlisted:
-                print(f"enforcement-verifier: undocumented: {phantom.format()}", file=sys.stderr)
-            if not args.accept_phantom:
-                print(
-                    "enforcement-verifier: ERROR: new phantoms cannot land silently. Add each "
-                    "one to conf/known-phantoms.conf with evidence and a disposition, or pass "
-                    "--accept-phantom to force this run through (does not update the ledger).",
-                    file=sys.stderr,
-                )
-                return 1
-            print(
-                "enforcement-verifier: WARNING: --accept-phantom set -- allowing "
-                f"{len(unlisted)} undocumented phantom(s) through THIS RUN ONLY. Add them to "
-                "conf/known-phantoms.conf before merging.",
-                file=sys.stderr,
-            )
-
-        return 0
+        return run_verification(args).exit_code
 
     catalog_path: Path = args.catalog
 

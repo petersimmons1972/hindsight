@@ -1,0 +1,135 @@
+{
+  "commit": "966461589ba6d7c4296d33675883dbde04c1884c",
+  "config_digest": "sha256:b3e789cb611e0b0c7de640a1b11f808ecc23bfc0cd63223d8e1d9293910cde9c",
+  "floors": {
+    "checked_floor": 23,
+    "enforcement_floor": 33,
+    "mapped_sources_floor": 12
+  },
+  "generated_at": "2026-08-02T01:56:50Z",
+  "hostname": "leviathan",
+  "results": {
+    "known_phantom_count": 15,
+    "mapped_sources": 12,
+    "per_source": {
+      "claude-codex-integration": {
+        "checked": 6,
+        "judgment": 6,
+        "machine": 17,
+        "phantoms": 6,
+        "unbacked": 11,
+        "unverifiable": 0
+      },
+      "codex": {
+        "checked": 0,
+        "judgment": 5,
+        "machine": 5,
+        "phantoms": 0,
+        "unbacked": 5,
+        "unverifiable": 0
+      },
+      "duramind": {
+        "checked": 0,
+        "judgment": 12,
+        "machine": 7,
+        "phantoms": 0,
+        "unbacked": 7,
+        "unverifiable": 0
+      },
+      "engram-go": {
+        "checked": 1,
+        "judgment": 21,
+        "machine": 7,
+        "phantoms": 1,
+        "unbacked": 6,
+        "unverifiable": 0
+      },
+      "fleet-dispatch-schema": {
+        "checked": 0,
+        "judgment": 0,
+        "machine": 10,
+        "phantoms": 0,
+        "unbacked": 0,
+        "unverifiable": 10
+      },
+      "fleet-main": {
+        "checked": 5,
+        "judgment": 54,
+        "machine": 65,
+        "phantoms": 2,
+        "unbacked": 60,
+        "unverifiable": 0
+      },
+      "fleet-orch": {
+        "checked": 2,
+        "judgment": 13,
+        "machine": 24,
+        "phantoms": 1,
+        "unbacked": 22,
+        "unverifiable": 0
+      },
+      "generals": {
+        "checked": 0,
+        "judgment": 10,
+        "machine": 0,
+        "phantoms": 0,
+        "unbacked": 0,
+        "unverifiable": 0
+      },
+      "homelab-canon": {
+        "checked": 0,
+        "judgment": 92,
+        "machine": 62,
+        "phantoms": 0,
+        "unbacked": 62,
+        "unverifiable": 0
+      },
+      "homelab-incidents": {
+        "checked": 2,
+        "judgment": 3,
+        "machine": 9,
+        "phantoms": 2,
+        "unbacked": 7,
+        "unverifiable": 0
+      },
+      "homelab-lessons": {
+        "checked": 3,
+        "judgment": 2,
+        "machine": 9,
+        "phantoms": 3,
+        "unbacked": 6,
+        "unverifiable": 0
+      },
+      "kubernetes-homepage": {
+        "checked": 0,
+        "judgment": 4,
+        "machine": 8,
+        "phantoms": 0,
+        "unbacked": 8,
+        "unverifiable": 0
+      },
+      "model-tables": {
+        "checked": 0,
+        "judgment": 3,
+        "machine": 6,
+        "phantoms": 0,
+        "unbacked": 6,
+        "unverifiable": 0
+      },
+      "publishing-incidents": {
+        "checked": 4,
+        "judgment": 2,
+        "machine": 7,
+        "phantoms": 0,
+        "unbacked": 3,
+        "unverifiable": 0
+      }
+    },
+    "phantom_count": 15,
+    "roots_resolved": 12,
+    "total_checked": 23,
+    "total_enforcement_bearing": 33,
+    "unlisted_phantom_count": 0
+  },
+  "version": 1
+}

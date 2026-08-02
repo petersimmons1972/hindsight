@@ -14,7 +14,7 @@ import re
 import sys
 from dataclasses import dataclass
 from itertools import pairwise
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
@@ -99,6 +99,18 @@ def default_enforcement_floor_path() -> Path:
     return Path(__file__).resolve().parents[1] / "conf" / "enforcement-floor.conf"
 
 
+def default_mapped_sources_floor_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "conf" / "mapped-sources-floor.conf"
+
+
+def default_checked_floor_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "conf" / "checked-floor.conf"
+
+
+def default_unmapped_sources_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "conf" / "unmapped-sources.conf"
+
+
 def load_source_roots(path: Path) -> dict[str, str]:
     """Load the source -> repo-root mapping. Fails loud, never "no map, so all fine".
 
@@ -126,7 +138,52 @@ def load_source_roots(path: Path) -> dict[str, str]:
         mapping[source] = relpath
     if not mapping:
         raise ValueError(f"source-roots map is empty: {path}")
+    validate_source_roots(mapping, path)
     return mapping
+
+
+def validate_source_roots(mapping: dict[str, str], path: Path) -> None:
+    """Reject roots that would reopen the cross-repo phantom leak this area
+    exists to close, at CONFIG-VALIDATION time -- before any path on disk is
+    even looked at, so this fires in every environment including one where
+    no source repo is checked out.
+
+    A root of "." (i.e. projects_dir itself, ~/projects) makes every file
+    under EVERY OTHER mapped repo resolve as "enforced" for whichever source
+    carries that root -- a substack/README.md entry would pass as an
+    enforced fleet-dispatch mechanism. Same defect, different shape, if any
+    mapped root is a strict ancestor of another mapped root (the ancestor's
+    source could resolve into the descendant's files). SELF is exempt: it
+    resolves to this checkout's own root, not a subdirectory of
+    projects_dir, so it cannot contain another mapped root.
+    """
+    for source, relpath in mapping.items():
+        if relpath == ".":
+            raise ValueError(
+                f"source-roots entry {source!r} in {path} maps to '.' (projects_dir itself, "
+                "i.e. ~/projects) -- forbidden: this reopens the cross-repo phantom leak this "
+                "check exists to close (any file anywhere under ~/projects would resolve as "
+                f"enforced for {source!r}). Map to a specific repo subdirectory, or declare "
+                f"{source!r} unmappable in conf/unmapped-sources.conf with a reason if its "
+                "enforcement paths genuinely cannot be scoped to one repo."
+            )
+
+    non_self = {s: r for s, r in mapping.items() if r != SELF_ROOT_TOKEN}
+    for source_a, relpath_a in non_self.items():
+        path_a = PurePosixPath(relpath_a)
+        for source_b, relpath_b in non_self.items():
+            if source_a == source_b:
+                continue
+            path_b = PurePosixPath(relpath_b)
+            if path_a == path_b:
+                continue
+            if path_b.is_relative_to(path_a):
+                raise ValueError(
+                    f"source-roots entry {source_a!r} ({relpath_a}) in {path} is an ancestor "
+                    f"of {source_b!r} ({relpath_b}) -- forbidden: {source_a}'s entries could "
+                    f"resolve against {source_b}'s files too, reopening the cross-repo "
+                    "phantom leak this check exists to close."
+                )
 
 
 def load_known_phantoms(path: Path) -> dict[tuple[str, str, str], dict[str, str]]:
@@ -198,6 +255,151 @@ def load_enforcement_floor(path: Path) -> int:
         return int(lines[0])
     except ValueError as exc:
         raise ValueError(f"enforcement floor value is not an integer: {lines[0]!r}") from exc
+
+
+def load_mapped_sources_floor(path: Path) -> int:
+    """Load the minimum acceptable count of mapped entries in source-roots.conf.
+
+    D1: the honesty ratio ROOTS prints (resolved/mapped) has NO floor on its
+    own denominator -- shrinking source-roots.conf (deleting a line, or
+    reducing it to a single trivially-satisfied entry) makes every phantom
+    it used to see UNVERIFIABLE, exits 0, and *improves* the reported ratio,
+    because the ratio's denominator shrank along with the numerator. This
+    floor makes the map itself falsifiable: it may grow (a new source gets
+    mapped) but may not shrink without an explicit, recorded reason here,
+    same idiom as conf/enforcement-floor.conf.
+
+    Missing or malformed -> ValueError (fail loud), identical rationale to
+    load_enforcement_floor: a floor file that vanished must not read as
+    "floor 0, any map size passes."
+    """
+    if not path.is_file():
+        raise ValueError(f"mapped-sources floor file not found: {path}")
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if len(lines) != 1:
+        raise ValueError(f"mapped-sources floor file must contain exactly one value: {path}")
+    try:
+        return int(lines[0])
+    except ValueError as exc:
+        raise ValueError(f"mapped-sources floor value is not an integer: {lines[0]!r}") from exc
+
+
+def load_checked_floor(path: Path) -> int:
+    """Load the minimum acceptable count of entries actually CHECKED.
+
+    D2: `total_enforcement_bearing` is deliberately root-independent (see its
+    docstring) so it is computable in any environment -- but that same
+    property makes it paddable: a new machine entry with a non-null
+    enforcement value in an UNMAPPED (or not-checked-out) source raises the
+    bearing total by 1 without ever being checked, pre-paying floor headroom
+    that could later offset deleting a genuinely CHECKED entry elsewhere.
+    This floor is on `checked` specifically -- units actually run through
+    the exists() test, wherever roots resolve -- so padding an unverifiable
+    source cannot buy cover for shrinking real, verified coverage.
+
+    Unlike the enforcement-bearing floor, this one is only meaningful in an
+    environment where at least one root usefully resolved (see
+    `useful_count` in main()); an environment that cannot check anything
+    (CI with no source repos) legitimately has checked == 0 and must not be
+    penalized for that -- it takes the declared SKIP path instead, before
+    this floor is ever consulted.
+
+    Missing or malformed -> ValueError (fail loud), same idiom as the other
+    floor loaders.
+    """
+    if not path.is_file():
+        raise ValueError(f"checked floor file not found: {path}")
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if len(lines) != 1:
+        raise ValueError(f"checked floor file must contain exactly one value: {path}")
+    try:
+        return int(lines[0])
+    except ValueError as exc:
+        raise ValueError(f"checked floor value is not an integer: {lines[0]!r}") from exc
+
+
+def load_unmapped_sources(path: Path) -> dict[str, dict[str, str]]:
+    """Load the ledger of L1 sources explicitly declared unmappable.
+
+    D2 (other half): an L1 source with no line in source-roots.conf was
+    previously a silent, undocumented free pass -- nothing forced anyone to
+    say WHY it has no root, and a brand-new source could sit unmapped
+    forever with no record that anyone ever noticed. Every L1 source must
+    now be either mapped, or listed here with a reason (this is enforced by
+    `validate_source_coverage`, called from main() against the live L1
+    directory listing). Declaring a source here does not make its entries
+    enforced or checked -- they remain UNVERIFIABLE forever, by design.
+
+    Missing file -> ValueError (fail loud), same idiom as
+    load_known_phantoms: a declarations file that silently vanished must not
+    read as "nothing declared, so nothing to check" -- that is
+    indistinguishable from the coverage requirement never having existed.
+    An EMPTY (but present) file is valid only if every L1 source happens to
+    be mapped; `validate_source_coverage` is what actually enforces that.
+    """
+    if not path.is_file():
+        raise ValueError(f"unmapped-sources declarations not found: {path}")
+    declared: dict[str, dict[str, str]] = {}
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed unmapped-sources line {path}:{line_number}: {exc.msg}") from exc
+        if not isinstance(record, dict):
+            raise ValueError(f"unmapped-sources line {path}:{line_number} is not an object")
+        for field in ("source", "reason"):
+            if not isinstance(record.get(field), str) or not record[field]:
+                raise ValueError(
+                    f"unmapped-sources line {path}:{line_number} missing required field {field!r}"
+                )
+        declared[record["source"]] = record
+    return declared
+
+
+def validate_source_coverage(
+    l1_dir: Path, source_roots: dict[str, str], unmapped_sources: dict[str, dict[str, str]]
+) -> None:
+    """Every L1 source must be mapped, or declared unmappable -- never neither.
+
+    D2: an L1 source that is neither mapped nor declared was a free pass --
+    a new phantom placed there is UNVERIFIABLE, exits 0, AND raises the
+    enforcement-bearing floor, pre-paying for a later deletion elsewhere.
+    Closing this half does not by itself stop the padding (see
+    load_checked_floor for that); it stops the silence -- an unmapped source
+    must now be a recorded, deliberate decision, not an omission nobody
+    documented.
+    """
+    if not l1_dir.is_dir():
+        raise ValueError(f"L1 directory not found: {l1_dir}")
+    for jsonl_path in sorted(l1_dir.glob("*.jsonl")):
+        source = jsonl_path.stem
+        mapped = source in source_roots
+        declared = source in unmapped_sources
+        if mapped and declared:
+            raise ValueError(
+                f"L1 source {source!r} is BOTH mapped in source-roots.conf AND declared "
+                "unmappable in conf/unmapped-sources.conf -- these are contradictory; remove "
+                "one."
+            )
+        if not mapped and not declared:
+            raise ValueError(
+                f"L1 source {source!r} has no root mapping in conf/source-roots.conf and is "
+                "not declared unmappable in conf/unmapped-sources.conf -- every L1 source must "
+                "be explicitly accounted for. An unmapped, undeclared source is a free pass: a "
+                "new phantom placed there is UNVERIFIABLE, exits 0, and inflates the "
+                "enforcement-bearing floor without the entry ever being checked."
+            )
 
 
 def total_enforcement_bearing(report: EnforcementReport) -> int:
@@ -408,7 +610,9 @@ def verify_enforcement(
     )
 
 
-def print_enforcement_report(report: EnforcementReport) -> None:
+def print_enforcement_report(
+    report: EnforcementReport, unmapped_sources: dict[str, dict[str, str]]
+) -> None:
     """Print the verifier's intentionally limited result to stderr."""
     unbacked = sum(total.unbacked for total in report.sources.values())
     if unbacked:
@@ -442,13 +646,33 @@ def print_enforcement_report(report: EnforcementReport) -> None:
             file=sys.stderr,
         )
 
+    # D7: the denominator here counts MAPPED sources only. Previously an
+    # entirely unmapped source (no line in source-roots.conf at all) still
+    # landed in roots_unresolved and printed directly beneath a "100%"
+    # banner about mapped roots, reading as if a mapped root had failed --
+    # it hadn't; it was never mapped in the first place. Split the two.
+    mapped_unresolved = {
+        source: reason
+        for source, reason in report.roots_unresolved.items()
+        if source not in unmapped_sources
+    }
     print(
         f"enforcement-verifier: ROOTS: {len(report.roots_resolved)}/{report.mapped_sources} "
         "mapped source roots are present on this machine:",
         file=sys.stderr,
     )
-    for source in sorted(report.roots_unresolved):
-        print(f"  {source}: {report.roots_unresolved[source]}", file=sys.stderr)
+    for source in sorted(mapped_unresolved):
+        print(f"  {source}: {mapped_unresolved[source]}", file=sys.stderr)
+
+    if unmapped_sources:
+        print(
+            f"enforcement-verifier: DECLARED-UNMAPPABLE: {len(unmapped_sources)} L1 source(s) "
+            "excluded from the ROOTS fraction above by design (conf/unmapped-sources.conf) -- "
+            "their entries are always UNVERIFIABLE, never enforced:",
+            file=sys.stderr,
+        )
+        for source in sorted(unmapped_sources):
+            print(f"  {source}: {unmapped_sources[source]['reason']}", file=sys.stderr)
 
     print(
         "enforcement-verifier: SCOPE: checks path existence only; a resolving path "
@@ -503,17 +727,87 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.verify_enforcement:
+        # ---------------------------------------------------------------
+        # Load and validate EVERY config input that decides what gets
+        # checked, up front, unconditionally -- before any root-resolution
+        # or "can this environment check anything at all" branching below.
+        # This is deliberate: every one of these files controls the SCOPE
+        # of the check (which sources are mapped, which sources are
+        # excused, how low the debt floors may go, which phantoms are
+        # already known) and a scope input that only gets read on the
+        # "happy path" is exactly how D4 let known-phantoms.conf go missing
+        # invisibly on CI -- the SKIPPED return used to happen before its
+        # load. Loading everything here means a config file vanishing
+        # fails loud in EVERY environment, including one that structurally
+        # cannot verify a single path (no source repos checked out).
         try:
             source_roots = load_source_roots(default_source_roots_path())
         except ValueError as exc:
             print(f"enforcement-verifier: {exc}", file=sys.stderr)
             return 1
         try:
+            mapped_sources_floor = load_mapped_sources_floor(default_mapped_sources_floor_path())
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+        try:
+            unmapped_sources = load_unmapped_sources(default_unmapped_sources_path())
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+        try:
+            validate_source_coverage(default_l1_dir(), source_roots, unmapped_sources)
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+        try:
+            floor = load_enforcement_floor(default_enforcement_floor_path())
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+        try:
+            checked_floor = load_checked_floor(default_checked_floor_path())
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+        try:
+            known = load_known_phantoms(default_known_phantoms_path())
+        except ValueError as exc:
+            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+            return 1
+
+        # 0. D1: the map that decides what gets checked must itself be
+        #    gated. Computed straight off the loaded mapping -- no
+        #    dependency on any root resolving -- so, like the
+        #    enforcement-bearing floor below, this is a real check that
+        #    runs identically everywhere. Without it, deleting a
+        #    source-roots.conf line (or reducing the whole file to one
+        #    trivially-satisfied entry) makes its phantoms UNVERIFIABLE,
+        #    exits 0, and *improves* the ROOTS ratio, because the
+        #    denominator shrinks along with the numerator.
+        mapped_count = len(source_roots)
+        print(
+            f"enforcement-verifier: MAPPED-SOURCES-FLOOR: {mapped_count} sources mapped in "
+            f"conf/source-roots.conf (floor {mapped_sources_floor})",
+            file=sys.stderr,
+        )
+        if mapped_count < mapped_sources_floor:
+            print(
+                f"enforcement-verifier: ERROR: mapped source count dropped to {mapped_count}, "
+                f"below floor {mapped_sources_floor} -- a source-roots.conf line was deleted "
+                "(or the whole map shrunk) instead of a source being fixed or explicitly "
+                "declared unmappable. Restore the mapping, or lower the floor explicitly in "
+                "conf/mapped-sources-floor.conf with a recorded reason.",
+                file=sys.stderr,
+            )
+            return 1
+
+        try:
             report = verify_enforcement(default_l1_dir(), default_projects_dir(), source_roots)
         except (TypeError, ValueError) as exc:
             print(f"enforcement-verifier: {exc}", file=sys.stderr)
             return 1
-        print_enforcement_report(report)
+        print_enforcement_report(report, unmapped_sources)
 
         # 1. Universal, root-independent floor: total enforcement-bearing
         #    entries must never shrink. Computed straight from the corpus,
@@ -524,11 +818,6 @@ def main(argv: list[str] | None = None) -> int:
         #    shrink because a phantom was genuinely fixed, or because the
         #    flagged record was quietly deleted. Only the corpus-wide count
         #    not dropping distinguishes the two.
-        try:
-            floor = load_enforcement_floor(default_enforcement_floor_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
-            return 1
         total_bearing = total_enforcement_bearing(report)
         print(
             f"enforcement-verifier: DEBT-FLOOR: {total_bearing} total enforcement-bearing "
@@ -587,14 +876,34 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
 
-        # 3. Phantom debt ledger: undocumented (new) phantoms are fatal;
-        #    documented ones are visible debt, not a silent allowlist.
-        try:
-            known = load_known_phantoms(default_known_phantoms_path())
-        except ValueError as exc:
-            print(f"enforcement-verifier: {exc}", file=sys.stderr)
+        # 2b. D2/mutation-bar(d): the floor on entries actually CHECKED, not
+        #     merely present as an enforcement-bearing claim. Only
+        #     meaningful once we know this environment can check ANYTHING
+        #     (useful_count > 0, just established above) -- a source with no
+        #     root, or a root that resolves but backs nothing, contributes
+        #     0 here regardless of how many non-null `enforcement` values it
+        #     carries elsewhere, so padding an unmapped/uncheckable source
+        #     cannot buy headroom against deleting a genuinely checked entry.
+        total_checked = sum(totals.checked for totals in report.sources.values())
+        print(
+            f"enforcement-verifier: CHECKED-FLOOR: {total_checked} entries actually verified "
+            f"against a resolved root (floor {checked_floor})",
+            file=sys.stderr,
+        )
+        if total_checked < checked_floor:
+            print(
+                f"enforcement-verifier: ERROR: checked entry count dropped to {total_checked}, "
+                f"below floor {checked_floor} -- fewer entries were actually run through the "
+                "exists() check than before, even though the enforcement-bearing total above "
+                "may look unchanged (e.g. offset by entries in an unmapped or not-checked-out "
+                "source, which were never verified at all). Restore real checked coverage, or "
+                "lower the floor explicitly in conf/checked-floor.conf with a recorded reason.",
+                file=sys.stderr,
+            )
             return 1
 
+        # 3. Phantom debt ledger: undocumented (new) phantoms are fatal;
+        #    documented ones are visible debt, not a silent allowlist.
         unlisted = [phantom for phantom in report.phantoms if phantom.key() not in known]
         print(
             f"enforcement-verifier: DEBT: {len(known)} known phantom(s) documented in "

@@ -1,0 +1,15 @@
+{
+  "_label": "F2/M28 pin (isolated from M27): status is exact-case 'COMPLETED' (so the status check alone cannot mask this), but conclusion is lowercase 'success'. Needed because t30 (status AND conclusion both lowercase) fails on the status check first under an M27-only mutation, so it never isolates M28 alone: with only 'conclusion != \"SUCCESS\"' -> 'str(conclusion).upper() != \"SUCCESS\"' mutated and status left exact-case, t30 still exits 2 for the same status-based reason as the unmutated script, so that mutation alone survives t30 undetected. This fixture removes that shared cause.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "success",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "_label": "Good-before-bad duplicate-name probe (round-4 HIGH gap), FAILURE variant: [guard COMPLETED/SUCCESS, guard COMPLETED/FAILURE]. Complements t25 (a completed-but-bad conclusion, not merely an incomplete status) so ordering/truncation is the only thing under test, isolated from the status!=COMPLETED branch. A first-wins truncation (matches[:1]) sees only the leading SUCCESS entry and masks the trailing genuine FAILURE. Must exit 2.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/2/job/2",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

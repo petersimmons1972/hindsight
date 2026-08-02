@@ -1,0 +1,35 @@
+{
+  "_label": "THE confirmed HIGH defect repro, verbatim: {statusCheckRollup:[{name:guard,status:QUEUED,conclusion:null},{name:guard,status:QUEUED,conclusion:null},{name:guard,status:COMPLETED,conclusion:SUCCESS}]}. A last-wins dedup-by-name implementation reports PASS on this because the trailing SUCCESS entry overwrites the two QUEUED ones in the index. It must FAIL: two of the three 'guard' runs never executed.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": null,
+      "startedAt": null,
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": null,
+      "startedAt": null,
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/2/job/2",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/30720708145/job/91423892719",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

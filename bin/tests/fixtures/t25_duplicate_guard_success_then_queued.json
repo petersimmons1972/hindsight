@@ -1,0 +1,25 @@
+{
+  "_label": "Good-before-bad duplicate-name probe (round-4 HIGH gap): [guard COMPLETED/SUCCESS, guard QUEUED/null]. Every prior duplicate fixture puts the bad entry FIRST, so a first-wins truncation (matches[:1]) survives all of them by accident. Here the SUCCESS entry is first and the never-finished QUEUED entry is second -- a first-wins implementation looks at only the leading SUCCESS entry and prints PASS, silently ignoring a gate that never completed. That is FM-149 verbatim: a PR whose check never finished, reported green. Must exit 2.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": null,
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/2/job/2",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

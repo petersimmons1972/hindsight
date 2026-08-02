@@ -1,0 +1,25 @@
+{
+  "_label": "DEFENSIVE FIXTURE — status=COMPLETED with conclusion='' has never been observed from the live gh API in this repo. GitHub always pairs COMPLETED with a non-empty conclusion. This case is kept only to defend against a hypothetical/future API shape; do not cite it as an observed FM-150 repro.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "",
+      "startedAt": "2026-07-30T10:00:00Z",
+      "completedAt": "2026-07-30T10:05:00Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "GitGuardian Security Checks",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-07-30T10:00:00Z",
+      "completedAt": "2026-07-30T10:01:00Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "_label": "IN_PROGRESS status carrying conclusion=SUCCESS -- the exact FM-150-observed status value. Pins that the status check is an exact match against 'COMPLETED', not a broadened allowlist like status not in (COMPLETED, IN_PROGRESS). IN_PROGRESS is never complete regardless of what conclusion field says.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "IN_PROGRESS",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

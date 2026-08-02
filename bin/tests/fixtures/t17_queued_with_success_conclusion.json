@@ -1,0 +1,13 @@
+{
+  "_label": "Adversarial/defensive shape (not GH-observed) that isolates the status!=COMPLETED branch from the empty-conclusion branch: status=QUEUED but conclusion is already populated with SUCCESS. The two branches must both independently reject an incomplete run -- deleting the status check must not let this pass just because conclusion looks fine.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": "SUCCESS",
+      "startedAt": null,
+      "completedAt": null
+    }
+  ]
+}

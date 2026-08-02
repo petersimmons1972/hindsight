@@ -1,0 +1,15 @@
+{
+  "_label": "Naive date-only startedAt (no time component, no timezone). Must not downgrade the gate failure to a usage error.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": null,
+      "startedAt": "2026-08-01",
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

@@ -25,6 +25,8 @@ jobs:
         run: python3 -m pytest guard/tests/ pipeline/tests/ -q
       - name: Run bats tests
         run: bats guard/tests/*.bats
+      - name: Run require-real-ci.sh bats tests
+        run: bats bin/tests/*.bats
       - name: Reconcile L1 corpus
         run: python3 pipeline/reconcile_l1.py
       - name: Validate L1 schema

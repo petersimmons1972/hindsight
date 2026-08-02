@@ -1,0 +1,15 @@
+{
+  "_label": "Naive (no-timezone) startedAt on a QUEUED entry -- ISO 8601 without an offset. fromisoformat() parses this fine but yields a tz-naive datetime; subtracting it from datetime.now(timezone.utc) raises TypeError. Must be handled as a gate failure (exit 2), never downgraded to a usage error (exit 1).",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "QUEUED",
+      "conclusion": null,
+      "startedAt": "2026-08-01T22:12:07",
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

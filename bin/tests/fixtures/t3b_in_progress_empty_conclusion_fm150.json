@@ -1,0 +1,25 @@
+{
+  "_label": "ACTUAL FM-150 SHAPE — captured from the live hindsight incident: a check stuck in IN_PROGRESS reports conclusion='' (empty string, not null). GitHub renders this BLANK rather than red, which is exactly what let FM-150 merge unnoticed.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "IN_PROGRESS",
+      "conclusion": "",
+      "startedAt": "2026-07-29T02:00:00Z",
+      "completedAt": null,
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/2/job/2",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "GitGuardian Security Checks",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-07-29T02:00:00Z",
+      "completedAt": "2026-07-29T02:01:00Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "_label": "Required check COMPLETED with conclusion=STALE -- a real, never-actually-executed-as-passing conclusion GitHub can report. Only SUCCESS may pass; every other conclusion, including this one, must FAIL.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "STALE",
+      "startedAt": "2026-08-01T22:11:22Z",
+      "completedAt": "2026-08-01T22:11:41Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    }
+  ]
+}

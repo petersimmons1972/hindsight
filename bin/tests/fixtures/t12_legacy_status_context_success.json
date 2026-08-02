@@ -1,0 +1,12 @@
+{
+  "_label": "Legacy commit-status (StatusContext) shape, used by third-party bots (codecov etc) instead of CheckRun. No status/conclusion fields at all -- state carries the verdict directly.",
+  "statusCheckRollup": [
+    {
+      "__typename": "StatusContext",
+      "context": "guard",
+      "state": "SUCCESS",
+      "targetUrl": "https://example.com/build/1",
+      "createdAt": "2026-08-01T22:10:00Z"
+    }
+  ]
+}

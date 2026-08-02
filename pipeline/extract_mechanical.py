@@ -16,8 +16,14 @@ import json
 import re
 from pathlib import Path
 
-P = Path("/home/psimmons/projects")
-OUT = P / "hindsight/pipeline/L1"
+# Resolve from this file, never from a fixed home directory. reconcile_l1.py
+# shipped with `/home/psimmons/projects` baked in, resolved zero sources on CI,
+# and printed COMPLETE anyway (plan row V12). This module had the identical
+# defect: on any checkout not at that exact path it silently wrote its L1 output
+# into someone else's tree, or nowhere useful at all.
+REPO = Path(__file__).resolve().parents[1]
+P = REPO.parent
+OUT = REPO / "pipeline/L1"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -47,7 +53,7 @@ def emit(slug: str, records: list[dict], preserve_prefix: str | None = None) -> 
 
 
 # ---- 1. the canonical catalog (markdown table) --------------------------------
-cat = P / "hindsight/catalog/failure-modes.md"
+cat = REPO / "catalog/failure-modes.md"
 row_re = re.compile(r"^\| (FM-\d{2,3}) \|")
 records = []
 for n, line in enumerate(cat.read_text(encoding="utf-8").splitlines(), 1):

@@ -375,29 +375,13 @@ def default_git_ref() -> str:
     return "origin/main"
 
 
-def previous_floor_value(path: Path, ref: str) -> int | None:
-    """Best-effort read of a floor file's single integer value as committed
-    at `ref`, for ratchet enforcement (C4e, finding 3).
-
-    Returns None -- never raises -- when the previous value cannot be
-    determined at all: this checkout isn't a git repository, `ref` doesn't
-    exist (a shallow clone missing history, or a brand-new floor file with
-    no prior commit to compare against), git isn't installed, or the file's
-    content at `ref` doesn't parse as a single integer. `None` means "ratchet
-    enforcement is skipped for this run" -- it must NEVER make the floor
-    file's own value unreadable or the run fail for a reason unrelated to
-    the floor itself; the absolute-minimum check (`load_*_floor` above) is
-    what actually gates correctness, this only adds "don't shrink it
-    quietly" on top of an already-working floor.
-    """
-    try:
-        repo_root = _repo_root()
-        relpath = path.resolve().relative_to(repo_root)
-    except (OSError, ValueError):
-        return None
+def _read_floor_int_at_revision(repo_root: Path, relpath: Path, revision: str) -> int | None:
+    """`git show <revision>:<relpath>`, parsed as a single floor integer, or
+    None on any failure (bad revision, path absent at that revision,
+    unparseable content). Never raises."""
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_root), "show", f"{ref}:{relpath.as_posix()}"],
+            ["git", "-C", str(repo_root), "show", f"{revision}:{relpath.as_posix()}"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -417,6 +401,65 @@ def previous_floor_value(path: Path, ref: str) -> int | None:
         return int(lines[0])
     except ValueError:
         return None
+
+
+def previous_floor_value(path: Path, ref: str) -> int | None:
+    """Best-effort high-water mark of a floor file's value, for ratchet
+    enforcement (C4e, finding 3).
+
+    Computed as the MAXIMUM ever committed across two sources: (1) the
+    content at `ref` (origin/main -- the branch this work will eventually
+    land on), and (2) every commit reachable from HEAD that touched this
+    exact file (this branch's OWN history). (2) matters on its own: a
+    brand-new floor file (like conf/checked-floor.conf and
+    conf/mapped-sources-floor.conf, both introduced mid-campaign and not
+    yet on `ref` at all) would otherwise have NO ratchet protection for as
+    long as its introducing PR stays unmerged -- any later commit on the
+    SAME still-open branch could silently re-lower a value that branch
+    itself already committed, and a `ref`-only comparison would see no
+    history at all and wave it through. Walking this branch's own log
+    closes that: the value C4d already committed here is caught the
+    moment C4e tries to lower it further, with no dependency on C4d having
+    merged first.
+
+    Returns None -- never raises -- only when NEITHER source yields a
+    single resolvable integer anywhere: this checkout isn't a git
+    repository, git isn't installed, or the file has no history at all on
+    either `ref` or HEAD (freshly created, uncommitted). `None` means
+    "ratchet enforcement is skipped for this run" -- it must NEVER make
+    the floor file's own value unreadable or fail a run for a reason
+    unrelated to the floor itself; the absolute-minimum check
+    (`load_*_floor` above) is what actually gates correctness, this only
+    adds "don't shrink it quietly" on top of an already-working floor.
+    """
+    try:
+        repo_root = _repo_root()
+        relpath = path.resolve().relative_to(repo_root)
+    except (OSError, ValueError):
+        return None
+
+    candidates: list[int] = []
+
+    ref_value = _read_floor_int_at_revision(repo_root, relpath, ref)
+    if ref_value is not None:
+        candidates.append(ref_value)
+
+    try:
+        log = subprocess.run(
+            ["git", "-C", str(repo_root), "log", "--format=%H", "HEAD", "--", relpath.as_posix()],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        log = None
+    if log is not None and log.returncode == 0:
+        for commit_hash in log.stdout.split():
+            value = _read_floor_int_at_revision(repo_root, relpath, commit_hash)
+            if value is not None:
+                candidates.append(value)
+
+    return max(candidates) if candidates else None
 
 
 def parse_floor_decrease_flags(raw: list[str]) -> dict[str, str]:

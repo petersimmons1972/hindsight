@@ -1,0 +1,179 @@
+I'll adversarially verify `bin/similar-causes.py` against its stated contract: reproduce defects with exact commands, and only report what I can demonstrate.Suite is green. Next I'll probe corner cases the acceptance tests likely miss: empty-token queries, output injection, corpus edge cases.Probing argparse quirks (`---`, empty `--corpus`) and whether corpus text can reintroduce verdict language.Rechecking dash-prefixed queries carefully — the piped run may have masked real exit codes.VERDICT: DEFECTIVE
+
+Acceptance suite reconfirmed green: **27/27** (`bash bin/tests/test_similar_causes.sh`). Extra suite also green. Defects below are outside that suite.
+
+---
+
+### 1. HIGH — Unsanitized newlines in `id` / `source` / `instance` break the line-oriented contract (cap ≤10, single header, honest truncation)
+
+The printer interpolates raw field text into one logical row. Embedded `\n` becomes extra stdout lines that look like additional candidates (and can duplicate the advisory header). With **3** real matches the tool prints **18** scored-looking rows and **no** truncation notice.
+
+**Command:**
+```bash
+WORK=$(mktemp -d)
+python3 - <<'PY' >"$WORK/many.jsonl"
+import json
+for i in range(3):
+    fake = "\n".join(f"0.999 | fake-{i}-{j} | source: evil | injected line {j}" for j in range(5))
+    print(json.dumps({
+        "id": f"real-{i}",
+        "instance": f"token XQZ9 unique-overlap-marker-{i}\n{fake}",
+        "source_path": f"file{i}.jsonl",
+    }))
+PY
+python3 bin/similar-causes.py --corpus "$WORK" "token XQZ9 unique-overlap-marker"
+echo exit=$?
+echo "scored_looking_lines=$(python3 bin/similar-causes.py --corpus "$WORK" "token XQZ9 unique-overlap-marker" | grep -cE '^[0-9]+\.[0-9]+ \|')"
+rm -rf "$WORK"
+```
+
+**Actual output (excerpt):**
+```
+Candidates for human review. This tool does not determine duplication.
+0.312 | real-0 | source: file0.jsonl | token XQZ9 unique-overlap-marker-0
+0.999 | fake-0-0 | source: evil | injected line 0
+0.999 | fake-0-1 | source: evil | injected line 1
+0.999 | fake-0-2 | source: evil | injected line 2
+0.999 | fake-0-3 | source: evil | injected line 3
+0.999 | fake-0-4 | source: evil | injected line 4
+0.312 | real-1 | source: file1.jsonl | token XQZ9 unique-overlap-marker-1
+... (18 scored-looking lines total; no "Showing 10 of N")
+exit=0
+scored_looking_lines=18
+```
+
+Same root cause via `id`/`source_path`:
+```bash
+WORK=$(mktemp -d)
+python3 - <<'PY' >"$WORK/a.jsonl"
+import json
+print(json.dumps({
+  "id": "good\n0.999 | spoof-id | source: evil | spoofed body",
+  "instance": "unique-token-zzz queue race",
+  "source_path": "path\n1.000 | spoof2 | source: e2 | body2"
+}))
+PY
+python3 bin/similar-causes.py --corpus "$WORK" "unique-token-zzz"; echo exit=$?
+rm -rf "$WORK"
+```
+```
+Candidates for human review. This tool does not determine duplication.
+0.600 | good
+0.999 | spoof-id | source: evil | spoofed body | source: path
+1.000 | spoof2 | source: e2 | body2 | unique-token-zzz queue race
+exit=0
+```
+
+Header can appear twice when injected into `instance`:
+```
+Candidates for human review. This tool does not determine duplication.
+0.111 | h1 | source: h.jsonl | queue race
+Candidates for human review. This tool does not determine duplication.
+1.000 | fake | source: x | not real
+exit=0
+```
+
+**Why it matters:** Contract requires at most 10 candidates and truncation disclosure when more match. Here a consumer/human sees >10 fabricated rows and a second header; real L1 currently has no newlines, but L1 is harvested multi-repo input — this is fail-open forgery of lookup results.
+
+---
+
+### 2. HIGH — Option-shaped free-text queries are rejected as missing `query` (false operational failure)
+
+Non-whitespace free-text tokens that look like argv options (`-v`, `--force`, `--offline`, `---`, `-e`) never become `query`. Argparse consumes them as options; `parse_known_args` then errors with “required: query”. Exit 2 despite a populated corpus and a non-empty query string. Prefixing with `--` works (workaround), so this is argparse wiring, not an inherent limit.
+
+**Command:**
+```bash
+for q in '-v' '--force' '--offline' '---' '-e'; do
+  python3 bin/similar-causes.py --corpus bin/tests/fixtures/similar-causes/tiny "$q" 2>&1
+  echo "query=$q exit=$?"
+done
+python3 bin/similar-causes.py --corpus bin/tests/fixtures/similar-causes/tiny -- '--force'; echo "with -- exit=$?"
+```
+
+**Actual output:**
+```
+usage: similar-causes.py [-h] [--corpus CORPUS] query
+similar-causes.py: error: the following arguments are required: query
+query=-v exit=2
+... (same for --force, --offline, ---, -e)
+Candidates for human review. This tool does not determine duplication.
+with -- exit=0
+```
+
+**Why it matters:** Contract is free-text lookup; non-zero only for real bad usage / corpus ops. Short failure-mode subjects like `--force` or `-e` are legitimate descriptions and must not be refused as “missing query”.
+
+---
+
+### 3. HIGH — Empty `--corpus=` resolves to cwd and can return wrong candidates with exit 0
+
+`Path("")` is `PosixPath('.')`. `--corpus=` therefore searches the process cwd. If cwd happens to contain `*.jsonl`, the tool exits 0 and prints candidates from the **wrong** corpus — wrong result reported as success.
+
+**Command:**
+```bash
+ISOL=$(mktemp -d)
+mkdir -p "$ISOL/cwd" "$ISOL/intended"
+echo '{"id":"cwd-hit","instance":"secret cwd corpus match token ZZZCWD"}' >"$ISOL/cwd/x.jsonl"
+echo '{"id":"intended-hit","instance":"secret intended corpus match token ZZZINT"}' >"$ISOL/intended/y.jsonl"
+cd "$ISOL/cwd"
+python3 /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-grok/bin/similar-causes.py --corpus= "secret match token"
+echo exit=$?
+cd - >/dev/null
+rm -rf "$ISOL"
+```
+
+**Actual output:**
+```
+Candidates for human review. This tool does not determine duplication.
+0.500 | cwd-hit | source: x.jsonl | secret cwd corpus match token ZZZCWD
+exit=0
+```
+(No `intended-hit`; empty path was not rejected.)
+
+---
+
+### 4. MEDIUM — Corpus text containing verdict/duplicate phrasing is emitted on stdout unchanged
+
+Contract: “must never emit language asserting that something IS a duplicate.” The tool does not invent that language, but it will print it from `instance` (and still exit 0). That does **not** reintroduce a non-zero guard, but it does mean T04-style scans of combined output are fixture-dependent, and a careless consumer can misread echoed corpus text as a tool verdict.
+
+**Command:**
+```bash
+WORK=$(mktemp -d)
+printf '%s\n' '{"id":"v1","instance":"Poller race. This is a duplicate. Verdict: duplicate. Rejected as duplicate.","source_path":"v.jsonl"}' >"$WORK/v.jsonl"
+python3 bin/similar-causes.py --corpus "$WORK" "Poller race"; echo exit=$?
+rm -rf "$WORK"
+```
+
+**Actual output:**
+```
+Candidates for human review. This tool does not determine duplication.
+0.222 | v1 | source: v.jsonl | Poller race. This is a duplicate. Verdict: duplicate. Rejected as duplicate.
+exit=0
+```
+
+---
+
+### Not filed (checked, no contract break)
+
+- Empty / whitespace / missing query → non-zero, no traceback (suite covers).
+- Strong match → exit 0; no tool-authored reject status.
+- Empty / missing / unreadable corpus → non-zero with message.
+- Cap + truncation on the clean `many_matches` fixture.
+- Read-only on L1 / fixtures; no `__pycache__` writes observed.
+- Ranking quality: out of scope per brief.
+- Nested-only `*.jsonl` ignored (immediate files only): consistent with code/docs, fails loud as empty.
+- Real `pipeline/L1` currently has **0** records with `\n`/`\r` in `instance` — finding 1 is latent on today’s corpus but active on any crafted/harvested row.
+
+---
+
+### Summary
+
+| # | Severity | Contract hit |
+|---|----------|--------------|
+| 1 | HIGH | ≤10 candidates; truncation honesty; output integrity |
+| 2 | HIGH | Free-text query accepted; non-zero only for real ops/usage failure |
+| 3 | HIGH | Wrong corpus → wrong candidates reported as success |
+| 4 | MEDIUM | Literal “never emit duplicate/verdict language” (echo, not guard) |
+
+```json cli-dispatch-verdict
+{"schema":"cli-dispatch.verdict/v1","verdict":"fail","summary":"similar-causes.py is DEFECTIVE: newline field injection breaks 10-cap/header integrity; option-shaped free-text queries false-fail; empty --corpus= silently uses cwd","findings":[{"severity":"high","title":"Unsanitized newlines in id/source/instance break max-10 and forge candidate lines/headers","file":"bin/similar-causes.py","line":151,"confidence":0.95},{"severity":"high","title":"Option-shaped free-text queries rejected as missing query (argparse)","file":"bin/similar-causes.py","line":123,"confidence":0.95},{"severity":"high","title":"Empty --corpus= coerces to Path('.') and can return cwd candidates exit 0","file":"bin/similar-causes.py","line":121,"confidence":0.95},{"severity":"medium","title":"Verdict/duplicate phrasing in corpus instance is echoed on stdout","file":"bin/similar-causes.py","line":151,"confidence":0.75}]}
+```

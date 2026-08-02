@@ -1,0 +1,472 @@
+Reading prompt from stdin...
+OpenAI Codex v0.146.0
+--------
+[1mworkdir:[0m /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[1mmodel:[0m gpt-5.6-terra
+[1mprovider:[0m openai
+[1mapproval:[0m on-request
+[1msandbox:[0m workspace-write [workdir, /tmp, $TMPDIR]
+[1mreasoning effort:[0m medium
+[1mreasoning summaries:[0m none
+[1msession id:[0m 019fc087-d6e0-7a70-acf3-076591489430
+--------
+[36muser[0m
+# Coding Standards — Injected Floor (compact)
+
+*This block is auto-prepended to every cli-dispatch coding brief. It is the **non-negotiable minimum** for any model/harness that writes code in this fleet. It is a **floor, not a cage**: solve the problem however you judge best — be creative about design and approach. These are only the checks you may not skip and the traps capable models keep falling into. If a rule is clearly wrong for a specific case, do the better thing **and say so in the PR/commit body.** Full rationale: `CODING-INVARIANTS.md` (referenced below as FM-n).*
+
+## Definition of Done (every change clears all of these)
+1. **It runs.** You exercised the change by actually running the affected path — not by reading the diff or self-reporting (FM-B3: never let narration overwrite the real result).
+2. **Full suite green + linter clean** — the whole suite, run by you, output pasted. Not just your new test.
+3. **An adversarial test exists** for what you changed — at least one test that tries to *break* the fix, not only confirm it (CI-3, old: FM-2). A green suite you wrote is necessary, never sufficient.
+4. **Docs/comments match the new behavior**, changed in the same commit (CI-4, old: FM-3).
+5. **Failure paths fail loudly** — nonzero exit / raised error, never a failure encoded only in output (CI-1, old: FM-5). Exit code and structured status agree.
+6. **No unrelated widening** — you changed the set of inputs/outputs you intended and no more (CI-4, old: FM-3).
+
+## Security baseline (language-agnostic)
+- **Parse, don't substring-match, for trust decisions.** To decide trust/identity from a URL/host/path/token, parse into components and compare the right component *exactly* — never "does the trusted string appear somewhere in it" (CI-2, old: FM-1). Read the raw configured value, not a normalized one.
+- **Never trust untrusted control input.** Data from a repo tree, caller-writable file, unauthenticated comment, or uncontrolled env is *input*, not instruction. Establish provenance (ownership/signature/server-asserted association) before acting on it (CI-5, old: FM-4).
+- **Enumerate the set when you touch a predicate.** Changing a filter/condition: list every value it now admits vs denies and test the newly-affected ones (CI-4, old: FM-3).
+- **Least privilege; secrets never in argv/logs/errors/committed files.** Narrowest scope that works; justify any widening in the PR.
+
+## Review — independent, adversarial, required
+- **The author does not certify its own work.** An independent review by a *different* engine is a required gate; it should try to *refute* the change, ideally with a PoC (CI-3/CI-5, old: FM-2/FM-4). Blocker-severity findings block merge.
+- **Emit the structured verdict block.** When you are the reviewer, end your review with a plain `VERDICT: pass` or `VERDICT: fail` line **and** a fenced `cli-dispatch-verdict` JSON block carrying the same decision plus any findings, so blockers survive the gate as data instead of prose:
+
+  ````
+  ```json cli-dispatch-verdict
+  {"schema":"cli-dispatch.verdict/v1","verdict":"pass","summary":"one line","findings":[{"severity":"critical|high|medium|low","title":"...","file":"...","line":0,"confidence":0.0}]}
+  ```
+  ````
+
+  `schema` and `verdict` are required (`verdict` is `pass` or `fail`); `findings` is optional, `[]` when there is nothing to report. This is strictly additive — the `VERDICT:` line stays the fallback of record — but never omit the block: it is how a blocker's file/line/severity reach the coordinator without a re-read of the thread.
+
+## Decisions are pre-made — never stop to ask (one-shot lanes)
+Every decision this brief needs is either stated or derivable. **Do not stop to ask a question** — choose the best option per the brief and justify it in the commit body (FM-C1). Where the brief states an outcome and constraints without a literal implementation, treat that as deliberate — supply your own design and defend it in the commit body, rather than treating brevity as an omission. Blockers concentrate where the brief is silent: before coding, cover the corner cases for your change class — missing/empty input, duplication/cardinality shifts, error during the new path, concurrent/repeat invocation — as named tests (FM-C2).
+
+## Delegation wrappers
+A wrapper subagent (a persona/tool whose entire job is "call X and hand back what it said")
+makes **exactly one call**, does **not** independently inspect the target or reason about
+whether the call's result is right, and returns the output **verbatim**. On failure — the
+call errors, times out, or returns nothing usable — it returns the failure, plainly, never a
+fabricated or paraphrased substitute standing in for a real result. A wrapper that "fills in"
+a plausible answer when the underlying call didn't produce one is worse than no wrapper at
+all: it launders an absence into false confidence.
+
+## Building automation that watches/scores/learns from itself?
+If your change is a scheduler, consolidator, LLM-judge pipeline, telemetry, health check, or auto-tuner, also clear **CI-1, ORC-4, ORC-1, ORC-5** (old: FM-8..FM-11; `CODING-INVARIANTS.md` §C; canonical: `FAILURE-MODES.md`): a dependency error must not become a verdict (error≠reject); a health metric must read differently when healthy vs broken vs idle; a dedup key must not fold in per-occurrence data; and the observer must not be its own loudest subject. These fail at the system level and stay green for weeks.
+
+---
+*Extends: the per-language docs (`standards/{go,python,rust}.md`) for language-specific tools and weaknesses. This floor is deliberately short and stable so it stays memorable and cheap to inject.*
+
+## Idle waiting is BANNED (founder, 2026-07-16)
+Event-driven wakes only. When your work is pushed/committed and something external is pending (CI, a review, another agent), END YOUR TURN with a one-line state summary — the orchestrator is re-invoked on completion events. Never sleep-loop, never poll, never wake to report "still waiting." If you must block, block INSIDE one call on the tool's own primitive (e.g. `gh pr checks --watch`, a single `until` loop in one background command) — and only when the brief assigns it. Exceptions require explicit founder approval.
+
+## Tooling floor (founder, 2026-07-16)
+Interactive/exploratory work uses the best tool available on the box: **rg over grep -r**
+(gitignore-aware by default — prevents the scanned-gitignored-artifacts defect class),
+**fd over find**, **jq for JSON**, **gh for GitHub API**. Committed scripts and CI are the
+inverse: declare every non-POSIX tool as an explicit dependency (install step or documented
+requirement) or use POSIX tools — "rg: command not found" in CI is the mirror-image failure.
+Verification probes must be premise-diverse from the code under test (different termination
+condition, different data path) or they are the same measurement twice.
+
+---
+
+<!--
+  Advisory floor for cli-dispatch.
+
+  A condensed, dispatch-injectable version of the Advisory Protocol
+  (advisory/docs/advisory-protocol.md, advisory/SKILL.md). It is prepended to
+  the harness prompt so that dispatched harnesses (Codex, Grok, opencode,
+  Claude) which cannot invoke a Claude skill still carry the pause-and-escalate
+  gate. Point CLI_DISPATCH_ADVISORY_FLOOR at this file, or your own copy, to
+  enable injection; unset, injection is skipped.
+-->
+
+# Advisory Floor
+
+You cannot invoke a Claude skill or a live advisor from inside this dispatch.
+When one of the triggers below fires, you cannot pause the world and wait for
+a second opinion — so instead you SURFACE the escalation: proceed with your
+best judgment, but make the decision and its uncertainty visible in your
+final report / PR body inside a block marked exactly:
+
+```
+ADVISORY: <ADV.n>
+Decision: <one sentence — the specific choice>
+Options: A: <tradeoff> | B: <tradeoff> ...
+Lean: <the option you took> — <source of uncertainty>
+Context: <files, constraints, prior attempts>
+```
+
+A human or a stronger actor reviewing the PR can then re-run the advisory step
+on that block. Do not silently pick an option and say nothing — the failure
+this exists to catch is exactly a fork made at implementation speed with no
+trace left behind.
+
+## When to raise an ADVISORY block
+
+- **ADV.1 — Architecture fork.** Two or more approaches require different data
+  models, deployment topologies, or interface contracts to support future
+  work. Ask: fast-forward one year — does today's choice block or complicate
+  a plausible next capability? If the answer differs by option, this fires.
+- **ADV.2 — Infrastructure change with live blast radius.** Any change to a
+  system serving live traffic, production data, or gating access to either:
+  deploy configs, DNS, certs, storage policy, network rules, platform
+  routing. Sandboxed/dev-only changes with no live traffic do NOT trigger
+  this.
+- **ADV.3 — Structural boundary rework.** A change to a public interface,
+  module boundary, or data contract that something *outside* the module must
+  be updated, re-deployed, or re-tested to accommodate — regardless of line
+  count. A large refactor confined inside one module with no external
+  contract touched does NOT trigger this.
+- **ADV.4 — Stuck on reasoning.** The same root cause has failed to resolve
+  twice, and both failures were logic failures (evidence was complete, the
+  conclusion was wrong) — not capacity failures (evidence was missing). Do
+  not try a third theory from the same evidence; raise the block instead.
+- **ADV.5 — Irreversible and ambiguous.** The action is hard to undo within
+  one session (rebuilding data, re-migrating a schema, a rollback that has
+  never been tested) AND the right path is genuinely unclear. Either
+  condition alone does not qualify — a hard-to-reverse action with an
+  obvious right answer just needs care, not an ADVISORY block.
+- **Evidence-aware escalation (routing contract).** If you are being routed
+  as a cheap/fast actor for this task-shape and have no track record — no
+  prior evidence either way — for it, raise an ADVISORY block flagging that
+  the routing choice itself is unverified, rather than silently proceeding
+  on an untested assumption. Conversely, if you have a consistent track
+  record on this exact task-shape, you do NOT need to raise a block just
+  because the shape is unfamiliar in the abstract.
+
+If unsure whether a trigger applies, raise the block anyway — the cost of an
+unneeded one is a few lines in a PR body; the cost of a missed one is the
+decision it would have caught.
+
+## What NOT to do
+
+Do not stop and wait for a response that will never come — this is a
+non-interactive dispatch. Do not omit the block to save space. Do not bury the
+decision in prose; use the exact `ADVISORY:` marker so it is greppable.
+
+---
+
+# QA panel — adversarial verification of `bin/similar-causes.py`
+
+You are performing an **adversarial verification** of a small tool. Report only defects you
+**reproduce**, each with an exact command and its actual output.
+
+## The artifact
+
+`bin/similar-causes.py`, with its acceptance suite at `bin/tests/test_similar_causes.sh`.
+**The suite currently PASSES: 27 of 27.** Your job is to find what the suite does not.
+
+## What the tool is contractually required to do
+
+- It is a **LOOKUP, not a guard**. For a free-text failure-mode description it prints up to 10
+  candidate corpus entries for a human to judge.
+- It must print, verbatim and unconditionally, the header:
+  `Candidates for human review. This tool does not determine duplication.`
+- It must **never exit non-zero merely because a match was found**, and must **never emit language
+  asserting that something IS a duplicate**. A rejection guard was deliberately **cancelled** by
+  measurement; anything that lets one be reconstructed defeats the tool's purpose.
+- Exit non-zero **only** for operational failure (corpus unreadable, corpus empty, bad usage). Zero
+  candidates from a *populated* corpus is a legitimate exit-0 answer.
+- At most 10 candidates, with truncation disclosed if more matched.
+- Read-only at runtime.
+
+**Ranking quality is explicitly NOT under test.** Do not file findings about recall or ranking
+accuracy — that question is settled by measurement and is out of scope.
+
+## Rules
+
+- Do not modify the tool or the suite except transiently to demonstrate a point; restore anything
+  you touch.
+- Do not push, merge, or open PRs.
+- A finding you cannot demonstrate with a command is a hypothesis. Label it as such, or drop it.
+- Severity **HIGH** means: it breaks a stated contract above, or it lets a wrong result be reported
+  as a right one.
+- **Tool-call cap: 50.** If you hit it, say exactly what you did not reach.
+
+## Deliverable
+
+Your final response MUST begin with a literal first line, exactly one of:
+
+`VERDICT: CONFIRMED_GOOD`
+`VERDICT: DEFECTIVE`
+
+Then a numbered list of findings, each with severity, the reproducing command, and its real output.
+
+You are already on branch dispatch/QA-panel-codex in a dedicated worktree at /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex.
+Do not create branches, worktrees, or pull requests yourself; the
+dispatcher handles all of that after you exit.
+[1m[33mwarning:[0m[0m Skill descriptions were shortened to fit the 2% skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.
+[35m[3mcodex[0m[0m
+I’m inspecting the tool and exercising contract boundaries outside the existing suite. I’ll report only defects with captured reproductions.
+[35m[3mexec[0m[0m
+[1m/bin/bash -lc "sed -n '1,240p' /home/psimmons/.codex/.tmp/plugins/plugins/superpowers/skills/using-superpowers/SKILL.md && rg -n -i \"similar-causes|QA-panel\" /home/psimmons/.codex/memories/MEMORY.md"[0m in /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[31m exited 1 in 0ms:[0m
+---
+name: using-superpowers
+description: Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions
+---
+
+<SUBAGENT-STOP>
+If you were dispatched as a subagent to execute a specific task, skip this skill.
+</SUBAGENT-STOP>
+
+<EXTREMELY-IMPORTANT>
+If you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.
+
+IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
+
+This is not negotiable. This is not optional. You cannot rationalize your way out of this.
+</EXTREMELY-IMPORTANT>
+
+## Instruction Priority
+
+Superpowers skills override default system prompt behavior, but **user instructions always take precedence**:
+
+1. **User's explicit instructions** (CLAUDE.md, GEMINI.md, AGENTS.md, direct requests) — highest priority
+2. **Superpowers skills** — override default system behavior where they conflict
+3. **Default system prompt** — lowest priority
+
+If CLAUDE.md, GEMINI.md, or AGENTS.md says "don't use TDD" and a skill says "always use TDD," follow the user's instructions. The user is in control.
+
+## How to Access Skills
+
+**In Claude Code:** Use the `Skill` tool. When you invoke a skill, its content is loaded and presented to you—follow it directly. Never use the Read tool on skill files.
+
+**In Copilot CLI:** Use the `skill` tool. Skills are auto-discovered from installed plugins. The `skill` tool works the same as Claude Code's `Skill` tool.
+
+**In Gemini CLI:** Skills activate via the `activate_skill` tool. Gemini loads skill metadata at session start and activates the full content on demand.
+
+**In other environments:** Check your platform's documentation for how skills are loaded.
+
+## Platform Adaptation
+
+Skills use Claude Code tool names. Non-CC platforms: see `references/copilot-tools.md` (Copilot CLI), `references/codex-tools.md` (Codex) for tool equivalents. Gemini CLI users get the tool mapping loaded automatically via GEMINI.md.
+
+# Using Skills
+
+## The Rule
+
+**Invoke relevant or requested skills BEFORE any response or action.** Even a 1% chance a skill might apply means that you should invoke the skill to check. If an invoked skill turns out to be wrong for the situation, you don't need to use it.
+
+```dot
+digraph skill_flow {
+    "User message received" [shape=doublecircle];
+    "About to EnterPlanMode?" [shape=doublecircle];
+    "Already brainstormed?" [shape=diamond];
+    "Invoke brainstorming skill" [shape=box];
+    "Might any skill apply?" [shape=diamond];
+    "Invoke Skill tool" [shape=box];
+    "Announce: 'Using [skill] to [purpose]'" [shape=box];
+    "Has checklist?" [shape=diamond];
+    "Create TodoWrite todo per item" [shape=box];
+    "Follow skill exactly" [shape=box];
+    "Respond (including clarifications)" [shape=doublecircle];
+
+    "About to EnterPlanMode?" -> "Already brainstormed?";
+    "Already brainstormed?" -> "Invoke brainstorming skill" [label="no"];
+    "Already brainstormed?" -> "Might any skill apply?" [label="yes"];
+    "Invoke brainstorming skill" -> "Might any skill apply?";
+
+    "User message received" -> "Might any skill apply?";
+    "Might any skill apply?" -> "Invoke Skill tool" [label="yes, even 1%"];
+    "Might any skill apply?" -> "Respond (including clarifications)" [label="definitely not"];
+    "Invoke Skill tool" -> "Announce: 'Using [skill] to [purpose]'";
+    "Announce: 'Using [skill] to [purpose]'" -> "Has checklist?";
+    "Has checklist?" -> "Create TodoWrite todo per item" [label="yes"];
+    "Has checklist?" -> "Follow skill exactly" [label="no"];
+    "Create TodoWrite todo per item" -> "Follow skill exactly";
+}
+```
+
+## Red Flags
+
+These thoughts mean STOP—you're rationalizing:
+
+| Thought | Reality |
+|---------|---------|
+| "This is just a simple question" | Questions are tasks. Check for skills. |
+| "I need more context first" | Skill check comes BEFORE clarifying questions. |
+| "Let me explore the codebase first" | Skills tell you HOW to explore. Check first. |
+| "I can check git/files quickly" | Files lack conversation context. Check for skills. |
+| "Let me gather information first" | Skills tell you HOW to gather information. |
+| "This doesn't need a formal skill" | If a skill exists, use it. |
+| "I remember this skill" | Skills evolve. Read current version. |
+| "This doesn't count as a task" | Action = task. Check for skills. |
+| "The skill is overkill" | Simple things become complex. Use it. |
+| "I'll just do this one thing first" | Check BEFORE doing anything. |
+| "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
+| "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
+
+## Skill Priority
+
+When multiple skills could apply, use this order:
+
+1. **Process skills first** (brainstorming, debugging) - these determine HOW to approach the task
+2. **Implementation skills second** (frontend-design, mcp-builder) - these guide execution
+
+"Let's build X" → brainstorming first, then implementation skills.
+"Fix this bug" → debugging first, then domain-specific skills.
+
+## Skill Types
+
+**Rigid** (TDD, debugging): Follow exactly. Don't adapt away discipline.
+
+**Flexible** (patterns): Adapt principles to context.
+
+The skill itself tells you which.
+
+## User Instructions
+
+Instructions say WHAT, not HOW. "Add X" or "Fix Y" doesn't mean skip workflows.
+
+[35m[3mcodex[0m[0m
+I checked the applicable workflow guidance; this is a read-only verification pass, so I’m keeping the artifact unchanged and using direct behavioral probes.
+[35m[3mexec[0m[0m
+[1m/bin/bash -lc "(rg --files -g 'AGENTS.md' -g 'bin/similar-causes.py' -g 'bin/tests/test_similar_causes.sh' -g 'README*' -g 'docs/**' | sort) && (test -f AGENTS.md && sed -n '1,240p' AGENTS.md || true) && sed -n '1,280p' bin/similar-causes.py && sed -n '1,320p' bin/tests/test_similar_causes.sh && bin/tests/test_similar_causes.sh"[0m in /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[32m succeeded in 1574ms:[0m
+PASS: T04 no duplicate/reject verdict language on strong match
+PASS: T05 empty corpus dir exits non-zero and names emptiness
+PASS: T06 empty jsonl corpus exits non-zero and says so
+PASS: T07 unreadable corpus exits non-zero and says so
+PASS: T08 zero candidates on populated corpus exits 0 with header
+PASS: T09 missing --corpus path exits non-zero
+PASS: T10 no arguments exits non-zero without traceback
+PASS: T11 empty-string query exits non-zero without traceback
+PASS: T12 whitespace-only query exits non-zero without traceback
+PASS: T13 non-ASCII query is defined (no traceback, exit 0)
+PASS: T14 very long query no traceback, exit 0
+PASS: T15 same query twice yields byte-identical stdout
+PASS: T16 never prints more than 10 candidates
+PASS: T17 >10 matches discloses truncation (not silent top-10)
+PASS: T18 candidates include score and source
+PASS: T19 read-only: pipeline/L1 and catalog hashes unchanged
+PASS: T20 read-only: --corpus fixture tree unmodified
+PASS: T21 threshold/reject flags cannot force non-zero on match
+PASS: T22 candidate scores are non-increasing
+PASS: T23 malformed JSONL: no traceback; defined outcome
+PASS: T24 header present even when candidates are listed
+PASS: T25 --corpus flag selects fixture over default L1
+PASS: T26 exit 0 path does not print error/fail status words
+PASS: T27 no new sidecar files under fixture or L1
+
+=== summary: 27 passed, 0 failed (of 27) ===
+
+[35m[3mexec[0m[0m
+[1m/bin/bash -lc 'probe_dir=$(mktemp -d); printf '"'{\"instance\":\"known issue\"}\\n' > \""'$probe_dir/records.jsonl"; chmod 755 "$probe_dir"; set +e; python3 bin/similar-causes.py --corpus /tmp/does-not-exist "known issue" > /tmp/similar-causes-out 2> /tmp/similar-causes-err; probe_status=$?; printf '"'exit=%s\\nstdout:\\n' \""'$probe_status"; sed -n l /tmp/similar-causes-out; printf '"'stderr:\\n'; sed -n l /tmp/similar-causes-err; python3 bin/similar-causes.py --corpus \""'$probe_dir" $'"'only punctuation "'!!!'"' > /tmp/similar-causes-punctuation-out 2> /tmp/similar-causes-punctuation-err; punct_status="'$?; printf '"'punctuation-exit=%s\\n'; sed -n l /tmp/similar-causes-punctuation-out; printf 'punctuation-stderr:\\n'; sed -n l /tmp/similar-causes-punctuation-err; rm -rf \""'$probe_dir" /tmp/similar-causes-out /tmp/similar-causes-err /tmp/similar-causes-punctuation-out /tmp/similar-causes-punctuation-err'[0m in /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[32m succeeded in 0ms:[0m
+exit=1
+stdout:
+stderr:
+Error: Corpus path does not exist: /tmp/does-not-exist$
+punctuation-exit=
+Candidates for human review. This tool does not determine duplication\
+.$
+punctuation-stderr:
+
+[35m[3mcodex[0m[0m
+The passing suite misses at least two contractual boundaries: unconditional header emission on operational failure, and candidate-field output that can carry duplicate/verdict claims verbatim. I’m capturing minimal reproductions now.
+[35m[3mexec[0m[0m
+[1m/bin/bash -lc 'probe_dir=$(mktemp -d); printf '"'%s\\n' '{\"id\":\"VERDICT: DUPLICATE\",\"source_path\":\"fixture\",\"instance\":\"queue race duplicate detected\"}' > \""'$probe_dir/adversarial.jsonl"; set +e; python3 bin/similar-causes.py --corpus "$probe_dir" "queue race" > /tmp/similar-causes-adversarial-out 2> /tmp/similar-causes-adversarial-err; probe_status=$?; printf '"'exit=%s\\nstdout:\\n' \""'$probe_status"; sed -n l /tmp/similar-causes-adversarial-out; printf '"'stderr:\\n'; sed -n l /tmp/similar-causes-adversarial-err; rm -rf \""'$probe_dir" /tmp/similar-causes-adversarial-out /tmp/similar-causes-adversarial-err; git status --short'[0m in /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[32m succeeded in 0ms:[0m
+exit=0
+stdout:
+Candidates for human review. This tool does not determine duplication\
+.$
+0.500 | VERDICT: DUPLICATE | source: fixture | queue race duplicate d\
+etected$
+stderr:
+
+[35m[3mexec[0m[0m
+[1m/bin/bash -lc 'probe_dir=$(mktemp -d); printf '"'%s\\n' '{\"id\":\"VERDICT: DUPLICATE\",\"source_path\":\"fixture\",\"instance\":\"queue race duplicate detected\"}' > \""'$probe_dir/adversarial.jsonl"; set +e; python3 bin/similar-causes.py --corpus "$probe_dir" "queue race"; probe_status=$?; printf '"'exit=%s\\n' \""'$probe_status"; rm -rf "$probe_dir"; set +e; python3 bin/similar-causes.py --corpus /tmp/does-not-exist "known issue"; probe_status=$?; printf '"'exit=%s\\n' \""'$probe_status"'[0m in /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[32m succeeded in 0ms:[0m
+Candidates for human review. This tool does not determine duplication.
+0.500 | VERDICT: DUPLICATE | source: fixture | queue race duplicate detected
+exit=0
+Error: Corpus path does not exist: /tmp/does-not-exist
+exit=1
+
+[35m[3mexec[0m[0m
+[1m/bin/bash -lc "nl -ba bin/similar-causes.py | sed -n '70,145p'; git status --short; git diff --check; bin/tests/test_similar_causes.sh | tail -4"[0m in /home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex
+[32m succeeded in 1583ms:[0m
+PASS: T26 exit 0 path does not print error/fail status words
+PASS: T27 no new sidecar files under fixture or L1
+
+=== summary: 27 passed, 0 failed (of 27) ===
+
+[35m[3mcodex[0m[0m
+VERDICT: DEFECTIVE
+
+1. **HIGH — Operational failures omit the required unconditional header.**  
+   Command:
+   ```bash
+   python3 bin/similar-causes.py --corpus /tmp/does-not-exist "known issue"; echo "exit=$?"
+   ```
+   Actual output:
+   ```text
+   Error: Corpus path does not exist: /tmp/does-not-exist
+   exit=1
+   ```
+   No header is printed. The error return at [bin/similar-causes.py:138](/home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex/bin/similar-causes.py:138) precedes the sole header print.
+
+2. **HIGH — Corpus-controlled fields can emit a duplicate verdict.**  
+   Command:
+   ```bash
+   d=$(mktemp -d)
+   printf '%s\n' '{"id":"VERDICT: DUPLICATE","source_path":"fixture","instance":"queue race duplicate detected"}' > "$d/adversarial.jsonl"
+   python3 bin/similar-causes.py --corpus "$d" "queue race"; echo "exit=$?"
+   rm -rf "$d"
+   ```
+   Actual output:
+   ```text
+   Candidates for human review. This tool does not determine duplication.
+   0.500 | VERDICT: DUPLICATE | source: fixture | queue race duplicate detected
+   exit=0
+   ```
+   `id`, `source_path`, and `instance` are accepted unescaped and printed verbatim ([bin/similar-causes.py:92](/home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex/bin/similar-causes.py:92)).
+
+VERDICT: fail
+
+```json cli-dispatch-verdict
+{"schema":"cli-dispatch.verdict/v1","verdict":"fail","summary":"Two reproduced HIGH contract violations despite the 27/27 acceptance-suite pass.","findings":[{"severity":"high","title":"Operational failures omit the unconditional advisory header","file":"bin/similar-causes.py","line":138,"confidence":1.0},{"severity":"high","title":"Corpus-controlled fields can emit duplicate verdict language","file":"bin/similar-causes.py","line":92,"confidence":1.0}]}
+```
+[2mtokens used[0m
+34,283
+VERDICT: DEFECTIVE
+
+1. **HIGH — Operational failures omit the required unconditional header.**  
+   Command:
+   ```bash
+   python3 bin/similar-causes.py --corpus /tmp/does-not-exist "known issue"; echo "exit=$?"
+   ```
+   Actual output:
+   ```text
+   Error: Corpus path does not exist: /tmp/does-not-exist
+   exit=1
+   ```
+   No header is printed. The error return at [bin/similar-causes.py:138](/home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex/bin/similar-causes.py:138) precedes the sole header print.
+
+2. **HIGH — Corpus-controlled fields can emit a duplicate verdict.**  
+   Command:
+   ```bash
+   d=$(mktemp -d)
+   printf '%s\n' '{"id":"VERDICT: DUPLICATE","source_path":"fixture","instance":"queue race duplicate detected"}' > "$d/adversarial.jsonl"
+   python3 bin/similar-causes.py --corpus "$d" "queue race"; echo "exit=$?"
+   rm -rf "$d"
+   ```
+   Actual output:
+   ```text
+   Candidates for human review. This tool does not determine duplication.
+   0.500 | VERDICT: DUPLICATE | source: fixture | queue race duplicate detected
+   exit=0
+   ```
+   `id`, `source_path`, and `instance` are accepted unescaped and printed verbatim ([bin/similar-causes.py:92](/home/psimmons/projects/hindsight/.dispatch/worktrees/QA-panel-codex/bin/similar-causes.py:92)).
+
+VERDICT: fail
+
+```json cli-dispatch-verdict
+{"schema":"cli-dispatch.verdict/v1","verdict":"fail","summary":"Two reproduced HIGH contract violations despite the 27/27 acceptance-suite pass.","findings":[{"severity":"high","title":"Operational failures omit the unconditional advisory header","file":"bin/similar-causes.py","line":138,"confidence":1.0},{"severity":"high","title":"Corpus-controlled fields can emit duplicate verdict language","file":"bin/similar-causes.py","line":92,"confidence":1.0}]}
+```

@@ -163,7 +163,7 @@ def score(query_tokens: set[str], record: Record) -> float:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Print advisory failure-mode candidates for human review.")
-    parser.add_argument("--corpus", type=Path, help="directory containing L1 JSONL records")
+    parser.add_argument("--corpus", help="directory containing L1 JSONL records")
     parser.add_argument("query", help="free-text failure-mode description")
     args, unknown = parser.parse_known_args(argv)
     if unknown:
@@ -179,7 +179,18 @@ def main(argv: list[str]) -> int:
         print("Error: query must contain non-whitespace text", file=sys.stderr)
         return 2
 
-    corpus = args.corpus or Path(__file__).resolve().parents[1] / "pipeline" / "L1"
+    # An EMPTY --corpus= is a usage error, not a fallback. Path("") resolves to
+    # ".", so the empty string silently redirected the lookup at the caller's
+    # working directory: exit 0, advisory header, and rows from whatever JSONL
+    # happened to be there. A wrong corpus presented as the right one. Falsy is
+    # not the same as absent, and only ABSENT may select the default.
+    if args.corpus is not None and not args.corpus.strip():
+        print("Error: --corpus was given an empty value; omit it to use the "
+              "default corpus, or pass a directory", file=sys.stderr)
+        return 2
+    corpus = Path(args.corpus) if args.corpus is not None else (
+        Path(__file__).resolve().parents[1] / "pipeline" / "L1"
+    )
     try:
         records, skipped = load_records(corpus)
     except CorpusError as exc:

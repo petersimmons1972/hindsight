@@ -160,3 +160,27 @@ if [[ "$default_status" -ne 0 ]] || ! grep -q 'hc-FM-54' "$WORK/default.out"; th
   exit 1
 fi
 echo "PASS: default corpus match cannot grow a separate duplicate guard"
+
+# An empty --corpus= must not silently become the current directory.
+# Found by the Grok lane of the QA model panel; three opus lenses missed it.
+# "--corpus=" parses as the empty string, which resolves to ".", so the tool
+# ranked whatever JSONL happened to sit in the caller's working directory and
+# reported it as an ordinary result: exit 0, advisory header, decoy rows. A
+# wrong corpus presented as the right one -- the family this repo exists for.
+mkdir -p "$WORK/cwd-decoy"
+printf '%s\n' \
+  '{"id":"DECOY-1","instance":"queue double claim race lease expiry","source_path":"decoy.jsonl"}' \
+  >"$WORK/cwd-decoy/decoy.jsonl"
+set +e
+decoy_out="$(cd "$WORK/cwd-decoy" && python3 "$TOOL" --corpus= "queue double claim race" 2>&1)"
+decoy_status=$?
+set -e
+if [[ "$decoy_status" -eq 0 ]]; then
+  echo "FAIL: empty --corpus= exited 0, silently using the working directory: $decoy_out" >&2
+  exit 1
+fi
+if [[ "$decoy_out" == *"DECOY-1"* ]]; then
+  echo "FAIL: empty --corpus= ranked against the working directory: $decoy_out" >&2
+  exit 1
+fi
+echo "PASS: empty --corpus= is refused, never a silent fallback to cwd"

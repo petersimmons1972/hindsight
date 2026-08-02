@@ -340,3 +340,57 @@ def test_l1_dir_resolves_from_the_checkout() -> None:
     repo_root = Path(reconcile_l1.__file__).resolve().parents[1]
     assert reconcile_l1.L1.is_relative_to(repo_root)
     assert reconcile_l1.L1.exists()
+
+
+def test_some_sources_unresolved_is_PARTIAL_not_COMPLETE(tmp_path, monkeypatch, capsys) -> None:
+    """The PARTIAL branch is the LIVE CI configuration and had zero coverage.
+
+    Found by an independent re-sweep with fresh mutants. `elif n_unresolved:` ->
+    `elif False:` passed the entire suite while turning "1 of 5 sources
+    resolved" back into COMPLETE, exit 0 -- the exact fail-open the previous two
+    commits were written to close, one degree softer. Not "nothing resolved",
+    which was tested, but "most things did not resolve", which was not.
+
+    The lesson generalises past this file: a new verdict added to a gate needs
+    its own test at the moment it is added. I introduced PARTIAL and asserted
+    only the endpoints either side of it.
+    """
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    (l1 / "real.jsonl").write_text('{"id": "OPS-1"}\n', encoding="utf-8")
+    md = tmp_path / "real.md"
+    md.write_text("## OPS-1\n", encoding="utf-8")
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(
+        reconcile_l1,
+        "ENUMERABLE",
+        {
+            "real": ([md], HEADING_RX),
+            "ghost": ([tmp_path / "absent.md"], HEADING_RX),
+        },
+    )
+    status = run_main(monkeypatch)
+    out = capsys.readouterr().out
+    verdict = [ln for ln in out.splitlines() if "unaccounted for" in ln]
+    assert len(verdict) == 1, verdict
+    assert verdict[0].startswith("PARTIAL"), verdict[0]
+    assert "(1/2 sources resolved)" in verdict[0], verdict[0]
+    assert "were NOT checked" in out
+    assert status == 0, "a partial run with no shortfall still exits 0"
+
+
+def test_all_resolved_and_complete_says_COMPLETE(tmp_path, monkeypatch, capsys) -> None:
+    """The other direction, so PARTIAL cannot simply replace COMPLETE."""
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    (l1 / "real.jsonl").write_text('{"id": "OPS-1"}\n', encoding="utf-8")
+    md = tmp_path / "real.md"
+    md.write_text("## OPS-1\n", encoding="utf-8")
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(reconcile_l1, "ENUMERABLE", {"real": ([md], HEADING_RX)})
+    status = run_main(monkeypatch)
+    out = capsys.readouterr().out
+    verdict = [ln for ln in out.splitlines() if "unaccounted for" in ln][0]
+    assert verdict.startswith("COMPLETE"), verdict
+    assert "(1/1 sources resolved)" in verdict
+    assert status == 0

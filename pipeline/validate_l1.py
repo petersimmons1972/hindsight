@@ -124,8 +124,10 @@ def validate_enforcement(value: object, location: str, errors: list[str]) -> Non
     for key in ("file", "kind"):
         if key not in value:
             errors.append(f"{location}: enforcement missing required key '{key}'")
-    if "file" in value and not isinstance(value["file"], str):
-        errors.append(f"{location}: enforcement.file must be a string")
+    # A stated enforcement mechanism needs an actionable path. Empty text is
+    # as unusable as a non-string value and must not read as coverage.
+    if "file" in value and (not isinstance(value["file"], str) or not value["file"]):
+        errors.append(f"{location}: enforcement.file must be a non-empty string")
     kind = value.get("kind")
     if "kind" in value and kind not in ENFORCEMENT_KINDS:
         permitted = ", ".join(sorted(ENFORCEMENT_KINDS))

@@ -379,6 +379,125 @@ def test_some_sources_unresolved_is_PARTIAL_not_COMPLETE(tmp_path, monkeypatch, 
     assert status == 0, "a partial run with no shortfall still exits 0"
 
 
+def test_shortfall_outranks_partial_when_another_source_is_unresolved(tmp_path, monkeypatch, capsys) -> None:
+    """A missing resolved entry is SHORT, even when a different source is absent."""
+    build_corpus(
+        tmp_path,
+        monkeypatch,
+        {
+            "real": (("OPS-1", "OPS-2"), ("OPS-1",)),
+            "ghost": (("CI-1",), None),
+        },
+    )
+    (tmp_path / "src" / "ghost.md").unlink()
+
+    status = run_main(monkeypatch)
+    out = capsys.readouterr().out
+    verdict = [ln for ln in out.splitlines() if "unaccounted for" in ln]
+
+    assert status == 1
+    assert verdict == ["SHORT: 1 enumerable entries unaccounted for (1/2 sources resolved)"]
+
+
+def test_unresolved_source_has_no_coverage_measurement(tmp_path, monkeypatch, capsys) -> None:
+    """An absent ground-truth file is n/a, never measured as zero percent."""
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    (l1 / "ghost.jsonl").write_text('{"id": "OPS-1"}\n', encoding="utf-8")
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(
+        reconcile_l1,
+        "ENUMERABLE",
+        {"ghost": ([tmp_path / "does-not-exist.md"], HEADING_RX)},
+    )
+
+    run_main(monkeypatch)
+    out = capsys.readouterr().out
+    run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert report[0]["coverage_pct"] is None
+    assert report[0]["resolved"] is False
+    assert "   n/a%" in out
+
+
+def test_covered_never_exceeds_ground_truth_when_extraction_has_extra_ids(tmp_path, monkeypatch, capsys) -> None:
+    """Extraneous extracted IDs cannot inflate coverage beyond the source truth."""
+    build_corpus(
+        tmp_path,
+        monkeypatch,
+        {"alpha": (("OPS-1",), ("OPS-1", "OPS-2", "OPS-3"))},
+    )
+
+    status = run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert report[0]["covered"] == 1
+    assert 0 <= report[0]["covered"] <= report[0]["ground_truth"]
+
+
+def test_extraction_searches_all_evidence_fields(tmp_path, monkeypatch, capsys) -> None:
+    """An ID cited outside `id` still reconciles the record to ground truth."""
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    md = tmp_path / "real.md"
+    md.write_text("## OPS-1\n## CI-2\n## FM-3\n", encoding="utf-8")
+    (l1 / "real.jsonl").write_text(
+        '\n'.join(
+            json.dumps(record)
+            for record in (
+                {"id": "row-1", "source_anchor": "OPS-1"},
+                {"id": "row-2", "instance": "CI-2 happened"},
+                {"id": "row-3", "check": "FM-3 is enforced"},
+            )
+        ) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(reconcile_l1, "ENUMERABLE", {"real": ([md], HEADING_RX)})
+
+    status = run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert status == 0
+    assert report[0]["covered"] == report[0]["ground_truth"] == 3
+    assert report[0]["missing"] == []
+
+
+def test_suffixed_id_does_not_cover_its_unsuffixed_sibling(tmp_path, monkeypatch, capsys) -> None:
+    """FM-12a and FM-12 are distinct catalog entries, not prefix matches."""
+    build_corpus(tmp_path, monkeypatch, {"alpha": (("FM-12",), ("FM-12a",))})
+
+    found, _ = reconcile_l1.extracted("alpha")
+    status = run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert "FM-12a" in found
+    assert "FM-12" not in found
+    assert status == 1
+    assert report[0]["missing"] == ["FM-12"]
+
+
+def test_unresolved_flag_follows_ground_truth_not_nonempty_extraction(tmp_path, monkeypatch, capsys) -> None:
+    """A present JSONL cannot make a missing source look machine-resolved."""
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    (l1 / "ghost.jsonl").write_text('{"id": "OPS-1"}\n', encoding="utf-8")
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(
+        reconcile_l1,
+        "ENUMERABLE",
+        {"ghost": ([tmp_path / "does-not-exist.md"], HEADING_RX)},
+    )
+
+    run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert report[0]["jsonl_lines"] == 1
+    assert report[0]["resolved"] is False
+
+
 def test_all_resolved_and_complete_says_COMPLETE(tmp_path, monkeypatch, capsys) -> None:
     """The other direction, so PARTIAL cannot simply replace COMPLETE."""
     l1 = tmp_path / "L1"

@@ -309,6 +309,41 @@ PY
   [ "$(file_digest "$LEDGER")" = "$changed_ledger" ]
 }
 
+@test "a mid-restore copy failure rolls every target back to its pre-undo state" {
+  run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
+    bash "$TOOL" -c A "mid restore failure" --recurrence-of none
+  [ "$status" -eq 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
+  [ -n "$journal" ]
+  changed_catalog="$(file_digest "$CATALOG")"
+  changed_ledger="$(file_digest "$LEDGER")"
+
+  fakebin="$WORK/fakebin"
+  fail_state="$WORK/cp-failed-once"
+  mkdir -p "$fakebin"
+  cat >"$fakebin/cp" <<'SH'
+#!/usr/bin/env bash
+destination="${@: -1}"
+if [[ "$destination" == "$CP_FAIL_TARGET" && ! -e "$CP_FAIL_STATE" ]]; then
+  : >"$CP_FAIL_STATE"
+  echo "injected copy failure for $destination" >&2
+  exit 73
+fi
+exec /bin/cp "$@"
+SH
+  chmod +x "$fakebin/cp"
+
+  run env CATALOG="$CATALOG" PATH="$fakebin:$PATH" \
+    CP_FAIL_TARGET="$LEDGER" CP_FAIL_STATE="$fail_state" \
+    bash "$TOOL" --undo "$journal"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"copy failure"* ]]
+  [ -e "$fail_state" ]
+  [ "$(file_digest "$CATALOG")" = "$changed_catalog" ]
+  [ "$(file_digest "$LEDGER")" = "$changed_ledger" ]
+}
+
 @test "pre-commit skips derived regeneration when canonical inputs are unchanged" {
   make_staged_repo
   git -C "$STAGE" init -q

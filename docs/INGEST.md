@@ -22,7 +22,11 @@ there is no threshold or override flag.
 Before writing, the command prints an `UNDO:` command backed by a journal in
 the system temporary directory. Running that command restores the catalog,
 ledger, mechanically extracted L1 files, and L2 cluster artifact to their
-pre-add state.
+pre-add state. Restore first validates the complete manifest and stages a
+recovery copy of every current target. If applying any journal entry fails, it
+compensates across the whole target set so catalog, ledger, L1, and L2 cannot be
+left in a mixed state. Recovery copies are retained and named if either apply
+or compensation reports an error.
 
 Canonical ingest requires the sibling repositories used by extraction and
 reconciliation (`fleet`, `fleet-dispatch`, and `claude-codex`) beside the

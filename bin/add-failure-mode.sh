@@ -121,14 +121,69 @@ restore_journal() {
         }
     done
 
-    local index
+    local rollback_dir
+    rollback_dir="$(mktemp -d "${TMPDIR:-/tmp}/hindsight-undo-rollback.XXXXXX")"
+    local -a previous_states=() previous_backups=()
+    local index previous_backup
     for index in "${!targets[@]}"; do
-        if [[ "${states[$index]}" == "present" ]]; then
-            cp "$journal/${backups[$index]}" "${targets[$index]}"
+        if [[ -e "${targets[$index]}" ]]; then
+            [[ -f "${targets[$index]}" && ! -L "${targets[$index]}" ]] || {
+                echo "ERROR: undo target is not a regular owned file: ${targets[$index]}" >&2
+                rm -r -- "$rollback_dir"
+                return 1
+            }
+            previous_backup="current-$index"
+            if ! cp "${targets[$index]}" "$rollback_dir/$previous_backup"; then
+                echo "ERROR: could not stage pre-undo recovery copy: ${targets[$index]}" >&2
+                rm -r -- "$rollback_dir"
+                return 1
+            fi
+            previous_states+=(present)
+            previous_backups+=("$previous_backup")
         else
-            rm -f -- "${targets[$index]}"
+            previous_states+=(absent)
+            previous_backups+=(-)
         fi
     done
+
+    local restore_status=0
+    for index in "${!targets[@]}"; do
+        if [[ "${states[$index]}" == "present" ]]; then
+            if cp "$journal/${backups[$index]}" "${targets[$index]}"; then
+                :
+            else
+                restore_status=$?
+                break
+            fi
+        else
+            if rm -f -- "${targets[$index]}"; then
+                :
+            else
+                restore_status=$?
+                break
+            fi
+        fi
+    done
+
+    if [[ $restore_status -ne 0 ]]; then
+        echo "ERROR: undo apply failed; restoring the complete pre-undo state" >&2
+        local rollback_failed=0
+        for index in "${!targets[@]}"; do
+            if [[ "${previous_states[$index]}" == "present" ]]; then
+                cp "$rollback_dir/${previous_backups[$index]}" "${targets[$index]}" || rollback_failed=1
+            else
+                rm -f -- "${targets[$index]}" || rollback_failed=1
+            fi
+        done
+        if [[ $rollback_failed -ne 0 ]]; then
+            echo "ERROR: compensating rollback was incomplete; recovery copies remain at $rollback_dir" >&2
+            return 1
+        fi
+        echo "add-failure-mode: compensating rollback restored pre-undo state; recovery copies remain at $rollback_dir" >&2
+        return "$restore_status"
+    fi
+
+    rm -r -- "$rollback_dir"
     echo "add-failure-mode: restored files from $journal"
 }
 

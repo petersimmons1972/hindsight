@@ -1,0 +1,1 @@
+{"id": "tiny-003", "instance": "Health check reports healthy while the dependency is down because the probe only pings localhost.", "source_path": "beta.md"}

@@ -704,15 +704,19 @@ Worktrees: **1**. Open issues: **0**. Open PRs: **3**.
 
 **Owed, in the order I would pick them up:**
 
-| # | Item | Why it is next |
-|---|---|---|
-| 1 | **V8 enforcement count** | Smallest possible unit; the founder's ruling is currently half-applied and the silent version is worse than what he agreed to |
-| 2 | **W1/W2/W3 — L3 synthesis** | The remaining leg of the recurrence spine, which is founder ruling 1 |
-| 3 | **PR #2 repair** (dry-run default, undo-before-act, red-first tests) | Founder ruling 3; the capability is wanted, the blast radius is not |
-| 4 | **PR #10 / G2 rebuild** from an attack spec written first, cross-vendor | Founder ruling 4; also discharges the standing audition debt |
-| 5 | **PR #12** — C4d/C4e gate-the-gate, defective at round 6 | No decision recorded; **blocked ≠ obsolete**, so it must not be closed on age |
-| 6 | **`bin/similar-causes.py` has no caller** | Merged, correct, and invoked by nothing |
-| 7 | **C6c** never run | Was meant to replace #2 |
+**All of it is now tracked as issues** — per the standing directive *"if we cannot track it, it
+doesn't exist."* This table is a pointer, not the record.
+
+| order | issue | Item | Why it is next |
+|---|---|---|---|
+| 1 | **#18** | V8 enforcement count | Smallest possible unit; the founder's ruling is currently half-applied, and silent-advisory is worse than what he agreed to |
+| 2 | **#21** | W1/W2/W3 — L3 synthesis | The remaining leg of the recurrence spine, which is founder ruling 1 |
+| 3 | **#22** | PR #2 repair (dry-run default, undo-before-act, red-first tests) | Founder ruling 3; the capability is wanted, the blast radius is not |
+| 4 | **#23** | PR #10 / G2 rebuild from an attack spec written first, cross-vendor | Founder ruling 4; also discharges the standing audition debt |
+| 5 | — | PR #12 — C4d/C4e gate-the-gate, defective at round 6 | Tracked by the PR itself. No decision recorded; **blocked ≠ obsolete**, so it must not be closed on age |
+| 6 | **#19** | `bin/similar-causes.py` has no caller | Merged, correct, and invoked by nothing |
+| 7 | **#24** | C6c never run | Overlaps #22; decide explicitly which survives |
+| — | **#20** | verify-enforcement resolves 1/13 source roots on CI | Phantom discovery therefore runs nowhere automatically |
 
 **Two process rules this session paid for, both now mechanised in habit rather than prose:**
 

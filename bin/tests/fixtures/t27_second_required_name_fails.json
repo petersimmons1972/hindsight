@@ -1,0 +1,25 @@
+{
+  "_label": "Multi-name --required probe where the FIRST required name passes and the SECOND fails (round-4 MEDIUM-HIGH gap): 'guard' is COMPLETED/SUCCESS but 'GitGuardian Security Checks' is COMPLETED/FAILURE. The only existing multi-name test (t1_all_success + --required guard,GitGuardian...) has both names pass, and the only failing multi-name case (t6) fails on the FIRST name -- so `required[:1]` (checking only the first required name and ignoring the rest) survives all 41 prior tests. Run with --required 'guard,GitGuardian Security Checks'; must exit 2 and name the GitGuardian check specifically.",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:48Z",
+      "completedAt": "2026-08-01T22:11:05Z",
+      "detailsUrl": "https://github.com/petersimmons1972/hindsight/actions/runs/1/job/1",
+      "workflowName": "catalog-guard"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "GitGuardian Security Checks",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE",
+      "startedAt": "2026-08-01T22:10:51Z",
+      "completedAt": "2026-08-01T22:10:59Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
+    }
+  ]
+}

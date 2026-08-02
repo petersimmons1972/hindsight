@@ -100,6 +100,26 @@ setup() {
   [[ "$output" == *"'guard'"* ]]
 }
 
+@test "T25: duplicate 'guard', COMPLETED/SUCCESS FIRST then QUEUED/null LAST -> exit 2 (good-before-bad: pins matches[:1] truncation, every other duplicate fixture puts the bad entry first)" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t25_duplicate_guard_success_then_queued.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"'guard'"* ]]
+}
+
+@test "T26: duplicate 'guard', COMPLETED/SUCCESS FIRST then COMPLETED/FAILURE LAST -> exit 2 (good-before-bad, completed-bad variant)" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t26_duplicate_guard_success_then_failure.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"'guard'"* ]]
+  [[ "$output" == *"FAILURE"* ]]
+}
+
+@test "T27: multi-name --required, FIRST name SUCCESS but SECOND name FAILURE -> exit 2 (pins the required[:1] truncation; the only prior multi-name failure fails on the first name)" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t27_second_required_name_fails.json" --required "guard,GitGuardian Security Checks"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"'GitGuardian Security Checks'"* ]]
+  [[ "$output" == *"FAILURE"* ]]
+}
+
 # ---- legacy StatusContext (context/state) shape ---------------------------
 
 @test "T12: legacy StatusContext with state=SUCCESS -> exit 0 (must not be permanently reported RED)" {
@@ -165,6 +185,17 @@ EOF
   run "$SCRIPT" 999 --json-file "$FIXTURES/t20_naive_timestamp_space_separated.json"
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
+}
+
+@test "naive timestamp -> elapsed/window diagnostic is still rendered (pins the tzinfo-normalization fix itself, not just the exit code): deleting 'if started.tzinfo is None: started = started.replace(tzinfo=timezone.utc)' makes elapsed_minutes() return None via the try/except, silently dropping this message while status stays 2" {
+  NOW_NAIVE="$(date -u -d '-2 minutes' +%Y-%m-%dT%H:%M:%S)"
+  DYN="$BATS_TEST_TMPDIR/dyn_naive_elapsed_diagnostic.json"
+  cat > "$DYN" <<EOF
+{"statusCheckRollup":[{"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":"$NOW_NAIVE","completedAt":null}]}
+EOF
+  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 60
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"m elapsed, within --max-wait-minutes=60: still starting up"* ]]
 }
 
 # ---- mutation-bar fixtures: status/conclusion strictness -------------------

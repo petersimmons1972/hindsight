@@ -385,3 +385,96 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"gh pr view failed"* ]]
 }
+
+# ---- F3 (round 6): mutation survivors — the absent-KEY paths ---------------
+# Every pre-existing fixture spells `"conclusion": null` / `"status": ...`
+# EXPLICITLY, so `entry.get("conclusion")` and `entry.get("status")` were only
+# ever exercised on keys that are PRESENT. A mutant supplying a default —
+# `entry.get("conclusion", "SUCCESS")` / `entry.get("status", "COMPLETED")` —
+# is therefore invisible to the whole suite, while turning a check that
+# reported nothing at all into a green one. That is FM-149/FM-150 verbatim:
+# a check with no conclusion is RED, never green.
+
+@test "S1 pin: 'conclusion' key ABSENT (not null) on a COMPLETED required check -> exit 2, never defaults to SUCCESS" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t32_conclusion_key_absent.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"required check 'guard' is COMPLETED but has an empty/missing conclusion"* ]]
+}
+
+@test "S2 pin: 'status' key ABSENT on a required check -> exit 2, never defaults to COMPLETED" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t33_status_key_absent.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"required check 'guard' is not complete (status=None)"* ]]
+}
+
+# ---- F3: an empty allowlist must never pass vacuously ---------------------
+# With nothing required, "every required check succeeded" is vacuously true and
+# the gate reports PASS on a rollup that is entirely QUEUED. The allowlist
+# checks are the only thing standing between `--required ""` and a green
+# verdict on a red PR.
+
+@test "S3 pin: --required '' on an all-QUEUED rollup -> usage error, never a vacuous PASS" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t2_required_queued.json" --required ""
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"empty allowlist"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+@test "S4 pin: --required '  ' (whitespace only) on an all-QUEUED rollup -> rejected, not silently skipped" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t2_required_queued.json" --required "  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"empty check name"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+@test "S3b pin: a whitespace-only name among real ones ('guard, ,x') is rejected too" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --required "guard, ,GitGuardian Security Checks"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"empty check name"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+# ---- F3: the undocumented-exit-code guard itself --------------------------
+# The M42 pin only simulates python3 exiting 2 — an IN-RANGE code — so the
+# out-of-range branch this block exists for (the exit-126 argv-limit incident:
+# "the gate silently did not run") was never entered by any test. An evaluator
+# crash means "I could not verify", which must never relay as "it is fine".
+
+_fake_python3_exiting() {  # $1 = exit code the evaluator should simulate
+  FAKE_BIN="$BATS_TEST_TMPDIR/fakebin_s5_$1"
+  mkdir -p "$FAKE_BIN"
+  cat > "$FAKE_BIN/python3" <<EOF
+#!/usr/bin/env bash
+# Same discriminator as the M42 pin: the bash-side JSON pre-validation call is
+# \`python3 -c '<snippet>'\` (2 args); the real evaluator gets 4+.
+if [ "\$#" -le 2 ]; then
+  cat >/dev/null
+  exit 0
+fi
+cat >/dev/null
+exit $1
+EOF
+  chmod +x "$FAKE_BIN/python3"
+}
+
+@test "S5/S10 pin: python3 evaluator exits 1 (undocumented, out of the 0/2 contract) -> exit 2 and says so, never 0" {
+  _fake_python3_exiting 1
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"undocumented code 1"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+@test "S10 pin: python3 evaluator exits 126 (the FM-149 argv-limit code) -> exit 2, labelled, never leaked verbatim" {
+  _fake_python3_exiting 126
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"undocumented code 126"* ]]
+  [[ "$output" != *"PASS:"* ]]
+}
+
+@test "S11 pin: --max-wait-minutes abc is rejected as a usage error (exit 1) before it can reach int() in the evaluator" {
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --max-wait-minutes abc
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--max-wait-minutes must be a non-negative integer, got: abc"* ]]
+}

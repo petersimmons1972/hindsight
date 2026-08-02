@@ -674,3 +674,243 @@ def test_empty_known_phantoms_ledger_is_a_valid_zero_debt_state(
     err = capsys.readouterr().err
     assert exit_code == 0
     assert "DEBT: 0 known phantom(s)" in err
+
+
+# ---------------------------------------------------------------------------
+# Mutation-sweep gap closures (lane-guard survivors S1, S2, S3, S8, S9, S11,
+# S12, S13). Each test below was proven to FAIL against its named mutant and
+# PASS against unmutated code -- see the sweep report for the diffs.
+# ---------------------------------------------------------------------------
+
+
+def test_path_escaping_its_own_root_is_phantom_even_when_it_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S1/M23: containment, not mere existence.
+
+    `test_path_existing_in_a_different_repo_is_still_phantom` uses a bare
+    filename that does not exist under EITHER root, so exists() alone already
+    fails it -- it cannot discriminate the `is_relative_to` half of the check.
+    Here the recorded path deliberately climbs out of its own root with `..`
+    and lands on a file that genuinely EXISTS in a sibling repo. Only the
+    containment half can call this a phantom.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "sibling-repo").mkdir(parents=True)
+    (projects / "sibling-repo" / "control.py").touch()
+    (projects / "sample-repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "sample-repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("escapee", {"file": "../sibling-repo/control.py", "kind": "test"}),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    err = capsys.readouterr().err
+    assert "phantom: ../sibling-repo/control.py (sample:escapee" in err
+
+
+def test_corrupt_l1_corpus_exits_nonzero_not_a_clean_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S2/M31: the corpus-integrity except-arm is a GATE, not a log line.
+
+    Every raise inside verify_enforcement (bad JSON, non-object record, bad
+    `auto`, bad `enforcement`) reaches main() through one except arm. Nothing
+    asserted that arm's exit code, so a corrupt corpus could be reported as a
+    clean run.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    (l1_dir / "sample.jsonl").write_text(
+        json.dumps(machine_record("ok", {"file": "control.py", "kind": "test"}))
+        + "\n{ this is not json }\n",
+        encoding="utf-8",
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    err = capsys.readouterr().err
+    assert "invalid JSON" in err
+
+
+def test_total_enforcement_bearing_excludes_entries_that_enforce_nothing() -> None:
+    """S3/M32: the debt floor counts units of WORK, not units PRESENT (FM-155).
+
+    fleet#152: nulling out an `enforcement` value must lower this total. If
+    the floor counted `machine` alone, a maintainer could strip every
+    enforcement value in the corpus and DEBT-FLOOR would not notice.
+    """
+    report = MODULE.EnforcementReport(
+        sources={
+            "hollow": MODULE.SourceTotals(machine=3, unbacked=3),
+            "real": MODULE.SourceTotals(machine=2, unbacked=1, checked=1),
+        },
+        phantoms=[],
+        unverifiable=[],
+        roots_resolved={},
+        roots_unresolved={},
+        mapped_sources=2,
+    )
+
+    # hollow contributes 0 (3 machine entries, all with enforcement: null);
+    # real contributes exactly the 1 entry that carries a real claim.
+    assert MODULE.total_enforcement_bearing(report) == 1
+
+
+def test_nulling_every_enforcement_value_breaches_the_debt_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S3/M32, end-to-end: the floor must actually fire on hollowed-out entries."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    # Two machine entries; the enforcement value of one was removed. Present
+    # count is still 2, but only 1 unit of enforcement work remains.
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("kept", {"file": "control.py", "kind": "test"}),
+        machine_record("hollowed", None),
+    )
+
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=2
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "DEBT-FLOOR: 1 total enforcement-bearing entries (floor 2)" in err
+
+
+def test_malformed_enforcement_file_raises_and_is_not_relabelled_unbacked(
+    tmp_path: Path,
+) -> None:
+    """S8/M34: a malformed claim is corpus corruption, not an honest gap.
+
+    `{"enforcement": {"file": null}}` claims a mechanism and fails to name it.
+    Silently counting it as `unbacked` would both skip the phantom check for
+    it AND remove it from the enforcement-bearing total -- laundering a broken
+    claim into "we never claimed anything".
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    write_records(l1_dir, "sample", {"id": "bad", "auto": "machine", "enforcement": {"file": None}})
+
+    with pytest.raises(ValueError, match="invalid enforcement.file"):
+        MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+
+def test_empty_enforcement_file_string_also_raises(tmp_path: Path) -> None:
+    """S8/M34, the other arm of the same condition: `"file": ""`."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    write_records(l1_dir, "sample", {"id": "bad", "auto": "machine", "enforcement": {"file": ""}})
+
+    with pytest.raises(ValueError, match="invalid enforcement.file"):
+        MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+
+def test_require_roots_counts_roots_that_verified_something_not_roots_that_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """S9/M33: the falsifiable root floor (FM-155).
+
+    `test_require_roots_flag_raises_the_floor` has resolved == useful == 1, so
+    it cannot tell the two counters apart. Here BOTH roots resolve (both
+    directories are checked out) but only one of them had a single entry to
+    actually check -- the other verified nothing. `--require-roots 2` must
+    ERROR, because a floor satisfiable by an element that verifies nothing is
+    not a floor.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo-a").mkdir(parents=True)
+    (projects / "repo-a" / "control.py").touch()
+    (projects / "repo-b").mkdir(parents=True)  # resolves, but checks nothing
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"a": "repo-a", "b": "repo-b"})
+    write_records(l1_dir, "a", machine_record("a-1", {"file": "control.py", "kind": "test"}))
+    write_records(l1_dir, "b", machine_record("b-1", None))
+
+    exit_code = run_verifier(
+        monkeypatch, l1_dir, projects, roots_path, extra_args=["--require-roots", "2"]
+    )
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "only 1 of 2 mapped source roots actually verified an entry" in err
+    assert "phantom:" not in err
+
+
+def test_load_source_roots_raises_on_a_comment_only_map(tmp_path: Path) -> None:
+    """S11/M30: the loader's OWN fail-loud contract.
+
+    `test_empty_source_roots_conf_fails_loud` asserts only on main()'s exit
+    code, which the downstream zero-roots check also produces -- so it passes
+    even when the loader itself has been made to return an empty map. Pin the
+    loader directly.
+    """
+    roots_path = tmp_path / "source-roots.conf"
+    roots_path.write_text("# every line is a comment\n#\n\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source-roots map is empty"):
+        MODULE.load_source_roots(roots_path)
+
+
+def test_unrecognised_auto_value_raises_instead_of_dropping_the_record(
+    tmp_path: Path,
+) -> None:
+    """S12/M21: a typo must not delete a record from every total.
+
+    `"Machine"` silently skipped means the entry vanishes from machine,
+    judgment, the phantom check and the debt floor alike -- a way to shrink
+    the corpus without shrinking any visible counter.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    write_records(
+        l1_dir,
+        "sample",
+        {"id": "typo", "auto": "Machine", "enforcement": {"file": "control.py"}},
+    )
+
+    with pytest.raises(ValueError, match="invalid auto value"):
+        MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+
+def test_blank_l1_record_raises_instead_of_being_skipped(tmp_path: Path) -> None:
+    """S13/M20: a blank line in the corpus is corruption, not whitespace."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    (l1_dir / "sample.jsonl").write_text(
+        json.dumps(machine_record("one", {"file": "control.py", "kind": "test"}))
+        + "\n\n"
+        + json.dumps(machine_record("two", {"file": "control.py", "kind": "test"}))
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"blank L1 record in .*sample\.jsonl:2"):
+        MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})

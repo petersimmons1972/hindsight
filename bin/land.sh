@@ -25,6 +25,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$HERE/require-real-ci.sh"
 PROG="$(basename "$0")"
 
+# Save the invocation BEFORE the parse loop consumes it. The banner below used
+# to print "$*" after the shifts had already emptied it, so the line claiming to
+# record how the gate was invoked recorded nothing.
+INVOCATION=("$@")
+
 PR=""; REPO=""; JSON_FILE=""; DO_MERGE=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,7 +52,7 @@ gate_args=("$PR")
 [ -n "$REPO" ]      && gate_args+=(--repo "$REPO")
 [ -n "$JSON_FILE" ] && gate_args+=(--json-file "$JSON_FILE")
 
-echo "=== gate: require-real-ci.sh $* ==="
+echo "=== gate: require-real-ci.sh ${INVOCATION[*]} ==="
 gate_log="$(mktemp)"
 trap 'rm -f "$gate_log"' EXIT
 

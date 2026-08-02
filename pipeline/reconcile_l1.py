@@ -46,18 +46,33 @@ ENUMERABLE = {
 
 
 def ground_truth(slug: str) -> set[str]:
+    ids, _resolved = ground_truth_resolved(slug)
+    return ids
+
+
+def ground_truth_resolved(slug: str) -> tuple[set[str], bool]:
+    """Ground-truth IDs, plus whether ANY configured source file was present.
+
+    The second value exists because an EMPTY id set is ambiguous: it means
+    either "this source genuinely lists nothing" or "this source is not on
+    disk". Collapsing those was a live fail-open -- on a CI runner none of the
+    source repos exist, every truth set came back empty, coverage fell to the
+    `else 100.0` branch, and the gate printed COMPLETE having verified nothing.
+    """
     files, rx = ENUMERABLE[slug]
     ids: set[str] = set()
+    resolved = False
     for f in files:
         if not f.exists():
             continue
+        resolved = True
         for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
             m = rx.match(line) if rx.pattern.startswith("^") else None
             if m:
                 ids.add(m.group(1))
             elif not rx.pattern.startswith("^"):
                 ids.update(rx.findall(line))
-    return ids
+    return ids, resolved
 
 
 def extracted(slug: str) -> tuple[set[str], int]:
@@ -87,16 +102,26 @@ def main() -> int:
     args = ap.parse_args()
 
     report, short = [], False
+    n_resolved = 0
     for slug in ENUMERABLE:
-        truth = ground_truth(slug)
+        truth, resolved = ground_truth_resolved(slug)
+        n_resolved += 1 if resolved else 0
         found, n_lines = extracted(slug)
         missing = sorted(truth - found)
-        cov = (len(truth) - len(missing)) / len(truth) * 100 if truth else 100.0
+        # An unresolved source scores None, never 100. Absence of a measurement
+        # is not a perfect measurement.
+        if not resolved:
+            cov = None
+        elif truth:
+            cov = round((len(truth) - len(missing)) / len(truth) * 100, 1)
+        else:
+            cov = 100.0
         if missing:
             short = True
         report.append({"slug": slug, "ground_truth": len(truth), "jsonl_lines": n_lines,
-                       "covered": len(truth) - len(missing), "coverage_pct": round(cov, 1),
-                       "missing": missing})
+                       "covered": len(truth) - len(missing), "coverage_pct": cov,
+                       "resolved": resolved, "missing": missing})
+    n_unresolved = len(ENUMERABLE) - n_resolved
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -104,10 +129,29 @@ def main() -> int:
         print(f"{'source':<28}{'truth':>6}{'lines':>7}{'cov':>7}  missing")
         for r in report:
             m = ", ".join(r["missing"][:6]) + (" ..." if len(r["missing"]) > 6 else "")
+            cov_s = "   n/a" if r["coverage_pct"] is None else f"{r['coverage_pct']:>6.1f}"
+            flag = "" if r["resolved"] else "  [UNRESOLVED -- source not on disk, nothing compared]"
             print(f"{r['slug']:<28}{r['ground_truth']:>6}{r['jsonl_lines']:>7}"
-                  f"{r['coverage_pct']:>6.1f}%  {m}")
+                  f"{cov_s}%  {m}{flag}")
         n_missing = sum(len(r["missing"]) for r in report)
-        print(f"\n{'SHORT' if short else 'COMPLETE'}: {n_missing} enumerable entries unaccounted for")
+        if n_resolved == 0:
+            verdict = "UNVERIFIED"
+        elif short:
+            verdict = "SHORT"
+        elif n_unresolved:
+            verdict = "PARTIAL"
+        else:
+            verdict = "COMPLETE"
+        print(f"\n{verdict}: {n_missing} enumerable entries unaccounted for"
+              f" ({n_resolved}/{len(ENUMERABLE)} sources resolved)")
+        if verdict == "UNVERIFIED":
+            print("  NOTHING WAS CHECKED: no configured source resolved on this host.\n"
+                  "  This is a refusal, not a pass -- an empty ground truth cannot\n"
+                  "  certify a corpus.")
+        elif verdict == "PARTIAL":
+            print(f"  {n_unresolved} source(s) were not on disk and were NOT checked.\n"
+                  "  This run certifies only the resolved sources, and says so rather\n"
+                  "  than calling itself COMPLETE.")
         print(
             "\nSCOPE LIMIT -- read this before trusting the word COMPLETE:\n"
             "  This checks only entries with a machine-detectable ID. Narrative content\n"
@@ -118,6 +162,8 @@ def main() -> int:
             "  100% coverage. They were recovered only because a model pass saw them.\n"
             "  COMPLETE means 'no enumerable entry is missing', never 'nothing is missing'."
         )
+    if n_resolved == 0:
+        return 1
     return 1 if short else 0
 
 

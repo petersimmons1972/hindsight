@@ -1192,8 +1192,25 @@ def test_P01_skip_discloses_debt_unbacked_and_not_measured(
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
     roots_path = tmp_path / "source-roots.conf"
-    write_source_roots(roots_path, {"sample": "repo"})
+    write_source_roots(
+        roots_path,
+        {
+            "sample": "repo",
+            "absent-a": "not-checked-out-a",
+            "absent-b": "not-checked-out-b",
+        },
+    )
     write_records(l1_dir, "sample", machine_record("unbacked", None))
+    write_records(
+        l1_dir,
+        "absent-a",
+        machine_record("unchecked-a", {"file": "control.py", "kind": "test"}),
+    )
+    write_records(
+        l1_dir,
+        "absent-b",
+        machine_record("unchecked-b", {"file": "control.py", "kind": "test"}),
+    )
 
     exit_code = run_verifier(
         monkeypatch,
@@ -1215,9 +1232,10 @@ def test_P01_skip_discloses_debt_unbacked_and_not_measured(
     assert exit_code == 0
     assert "enforcement-verifier: PHANTOM-DEBT: 1 documented in conf/known-phantoms.conf" in err
     assert "enforcement-verifier: UNBACKED: 1 machine entries carry enforcement: null" in err
+    assert "enforcement-verifier: UNVERIFIABLE: 2 machine entries could not be checked" in err
     assert (
         "enforcement-verifier: PHANTOMS-MEASURED: NOT MEASURED HERE "
-        "(ROOTS 1/1, 0 entries checked)"
+        "(ROOTS 1/3, 0 entries checked)"
     ) in err
     assert "SKIPPED" in err
 
@@ -1318,9 +1336,11 @@ def test_P01_summary_distinguishes_unmeasured_from_measured_zero(
     assert "  unmeasured: 1 0 0 - 1 0" in err
 
 
+@pytest.mark.parametrize("checked", [False, True], ids=["skipped", "checked"])
 @pytest.mark.parametrize("ledger_state", ["missing", "malformed", "unreadable"])
-def test_P01_skip_loads_known_phantoms_ledger_before_returning(
+def test_P01_all_environment_shapes_load_known_phantoms_ledger(
     ledger_state: str,
+    checked: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1331,7 +1351,15 @@ def test_P01_skip_loads_known_phantoms_ledger_before_returning(
     (projects / "repo").mkdir(parents=True)
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
-    write_records(l1_dir, "sample", machine_record("unbacked", None))
+    if checked:
+        (projects / "repo" / "control.py").touch()
+        write_records(
+            l1_dir,
+            "sample",
+            machine_record("checked", {"file": "control.py", "kind": "test"}),
+        )
+    else:
+        write_records(l1_dir, "sample", machine_record("unbacked", None))
     ledger_path = tmp_path / "known-phantoms.conf"
 
     if ledger_state == "malformed":
@@ -1358,4 +1386,4 @@ def test_P01_skip_loads_known_phantoms_ledger_before_returning(
 
     assert exit_code == 1
     assert str(ledger_path) in err
-    assert "known-phantoms" in err
+    assert "known-phantoms.conf" in err

@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 pipeline/tmp/
 .dispatch/
+
+# add-failure-mode.sh writes its pre-write backup beside the catalog.
+# It is a local undo artifact, not repo content -- tracking it dirtied the
+# tree on every single use of the tool.
+catalog/*.md.bak

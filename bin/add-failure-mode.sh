@@ -19,8 +19,7 @@
 # to keep IDs unique and numerically ordered.
 #
 # Environment:
-#   CATALOG     Override catalog path (default:
-#               <repo>/docs/failure-modes-standard.md).
+#   CATALOG     Override catalog path (default: <repo>/catalog/failure-modes.md).
 #               Useful for testing: CATALOG=/tmp/fms-test.md add-failure-mode.sh ...
 #
 # Install: ln -sf ~/projects/hindsight/bin/add-failure-mode.sh ~/bin/add-failure-mode.sh

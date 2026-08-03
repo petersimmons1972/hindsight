@@ -136,6 +136,20 @@ def _load_fixture_row(row_id: str) -> dict:
     raise AssertionError(f"fixture row {row_id!r} not found in {FIXTURE}")
 
 
+def _full_clusters_text(**member_overrides: list[str]) -> str:
+    """A clusters.jsonl containing an entry for EVERY module-constant family
+    (the corpus-trust gate's family-presence check), with all 21 members
+    empty unless overridden. An empty-members family satisfies "the family
+    is present" while contributing nothing to the arm/comparator id union --
+    so a test can target just the one or two families it cares about without
+    needing all real 134 members physically present."""
+    lines = []
+    all_families = repair_first_seen.ARM_B_FAMILIES | repair_first_seen.COMPARATOR_FAMILIES
+    for cid in sorted(all_families):
+        lines.append(json.dumps({"cluster_id": cid, "members": member_overrides.get(cid, [])}))
+    return "\n".join(lines) + "\n"
+
+
 # --------------------------------------------------------------------------
 # (1) anchor whose introducing commit is known
 # --------------------------------------------------------------------------
@@ -443,9 +457,13 @@ def test_differential_reports_provenance_split_not_just_dated_flag(
     corpus_dir.mkdir(parents=True)
     l2_dir = env.hindsight_repo / "pipeline" / "L2"
     l2_dir.mkdir(parents=True)
+    # Every module-constant family must be present for the corpus-trust gate
+    # (else this becomes a "missing families" NOT MEASURED, covered by its
+    # own dedicated test below) -- the other 19 families get zero members,
+    # which satisfies "present" while adding nothing to either id union, so
+    # the counts below are exactly the two families under test.
     (l2_dir / "clusters.jsonl").write_text(
-        json.dumps({"cluster_id": "c-043", "members": ["a1", "a2", "a3", "a4"]}) + "\n"
-        + json.dumps({"cluster_id": "c-003", "members": ["b1", "b2"]}) + "\n",
+        _full_clusters_text(**{"c-043": ["a1", "a2", "a3", "a4"], "c-003": ["b1", "b2"]}),
         encoding="utf-8",
     )
     # Every one of these six rows already carries first_seen -- the old
@@ -496,7 +514,10 @@ def test_warning_fires_from_corpus_provenance_even_when_run_dates_nothing(
     corpus_dir.mkdir(parents=True)
     l2_dir = env.hindsight_repo / "pipeline" / "L2"
     l2_dir.mkdir(parents=True)
-    (l2_dir / "clusters.jsonl").write_text("", encoding="utf-8")
+    # All 21 expected families present (satisfies the corpus-trust gate),
+    # every member list empty -- the WARNING is corpus-wide, not scoped to
+    # cluster membership, so an empty differential is irrelevant here.
+    (l2_dir / "clusters.jsonl").write_text(_full_clusters_text(), encoding="utf-8")
 
     # Steady state: every row already carries first_seen + provenance, so
     # THIS run dates zero of them -- but the corpus itself is 3 fallback /
@@ -535,7 +556,7 @@ def test_warning_reflects_corpus_not_this_runs_deltas(
     corpus_dir.mkdir(parents=True)
     l2_dir = env.hindsight_repo / "pipeline" / "L2"
     l2_dir.mkdir(parents=True)
-    (l2_dir / "clusters.jsonl").write_text("", encoding="utf-8")
+    (l2_dir / "clusters.jsonl").write_text(_full_clusters_text(), encoding="utf-8")
 
     _commit(env.sample_root, "docs/anchor.md",
             "# Doc\n\n## Anchor Heading One\nOriginal text.\n",
@@ -589,9 +610,11 @@ def test_differential_not_measured_when_cluster_members_do_not_resolve(
     corpus_dir.mkdir(parents=True)
     l2_dir = env.hindsight_repo / "pipeline" / "L2"
     l2_dir.mkdir(parents=True)
+    # All 21 expected families present (else this trips the family-presence
+    # check instead, covered by its own dedicated test) -- only c-043/c-003
+    # carry members, so exactly 3 ids are ever expected.
     (l2_dir / "clusters.jsonl").write_text(
-        json.dumps({"cluster_id": "c-043", "members": ["a1", "a2"]}) + "\n"
-        + json.dumps({"cluster_id": "c-003", "members": ["b1"]}) + "\n",
+        _full_clusters_text(**{"c-043": ["a1", "a2"], "c-003": ["b1"]}),
         encoding="utf-8",
     )
     # Only a1 is ever loaded -- a2 and b1 are absent from every L1 row, i.e.
@@ -627,8 +650,7 @@ def test_differential_all_members_unresolved_reports_not_measured_not_zero(
     l2_dir = env.hindsight_repo / "pipeline" / "L2"
     l2_dir.mkdir(parents=True)
     (l2_dir / "clusters.jsonl").write_text(
-        json.dumps({"cluster_id": "c-043", "members": ["a1", "a2", "a3"]}) + "\n"
-        + json.dumps({"cluster_id": "c-003", "members": ["b1"]}) + "\n",
+        _full_clusters_text(**{"c-043": ["a1", "a2", "a3"], "c-003": ["b1"]}),
         encoding="utf-8",
     )
     # A scratch corpus with unrelated ids -- 0 of the 4 expected members
@@ -648,4 +670,87 @@ def test_differential_all_members_unresolved_reports_not_measured_not_zero(
     ]
     assert "n=0" not in captured.err
     assert "n=3" not in captured.err
+    assert "n=1" not in captured.err
+
+
+# --------------------------------------------------------------------------
+# SINGLE-GATE regression coverage (Issue #32 refactor): the four shortfall
+# kinds the ONE corpus-trust gate must catch, each printing NOT MEASURED
+# with a reason on EVERY statistic path (DIFFERENTIAL and WARNING alike) --
+# never a number, never silence.
+#
+#   (a) L1 dir outside this checkout -> test_differential_not_measured_when_target_is_not_the_real_corpus (above)
+#   (b) L1 dir missing entirely      -> test_gate_not_measured_when_corpus_directory_is_missing (below)
+#   (c) clusters file missing families -> test_gate_not_measured_when_clusters_file_missing_expected_families (below)
+#   (d) member id absent from loaded rows -> test_differential_not_measured_when_cluster_members_do_not_resolve
+#       and test_differential_all_members_unresolved_reports_not_measured_not_zero (above)
+# --------------------------------------------------------------------------
+
+def test_gate_not_measured_when_corpus_directory_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """self_dir/pipeline/L1 (the real corpus location) does not exist at
+    all. This must NOT MEASURED on every statistic path -- never silence
+    (instance #5: a missing pipeline/L1 used to print nothing)."""
+    env = Env(tmp_path)
+    # This run's own target is a file OUTSIDE self_dir/pipeline/L1 entirely,
+    # so the run itself succeeds and dates nothing -- but self_dir/pipeline/L1
+    # (the corpus the gate must measure) is never created.
+    target = env.target(_load_fixture_row("fixture-existing-1"))
+
+    exit_code = repair_first_seen.main(env.main_args("--l1", str(target)))
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    stat_lines = [
+        ln for ln in captured.err.splitlines()
+        if "DIFFERENTIAL" in ln or "WARNING" in ln
+    ]
+    assert len(stat_lines) == 2
+    for ln in stat_lines:
+        assert "NOT MEASURED" in ln
+        assert "no corpus directory at" in ln
+    assert "%" not in captured.err
+
+
+def test_gate_not_measured_when_clusters_file_missing_expected_families(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A clusters.jsonl that resolves and parses fine but is missing some of
+    the module-constant expected families -- distinct from instance #6's
+    fully-stripped-empty case and from a member being absent from a family
+    that IS present. Both DIFFERENTIAL and WARNING must NOT MEASURED, never
+    a vacuous count over whichever families happened to survive."""
+    env = Env(tmp_path)
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    # Only 2 of the 21 expected families present.
+    (l2_dir / "clusters.jsonl").write_text(
+        json.dumps({"cluster_id": "c-043", "members": ["a1"]}) + "\n"
+        + json.dumps({"cluster_id": "c-003", "members": ["b1"]}) + "\n",
+        encoding="utf-8",
+    )
+    (corpus_dir / "sample.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in [
+            {"id": "a1", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"},
+            {"id": "b1", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+        ]),
+        encoding="utf-8",
+    )
+
+    exit_code = repair_first_seen.main(env.main_args())
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    stat_lines = [
+        ln for ln in captured.err.splitlines()
+        if "DIFFERENTIAL" in ln or "WARNING" in ln
+    ]
+    assert len(stat_lines) == 2
+    for ln in stat_lines:
+        assert "NOT MEASURED" in ln
+        assert "missing 19 of 21 expected families" in ln
+    assert "%" not in captured.err
     assert "n=1" not in captured.err

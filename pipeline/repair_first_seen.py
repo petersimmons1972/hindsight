@@ -47,12 +47,28 @@ SELF_ROOT_TOKEN = "SELF"
 PROJECTS_ROOT_TOKEN = "."
 
 # The two family sets this packet reports a fairness differential across.
-# Membership is corpus-wide (pipeline/L2/clusters.jsonl), read-only.
-ARM_B_CLUSTERS = {"c-043", "c-045", "c-063", "c-082", "c-104", "c-191"}
-COMPARATOR_CLUSTERS = {
+# Fixed here as MODULE CONSTANTS, never read from an argument or inferred
+# from whatever a --clusters file happens to contain -- an argument-supplied
+# or partial family list is exactly how a scratch/stripped clusters file
+# used to get treated as authoritative (instances #1 and #6 of the
+# fabricated-statistic defect; see _measure_corpus).
+ARM_B_FAMILIES = {"c-043", "c-045", "c-063", "c-082", "c-104", "c-191"}
+COMPARATOR_FAMILIES = {
     "c-003", "c-004", "c-007", "c-008", "c-038", "c-044", "c-049", "c-051",
     "c-055", "c-058", "c-070", "c-085", "c-101", "c-117", "c-178",
 }
+EXPECTED_FAMILIES = ARM_B_FAMILIES | COMPARATOR_FAMILIES  # 21 families total
+
+# The real corpus's ground-truth total member count (32 Arm B + 102
+# comparator = 134) once every expected family and member resolves. This is
+# documentation of what a genuine measurement against THIS repo's real
+# pipeline/L2/clusters.jsonl produces -- not a count enforced at runtime.
+# The gate below enforces the thing that actually matters (every expected
+# family present, every one of its declared members loaded), which is what
+# makes 134 the real corpus's answer; a synthetic/test corpus legitimately
+# has a different total and is still honestly "measured" if it resolves
+# completely on its own terms.
+EXPECTED_MEMBERS = 134
 
 
 @dataclass
@@ -224,39 +240,54 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bool) -> None:
-    """Report the PROVENANCE-QUALITY split between the Arm B intervention
-    families and the comparator pool. Reporting only -- this packet does not
-    fix the gap, it makes it visible so downstream normalisation can account
-    for it.
+@dataclass
+class CorpusMeasurement:
+    """The ONE trust gate. Every statistic print path -- the differential,
+    the fallback WARNING -- consults this and only this. ``measured`` is
+    True only when the corpus's IDENTITY has been established: this run's
+    target really is the real corpus directory, every expected family is
+    present in the clusters file, and every one of its declared members was
+    actually loaded. When any of that fails, ``reason`` names the shortfall
+    and every statistic path prints NOT MEASURED with it -- never a number,
+    never a silent skip.
 
-    Measures pre-existing / git-anchor / l1-ingest-fallback shares, not mere
-    "first_seen is not None" (D-3): that flag goes to 100% once repair
-    finishes and can never again surface the bias it exists to surface.
-
-    Computed ONLY when the run's actual target is the real corpus directory
-    (D-1): a directory inferred from an arbitrary --l1 argument could hold
-    unrelated files and would print a fabricated, undetectable-as-fake
-    number in the same machine-readable format as a genuine measurement.
+    ``id_provenance`` covers EVERY row loaded from the corpus (not just
+    cluster members), so it backs both the per-family differential and the
+    corpus-wide fallback-share warning from a single read of disk.
     """
-    if not is_real_corpus:
-        print(
-            "date-repair: DIFFERENTIAL: NOT MEASURED (target is not the corpus)",
-            file=sys.stderr,
-        )
-        return
+
+    measured: bool
+    reason: str | None = None
+    id_provenance: dict[str, str] | None = None
+    arm_b_ids: frozenset[str] | None = None
+    comparator_ids: frozenset[str] | None = None
+
+
+def _measure_corpus(l1_target: Path, real_corpus_dir: Path, clusters_path: Path) -> CorpusMeasurement:
+    """Establish corpus identity ONCE, before any statistic is computed.
+
+    Checked in order, first failure wins:
+      1. the real corpus directory exists at all (not a missing pipeline/L1);
+      2. this run's actual target IS that directory, not some other
+         argument-inferred path (a scratch dir never becomes "the corpus"
+         just because a flag pointed there);
+      3. the clusters file declares every module-constant family -- a file
+         stripped of a family must not resolve vacuously over the rest;
+      4. every member of every declared family was actually loaded from a
+         row in the corpus -- an id absent from every row never resolved.
+    """
+    if not real_corpus_dir.is_dir():
+        return CorpusMeasurement(False, f"no corpus directory at {real_corpus_dir}")
+
+    if l1_target.resolve() != real_corpus_dir.resolve():
+        return CorpusMeasurement(False, "target is not the corpus")
 
     try:
         clusters_text = clusters_path.read_text(encoding="utf-8")
     except OSError:
-        print(
-            f"date-repair: DIFFERENTIAL: unavailable (no clusters file at {clusters_path})",
-            file=sys.stderr,
-        )
-        return
+        return CorpusMeasurement(False, f"no clusters file at {clusters_path}")
 
-    arm_b_ids: set[str] = set()
-    comparator_ids: set[str] = set()
+    found_families: dict[str, set[str]] = {}
     for line in clusters_text.splitlines():
         line = line.strip()
         if not line:
@@ -265,53 +296,74 @@ def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bo
         cid = rec.get("cluster_id")
         if cid is None:
             continue  # the _meta header row
-        members = rec.get("members", [])
-        if cid in ARM_B_CLUSTERS:
-            arm_b_ids.update(members)
-        if cid in COMPARATOR_CLUSTERS:
-            comparator_ids.update(members)
+        if cid in EXPECTED_FAMILIES:
+            found_families[cid] = set(rec.get("members", []))
+
+    missing_families = EXPECTED_FAMILIES - found_families.keys()
+    if missing_families:
+        return CorpusMeasurement(
+            False,
+            f"clusters file missing {len(missing_families)} of {len(EXPECTED_FAMILIES)} "
+            f"expected families: {', '.join(sorted(missing_families))}",
+        )
+
+    arm_b_ids: set[str] = set().union(*(found_families[c] for c in ARM_B_FAMILIES))
+    comparator_ids: set[str] = set().union(*(found_families[c] for c in COMPARATOR_FAMILIES))
 
     id_provenance: dict[str, str] = {}
-    if l1_dir.is_dir():
-        for jf in sorted(l1_dir.glob("*.jsonl")):
-            for line in jf.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                rec = json.loads(line)
-                rid = rec.get("id")
-                if rid is None:
-                    continue
-                prov = rec.get("first_seen_provenance")
-                if prov == "git-anchor":
-                    id_provenance[rid] = "git-anchor"
-                elif prov == "l1-ingest-fallback":
-                    id_provenance[rid] = "l1-ingest-fallback"
-                elif rec.get("first_seen") is not None:
-                    id_provenance[rid] = "pre-existing"
-                else:
-                    id_provenance[rid] = "undated"
+    for jf in sorted(real_corpus_dir.glob("*.jsonl")):
+        for line in jf.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            rid = rec.get("id")
+            if rid is None:
+                continue
+            prov = rec.get("first_seen_provenance")
+            if prov == "git-anchor":
+                id_provenance[rid] = "git-anchor"
+            elif prov == "l1-ingest-fallback":
+                id_provenance[rid] = "l1-ingest-fallback"
+            elif rec.get("first_seen") is not None:
+                id_provenance[rid] = "pre-existing"
+            else:
+                id_provenance[rid] = "undated"
 
-    # B-2(a): a member id absent from every loaded L1 row never resolved --
-    # it is not "0% of an empty family" or "excluded like the rest", it is
-    # unmeasured. Printing per-family counts while some members are absent
-    # would report a real-looking number computed over data that was never
-    # actually loaded (the fabricated-statistic failure this packet exists
-    # to close). ALARM instead, and print no counts at all.
     expected_ids = arm_b_ids | comparator_ids
     unresolved_ids = expected_ids - id_provenance.keys()
     if unresolved_ids:
-        print(
-            f"date-repair: DIFFERENTIAL: NOT MEASURED "
-            f"({len(unresolved_ids)} of {len(expected_ids)} cluster members did not resolve)",
-            file=sys.stderr,
+        return CorpusMeasurement(
+            False,
+            f"{len(unresolved_ids)} of {len(expected_ids)} cluster members did not resolve",
         )
+
+    return CorpusMeasurement(
+        True,
+        id_provenance=id_provenance,
+        arm_b_ids=frozenset(arm_b_ids),
+        comparator_ids=frozenset(comparator_ids),
+    )
+
+
+def _print_differential(measurement: CorpusMeasurement) -> None:
+    """Report the PROVENANCE-QUALITY split between the Arm B intervention
+    families and the comparator pool. Reporting only -- this packet does not
+    fix the gap, it makes it visible so downstream normalisation can account
+    for it.
+
+    Measures pre-existing / git-anchor / l1-ingest-fallback shares, not mere
+    "first_seen is not None": that flag goes to 100% once repair finishes
+    and can never again surface the bias it exists to surface.
+    """
+    if not measurement.measured:
+        print(f"date-repair: DIFFERENTIAL: NOT MEASURED ({measurement.reason})", file=sys.stderr)
         return
 
-    def summarize(ids: set[str]) -> tuple[int, int, int, int]:
+    def summarize(ids: frozenset[str]) -> tuple[int, int, int, int]:
         pre = anchor = fallback = undated = 0
         for i in ids:
-            p = id_provenance.get(i)
+            p = measurement.id_provenance.get(i)
             if p == "pre-existing":
                 pre += 1
             elif p == "git-anchor":
@@ -320,8 +372,6 @@ def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bo
                 fallback += 1
             elif p == "undated":
                 undated += 1
-            # ids absent from l1_dir entirely are silently excluded, same as
-            # the prior "known" filter -- there is no measurement for them.
         return pre, anchor, fallback, undated
 
     def pct_pre_dated(pre: int, anchor: int, fallback: int) -> str:
@@ -331,8 +381,8 @@ def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bo
         return f"{pre / total * 100:.1f}%"
 
     for label, ids in (
-        ("intervention-family", arm_b_ids),
-        ("comparator-pool", comparator_ids),
+        ("intervention-family", measurement.arm_b_ids),
+        ("comparator-pool", measurement.comparator_ids),
     ):
         pre, anchor, fallback, undated = summarize(ids)
         print(
@@ -343,39 +393,40 @@ def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bo
         )
 
 
-def _corpus_provenance_totals(l1_dir: Path) -> tuple[int, int] | None:
-    """Count ``git-anchor`` / ``l1-ingest-fallback`` provenance tags across
-    EVERY row currently sitting in *l1_dir* -- the corpus's own dated state,
-    independent of what (if anything) the CURRENT run itself dated.
+def _print_fallback_warning(measurement: CorpusMeasurement) -> None:
+    """~90% of the real corpus's dated rows fell back to when the row
+    entered HINDSIGHT rather than a recovered logging date -- that is an
+    honest outcome of ruling R-c, not a defect, but it must be stated loudly
+    wherever these dates get consumed.
 
-    Repair is idempotent: once a row is dated it is never touched again, so
-    a per-run delta is zero in steady state forever after the one run that
-    actually did the work. The corpus's provenance mix doesn't reset just
-    because this run had nothing left to do -- it must be read fresh, off
-    disk, every time.
+    Measured from CORPUS PROVENANCE -- every first_seen_provenance tag
+    already sitting on disk, off the SAME id_provenance the differential
+    used -- never from this run's own deltas: repair is idempotent, so a
+    deltas-gated warning fires on the one run that does the dating and then
+    goes permanently silent for every steady-state run after, even though
+    the corpus stays just as fallback-heavy.
 
-    Returns ``None`` when there is no corpus to read (directory absent or
-    contains no ``.jsonl`` files) -- a missing corpus is NOT MEASURED, never
-    a zero share standing in for "nothing is fallback-dated".
+    Consults the SAME gate as the differential. Silence is legitimate only
+    when the corpus was actually measured and genuinely has nothing to warn
+    about (no dated rows, or a healthy anchor share) -- never as a stand-in
+    for "the corpus's identity was never established."
     """
-    if not l1_dir.is_dir():
-        return None
-    files = sorted(l1_dir.glob("*.jsonl"))
-    if not files:
-        return None
-    anchor = fallback = 0
-    for jf in files:
-        for line in jf.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            prov = rec.get("first_seen_provenance")
-            if prov == "git-anchor":
-                anchor += 1
-            elif prov == "l1-ingest-fallback":
-                fallback += 1
-    return anchor, fallback
+    if not measurement.measured:
+        print(f"date-repair: WARNING: NOT MEASURED ({measurement.reason})", file=sys.stderr)
+        return
+
+    anchor = sum(1 for p in measurement.id_provenance.values() if p == "git-anchor")
+    fallback = sum(1 for p in measurement.id_provenance.values() if p == "l1-ingest-fallback")
+    dated = anchor + fallback
+    if dated == 0:
+        return
+    fallback_share = fallback / dated
+    if fallback_share > 0.5:
+        print(
+            f"date-repair: WARNING: {fallback_share * 100:.1f}% of the corpus's dated rows "
+            "used l1-ingest-fallback (entered HINDSIGHT, not the true logging date)",
+            file=sys.stderr,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -417,13 +468,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         files = [l1_target]
 
-    # D-1: the differential is ALWAYS computed over the real corpus
-    # directory, never a directory inferred from --l1. Only run the
-    # measurement when this invocation's own target IS that real corpus --
-    # otherwise print NOT MEASURED rather than a number about a directory
-    # nobody asked to be measured.
     real_corpus_dir = self_dir / "pipeline" / "L1"
-    is_real_corpus = l1_target.resolve() == real_corpus_dir.resolve()
 
     total = RepairStats()
     had_error = False
@@ -447,29 +492,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"date-repair: DATED-BY-ANCHOR: {total.dated_by_anchor}", file=sys.stderr)
     print(f"date-repair: DATED-BY-FALLBACK: {total.dated_by_fallback}", file=sys.stderr)
     print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)
-    _print_differential(clusters_path, real_corpus_dir, is_real_corpus=is_real_corpus)
 
-    # B-1 (was D-4): ~90% of the real corpus's dated rows fell back to when
-    # the row entered HINDSIGHT rather than a recovered logging date -- that
-    # is an honest outcome of ruling R-c, not a defect, but it must be
-    # stated loudly wherever these dates get consumed. Measured from CORPUS
-    # PROVENANCE (every first_seen_provenance tag on disk at self_dir's own
-    # pipeline/L1), never from this run's deltas: repair is idempotent, so
-    # a deltas-gated warning fires on the one run that does the dating and
-    # then goes permanently silent -- unreproducible -- for every steady-
-    # state run after, even though the corpus stays just as fallback-heavy.
-    corpus_totals = _corpus_provenance_totals(real_corpus_dir)
-    if corpus_totals is not None:
-        corpus_anchor, corpus_fallback = corpus_totals
-        corpus_dated = corpus_anchor + corpus_fallback
-        if corpus_dated > 0:
-            corpus_fallback_share = corpus_fallback / corpus_dated
-            if corpus_fallback_share > 0.5:
-                print(
-                    f"date-repair: WARNING: {corpus_fallback_share * 100:.1f}% of the corpus's dated rows "
-                    "used l1-ingest-fallback (entered HINDSIGHT, not the true logging date)",
-                    file=sys.stderr,
-                )
+    # ONE gate, established once, consulted by every statistic path below.
+    # See CorpusMeasurement / _measure_corpus.
+    measurement = _measure_corpus(l1_target, real_corpus_dir, clusters_path)
+    _print_differential(measurement)
+    _print_fallback_warning(measurement)
 
     return 0
 

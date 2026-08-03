@@ -18,7 +18,6 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +28,7 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
 RUNNER_PARSE_TIMEOUT_SECONDS = 5
 MAX_RUNNER_CANDIDATES = 256
+MAX_JAVASCRIPT_MUTATION_PROBES = 2048
 FileFingerprint = tuple[int, int, int, int, int]
 BATS_GENERATED_TEST_RE = re.compile(
     r"(?m)^bats_test_function --description [^\n]* -- "
@@ -37,42 +37,34 @@ BATS_GENERATED_TEST_RE = re.compile(
 BATS_UNTRANSFORMED_TEST_RE = re.compile(r"(?m)^[ \t]*@test\b")
 JAVASCRIPT_TRIVIA = r"(?:\s|/\*.*?\*/|//[^\r\n]*(?:\r?\n|$))*"
 JAVASCRIPT_TEST_CANDIDATE_RE = re.compile(
-    r"(?<![\w$])test(?![\w$])(?=" + JAVASCRIPT_TRIVIA + r"\()",
-    re.DOTALL,
+    r"(?<![\w$\\])"
+    r"(?:t|\\u(?:0074|\{0*74\}))"
+    r"(?:e|\\u(?:0065|\{0*65\}))"
+    r"(?:s|\\u(?:0073|\{0*73\}))"
+    r"(?:t|\\u(?:0074|\{0*74\}))"
+    r"(?![\w$])"
 )
 JAVASCRIPT_PROPERTY_PREFIX_RE = re.compile(
-    r"(?:\.|#)" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL
+    r"(?<![.#])(?:\.|#)" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL
 )
 JAVASCRIPT_NEW_PREFIX_RE = re.compile(r"\bnew" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL)
-JAVASCRIPT_FUNCTION_PREFIX_RE = re.compile(
-    r"\bfunction" + JAVASCRIPT_TRIVIA + r"\*?" + JAVASCRIPT_TRIVIA + r"$",
+JAVASCRIPT_WITH_CANDIDATE_RE = re.compile(r"(?<![\w$])with(?![\w$])")
+JAVASCRIPT_GLOBAL_MEMBER_PREFIX_RE = re.compile(
+    r"\b(?:globalThis|global)" + JAVASCRIPT_TRIVIA + r"(?:\.|\?\.)"
+    + JAVASCRIPT_TRIVIA
+    + r"$",
     re.DOTALL,
 )
-JAVASCRIPT_TEST_BINDING_RES = (
-    re.compile(
-        r"\b(?:const|let|var)" + JAVASCRIPT_TRIVIA + r"(?P<name>test)\b",
-        re.DOTALL,
-    ),
-    re.compile(
-        r"\bfunction" + JAVASCRIPT_TRIVIA + r"(?P<name>test)\b",
-        re.DOTALL,
-    ),
-    re.compile(
-        r"\bfunction(?:" + JAVASCRIPT_TRIVIA + r"[\w$]+)?"
-        + JAVASCRIPT_TRIVIA
-        + r"\([^)]*\b(?P<name>test)\b[^)]*\)",
-        re.DOTALL,
-    ),
-    re.compile(
-        r"\([^)]*\b(?P<name>test)\b[^)]*\)" + JAVASCRIPT_TRIVIA + r"=>",
-        re.DOTALL,
-    ),
-    re.compile(
-        r"\bimport\s*\{[^}]*\b(?:[\w$]+" + JAVASCRIPT_TRIVIA + r"as"
-        + JAVASCRIPT_TRIVIA
-        + r")?(?P<name>test)\b[^}]*\}",
-        re.DOTALL,
-    ),
+JAVASCRIPT_DELETE_CANDIDATE_RE = re.compile(r"(?<![\w$])delete(?![\w$])")
+JAVASCRIPT_CALLBACK_PREFIX_RE = re.compile(
+    r"(?:async" + JAVASCRIPT_TRIVIA + r"function\b|function\b|async"
+    + JAVASCRIPT_TRIVIA
+    + r"\([^)]*\)"
+    + JAVASCRIPT_TRIVIA
+    + r"=>|(?:\([^)]*\)|[A-Za-z_$][\w$]*)"
+    + JAVASCRIPT_TRIVIA
+    + r"=>)",
+    re.DOTALL,
 )
 
 
@@ -197,118 +189,104 @@ def _javascript_skip_trivia(source: str, index: int) -> int:
     return index
 
 
-def _javascript_string_end(source: str, index: int) -> int | None:
-    """Return the end of one Node-validated quoted or template literal."""
-    quote = source[index]
-    index += 1
-    while index < len(source):
-        if source[index] == "\\":
-            index += 2
-        elif source[index] == quote:
-            return index + 1
-        else:
-            index += 1
-    return None
-
-
-def _javascript_balanced_end(
-    source: str, index: int, opener: str, closer: str
-) -> int | None:
-    """Find a balanced delimiter end without interpreting JavaScript semantics."""
-    if index >= len(source) or source[index] != opener:
-        return None
-    depth = 1
-    index += 1
-    while index < len(source):
-        if source[index] in "'\"`":
-            end = _javascript_string_end(source, index)
-            if end is None:
-                return None
-            index = end
-            continue
-        if source.startswith("//", index) or source.startswith("/*", index):
-            index = _javascript_skip_trivia(source, index)
-            continue
-        if source[index] == opener:
-            depth += 1
-        elif source[index] == closer:
-            depth -= 1
-            if depth == 0:
-                return index + 1
-        index += 1
-    return None
-
-
-def _javascript_call_has_runner_shape(source: str, candidate_end: int) -> bool:
-    """Recognize the supported two-argument runner call around one candidate."""
+def _javascript_call_has_runner_shape(
+    source: str,
+    candidate_start: int,
+    candidate_end: int,
+    syntax_argv: list[str],
+    probe_budget: list[int],
+) -> bool | None:
+    """Prove one call using bounded whole-source syntax-oracle mutations."""
     index = _javascript_skip_trivia(source, candidate_end)
     if index >= len(source) or source[index] != "(":
         return False
-    index = _javascript_skip_trivia(source, index + 1)
-    if index >= len(source) or source[index] not in "'\"`":
+    name_start = _javascript_skip_trivia(source, index + 1)
+    if name_start >= len(source) or source[name_start] not in "'\"`":
         return False
-    name_end = _javascript_string_end(source, index)
-    if name_end is None:
-        return False
-    index = _javascript_skip_trivia(source, name_end)
-    if index >= len(source) or source[index] != ",":
-        return False
-    index = _javascript_skip_trivia(source, index + 1)
-    if source.startswith("async", index) and (
-        index + 5 == len(source)
-        or not (source[index + 5].isalnum() or source[index + 5] in "_$")
+    comma_count = 0
+    for comma in (
+        position
+        for position in range(name_start + 1, len(source))
+        if source[position] == ","
     ):
-        index = _javascript_skip_trivia(source, index + 5)
-
-    if source.startswith("function", index) and (
-        index + 8 == len(source)
-        or not (source[index + 8].isalnum() or source[index + 8] in "_$")
-    ):
-        index = _javascript_skip_trivia(source, index + 8)
-        if index < len(source) and (source[index].isalpha() or source[index] in "_$"):
-            while index < len(source) and (source[index].isalnum() or source[index] in "_$"):
-                index += 1
-            index = _javascript_skip_trivia(source, index)
-        parameters_end = _javascript_balanced_end(source, index, "(", ")")
-        if parameters_end is None:
+        comma_count += 1
+        if comma_count > MAX_RUNNER_CANDIDATES:
             return False
-        index = _javascript_skip_trivia(source, parameters_end)
-    else:
-        parameters_end = _javascript_balanced_end(source, index, "(", ")")
-        if parameters_end is None:
-            return False
-        index = _javascript_skip_trivia(source, parameters_end)
-        if not source.startswith("=>", index):
-            return False
-        index = _javascript_skip_trivia(source, index + 2)
-
-    body_end = _javascript_balanced_end(source, index, "{", "}")
-    if body_end is None:
-        return False
-    index = _javascript_skip_trivia(source, body_end)
-    return index < len(source) and source[index] == ")"
-
-
-def _javascript_has_test_binding(
-    source: str, syntax_argv: list[str]
-) -> bool | None:
-    """Use syntax-breaking mutations to reject obvious lexical test bindings."""
-    candidate_count = 0
-    for pattern in JAVASCRIPT_TEST_BINDING_RES:
-        for binding in pattern.finditer(source):
-            candidate_count += 1
-            if candidate_count > MAX_RUNNER_CANDIDATES:
-                return True
-            mutated = (
-                f"{source[:binding.start('name')]}@"
-                f"{source[binding.end('name'):]}"
+        name = source[name_start:comma].strip()
+        name_syntax = _javascript_mutation_probe(
+            syntax_argv, f"const __runner_name = () => {name};\n", probe_budget
+        )
+        if name_syntax is None:
+            return None
+        if name_syntax.returncode != 0:
+            continue
+        callback_start = _javascript_skip_trivia(source, comma + 1)
+        if not JAVASCRIPT_CALLBACK_PREFIX_RE.match(source[callback_start:]):
+            continue
+        closing_count = 0
+        for close in (
+            position
+            for position in range(callback_start, len(source))
+            if source[position] == ")"
+        ):
+            closing_count += 1
+            if closing_count > MAX_RUNNER_CANDIDATES:
+                return False
+            callback = source[callback_start:close].strip()
+            if not callback:
+                continue
+            has_extra_argument = False
+            for possible_extra in (
+                position
+                for position in range(callback_start, close)
+                if source[position] == ","
+            ):
+                arity_probe = _javascript_mutation_probe(
+                    syntax_argv,
+                    f"{source[:callback_start]}()=>{{}}"
+                    f"{source[possible_extra:]}",
+                    probe_budget,
+                )
+                if arity_probe is None:
+                    return None
+                if arity_probe.returncode == 0:
+                    has_extra_argument = True
+                    break
+            if has_extra_argument:
+                continue
+            isolated = _javascript_mutation_probe(
+                syntax_argv,
+                # An arrow's expression body admits one AssignmentExpression,
+                # so an unparenthesized comma proves an extra call argument.
+                f"const __runner_callback = () => {callback};\n",
+                probe_budget,
             )
-            parsed = _run_runner_parser(syntax_argv, input_text=mutated)
-            if parsed is None:
+            if isolated is None:
                 return None
-            if parsed.returncode != 0:
+            if isolated.returncode != 0:
+                continue
+            replaced = (
+                f"{source[:candidate_start]}globalThis.test(\"oracle\",()=>{{}})"
+                f"{source[close + 1:]}"
+            )
+            localized = _javascript_mutation_probe(
+                syntax_argv, replaced, probe_budget
+            )
+            if localized is None:
+                return None
+            if localized.returncode == 0:
                 return True
     return False
+
+
+def _javascript_mutation_probe(
+    syntax_argv: list[str], source: str, probe_budget: list[int]
+) -> subprocess.CompletedProcess[str] | None:
+    """Run one stdin-only syntax mutation within the per-source global budget."""
+    if probe_budget[0] <= 0:
+        return None
+    probe_budget[0] -= 1
+    return _run_runner_parser(syntax_argv, input_text=source)
 
 
 def _is_runner_managed_test_source(path: Path) -> bool:
@@ -424,9 +402,11 @@ def _is_javascript_test_source(path: Path) -> bool:
     executable. ``node --check`` is the authoritative whole-file syntax layer;
     parser-oracle mutations then distinguish code candidates from the same raw
     text in strings, comments, template raw segments, regular expressions, and
-    other data. A bounded call-prefix scan requires a literal name and inline
-    callable body, while syntax-breaking mutations reject lexical ``test``
-    bindings. Neither the original nor mutated source is executed.
+    other data. Further bounded whole-source mutations prove the closing edge
+    of each literal-name, inline-callback call. Every other code-level bare
+    ``test`` occurrence is rejected, conservatively covering lexical shadows
+    without trying to implement JavaScript scope rules. Neither the original
+    nor mutated source is executed.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
@@ -446,42 +426,82 @@ def _is_javascript_test_source(path: Path) -> bool:
         stdin_syntax = _run_runner_parser(syntax_argv, input_text=source)
         if stdin_syntax is None or stdin_syntax.returncode != 0:
             return False
-    has_binding = _javascript_has_test_binding(source, syntax_argv)
-    if has_binding is None or has_binding:
-        return False
     candidates = list(JAVASCRIPT_TEST_CANDIDATE_RE.finditer(source))
-    if len(candidates) > MAX_RUNNER_CANDIDATES:
+    with_candidates = list(JAVASCRIPT_WITH_CANDIDATE_RE.finditer(source))
+    delete_candidates = list(JAVASCRIPT_DELETE_CANDIDATE_RE.finditer(source))
+    if (
+        len(candidates) + len(with_candidates) + len(delete_candidates)
+        > MAX_RUNNER_CANDIDATES
+    ):
         return False
-    for candidate in candidates:
+    probe_budget = [MAX_JAVASCRIPT_MUTATION_PROBES]
+    for candidate in with_candidates:
         prefix = source[: candidate.start()]
-        if JAVASCRIPT_PROPERTY_PREFIX_RE.search(prefix):
+        suffix = source[candidate.end() :]
+        if JAVASCRIPT_PROPERTY_PREFIX_RE.search(prefix) or re.match(
+            JAVASCRIPT_TRIVIA + r":", suffix, re.DOTALL
+        ):
             continue
-        if JAVASCRIPT_NEW_PREFIX_RE.search(prefix):
-            continue
-        if JAVASCRIPT_FUNCTION_PREFIX_RE.search(prefix):
-            continue
-        if not _javascript_call_has_runner_shape(source, candidate.end()):
-            continue
+        mutated = f"{prefix}@{suffix}"
+        localized = _javascript_mutation_probe(
+            syntax_argv, mutated, probe_budget
+        )
+        if localized is None or localized.returncode != 0:
+            return False
+    runner_calls = 0
+    for candidate in candidates:
         mutated = f"{source[: candidate.start()]}@{source[candidate.end() :]}"
-        localized = _run_runner_parser(
-            syntax_argv,
-            input_text=mutated,
+        localized = _javascript_mutation_probe(
+            syntax_argv, mutated, probe_budget
         )
         if localized is None:
             return False
-        if localized.returncode != 0:
-            call_shaped = _run_runner_parser(
-                syntax_argv,
-                input_text=(
-                    f"{source[: candidate.start()]}globalThis.test"
-                    f"{source[candidate.end() :]}"
-                ),
-            )
-            if call_shaped is None:
-                return False
-            if call_shaped.returncode == 0:
-                return _read_regular_utf8_snapshot(path) == snapshot
-    return False
+        if localized.returncode == 0:
+            continue
+        prefix = source[: candidate.start()]
+        if JAVASCRIPT_PROPERTY_PREFIX_RE.search(prefix):
+            global_prefix = JAVASCRIPT_GLOBAL_MEMBER_PREFIX_RE.search(prefix)
+            if global_prefix is not None:
+                for delete_candidate in delete_candidates:
+                    delete_prefix = source[: delete_candidate.start()]
+                    delete_suffix = source[delete_candidate.end() :]
+                    if JAVASCRIPT_PROPERTY_PREFIX_RE.search(
+                        delete_prefix
+                    ) or re.match(
+                        JAVASCRIPT_TRIVIA + r":", delete_suffix, re.DOTALL
+                    ):
+                        continue
+                    delete_probe = _javascript_mutation_probe(
+                        syntax_argv,
+                        f"{delete_prefix}@{delete_suffix}",
+                        probe_budget,
+                    )
+                    if delete_probe is None or delete_probe.returncode != 0:
+                        return False
+                read_probe = _javascript_mutation_probe(
+                    syntax_argv,
+                    f"{source[:global_prefix.start()]}0{source[candidate.end():]}",
+                    probe_budget,
+                )
+                if read_probe is None or read_probe.returncode != 0:
+                    return False
+            continue
+        if JAVASCRIPT_NEW_PREFIX_RE.search(prefix):
+            return False
+        suffix = source[candidate.end() :]
+        if re.match(JAVASCRIPT_TRIVIA + r":", suffix, re.DOTALL):
+            continue
+        call_shaped = _javascript_call_has_runner_shape(
+            source,
+            candidate.start(),
+            candidate.end(),
+            syntax_argv,
+            probe_budget,
+        )
+        if call_shaped is None or not call_shaped:
+            return False
+        runner_calls += 1
+    return runner_calls > 0 and _read_regular_utf8_snapshot(path) == snapshot
 
 
 @dataclass(frozen=True)

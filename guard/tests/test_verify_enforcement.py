@@ -398,6 +398,9 @@ def test_javascript_parser_oracle_accepts_test_in_template_interpolation(
         'test("name", 123);\n',
         'test("name", callback);\n',
         'test("name", () => {}, "extra");\n',
+        'test("name", function () {}, "extra");\n',
+        'test("name", function () {}, injected = 1);\n',
+        'test("name", () => {}, {injected} = obj);\n',
         'const test=(x)=>x; test("not a runner test");\n',
     ],
     ids=[
@@ -406,7 +409,10 @@ def test_javascript_parser_oracle_accepts_test_in_template_interpolation(
         "missing-callback",
         "number-callback",
         "callback-reference",
-        "extra-argument",
+        "extra-arrow-argument",
+        "extra-function-argument",
+        "extra-assignment-argument",
+        "extra-destructuring-argument",
         "review-decoy",
     ],
 )
@@ -447,6 +453,72 @@ def test_javascript_shadowed_test_identifier_is_not_runner_managed(
 @pytest.mark.parametrize(
     "contents",
     [
+        'const { test } = { test: (name, body) => 0 }; test("fake",()=>{});\n',
+        'const { test } = require("fake"); test("fake",()=>{});\n',
+        'try {} catch (test) { test("fake",()=>{}); }\n',
+        'class X { m(test) { test("fake",()=>{}); } }\n',
+    ],
+    ids=["destructuring-literal", "destructuring-require", "catch", "method-parameter"],
+)
+def test_javascript_all_bare_test_bindings_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """Any additional code-level bare ``test`` is a conservative shadow."""
+    source = tmp_path / "shadowed-binding.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const \\u0074est = (name, body) => 0; test("fake",()=>{});\n',
+        'const {...test} = obj; test("fake",()=>{});\n',
+        'new test("fake",()=>{});\n',
+        'globalThis.test = (name, body) => 0; test("fake",()=>{});\n',
+        'globalThis.test ||= (name, body) => 0; test("fake",()=>{});\n',
+        'globalThis.test &&= (name, body) => 0; test("fake",()=>{});\n',
+        'globalThis.test ??= (name, body) => 0; test("fake",()=>{});\n',
+        '[globalThis.test] = [(name, body) => 0]; test("fake",()=>{});\n',
+        '({test:globalThis.test}={test:(name, body)=>0}); test("fake",()=>{});\n',
+        'for (globalThis.test of [(name, body)=>0]) {} test("fake",()=>{});\n',
+        'delete globalThis.test; test("fake",()=>{});\n',
+        'delete globalThis?.test; test("fake",()=>{});\n',
+        'delete (globalThis.test); test("fake",()=>{});\n',
+        'delete (0, globalThis.test); test("fake",()=>{});\n',
+        'with ({test:(name, body)=>0}) { test("fake",()=>{}); }\n',
+    ],
+    ids=[
+        "unicode-escaped-binding",
+        "rest-binding",
+        "constructor-call",
+        "member-assignment",
+        "member-logical-or-assignment",
+        "member-logical-and-assignment",
+        "member-nullish-assignment",
+        "member-array-target",
+        "member-object-target",
+        "member-for-of-target",
+        "member-delete",
+        "member-optional-delete",
+        "member-parenthesized-delete",
+        "member-sequence-delete",
+        "with-binding",
+    ],
+)
+def test_javascript_shadow_variants_and_non_runner_calls_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "shadow-variant.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
         'test("arrow", () => {});\n',
         'test(`template ${name}`, async () => {});\n',
         'test("function", function () {});\n',
@@ -459,6 +531,45 @@ def test_javascript_runner_call_accepts_supported_inline_callbacks(
 ) -> None:
     source = tmp_path / "supported-callback.test.js"
     write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'test("regex block", () => { expect(/}/.test("}")); });\n',
+        'test("expression arrow", () => expect(1).toBe(1));\n',
+        'test("first", () => {}); test("second", async () => 2);\n',
+        'test("compact async", async()=>{});\n',
+        'test("commented async", async /* trivia */ () => {});\n',
+        'test("regex paren", function () { expect(/\\)/.test(")")); });\n',
+    ],
+    ids=[
+        "regex-in-block",
+        "expression-bodied-arrow",
+        "multiple-global-calls",
+        "compact-async-arrow",
+        "commented-async-arrow",
+        "regex-paren-function",
+    ],
+)
+def test_javascript_parser_oracle_accepts_required_runner_shapes(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "required-shape.test.js"
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_candidate_bound_allows_256_global_calls(tmp_path: Path) -> None:
+    """The raw-candidate ceiling is reachable by legitimate runner calls."""
+    source = tmp_path / "candidate-bound.test.js"
+    write_runner_source(
+        source,
+        "".join(f'test("{index}",()=>{{}});\n' for index in range(256)),
+    )
 
     assert MODULE._is_runner_managed_test_source(source)
 

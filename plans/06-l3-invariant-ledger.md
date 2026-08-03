@@ -1,5 +1,5 @@
 # PLAN-06 — L3 synthesis as a validated ledger, not prose
-Issue: petersimmons1972/hindsight#21 · Status: BLOCKED by 02 · Founder ruling 1, reshaped
+Issue: petersimmons1972/hindsight#21 · Status: READY — plan 02 is COMPLETE (PR #28 merged; `recurrence_of` live in `bin/add-failure-mode.sh:376,476` with bats coverage). The old "BLOCKED by 02" header was stale, corrected 2026-08-03. NOT auto-dispatchable: the coordinator must author and commit `pipeline/tests/fixtures/l3_ground_truth.jsonl` BEFORE any synthesis dispatch (D7/R3 — the synthesising agent may not grade itself) · Founder ruling 1, reshaped
 
 ## 1. CONTEXT YOU DO NOT HAVE
 

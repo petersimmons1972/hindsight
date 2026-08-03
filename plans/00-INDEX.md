@@ -29,11 +29,15 @@ have produced the defect.
 | 03 | `03-recurrence-trend-instrument.md` | #29 | **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok); `docs/DECISIONS.md` rows 22–26 | 02 | — |
 | 04 | `04-sync-repair-and-distribute.md` | #22 (closes #24) | READY | — | 05 |
 | 05 | `05-enforcement-locality.md` | #20, PR #12 | BLOCKED | 04 | — |
-| 06 | `06-l3-invariant-ledger.md` | #21 | BLOCKED | 02 | — |
+| 06 | `06-l3-invariant-ledger.md` | #21 |  READY — 02 is complete; header was stale (2026-08-03). Coordinator must commit the D7 ground-truth fixture first | 02 | — |
 | 07 | `07-discriminating-rebuild.md` | #23 | READY | — | — |
 | 08 | `08-reconcile-partial-is-not-pass.md` | #25 | COMPLETE — PR #26 merged, main green | — | X2 |
 
 Recommended order is `08 → 01 → 02 → 03 → 04 → 05 → 06 → 07`; the rationale is in `../PLAN.md`.
+
+**Automation:** packets ready for unattended `cli-dispatch` are specified in `AUTOMATION-QUEUE.md`,
+with per-packet briefs under `briefs/`. Re-measure before trusting any `Status:` header in this
+table — several were found stale on 2026-08-03.
 **03 is WITHDRAWN as of 2026-08-03** — skip it; the slot is not refilled.
 **Serial only** (R8): one dispatch in flight in this repo at a time, and no writes to the shared
 checkout while one is running.

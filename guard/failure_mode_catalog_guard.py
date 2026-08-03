@@ -65,6 +65,7 @@ let bad = false;
 let calls = 0;
 let topLevelCalls = 0;
 let trusted = null;
+const globalAliases = new Set();
 
 function identifier(node, name) {
   return node && node.type === 'Identifier' && node.name === name;
@@ -79,11 +80,37 @@ function member(node, objectName, propertyName) {
   return node && node.type === 'MemberExpression' &&
     identifier(node.object, objectName) && staticName(node.property, propertyName);
 }
+function globalObject(node) {
+  return node && node.type === 'Identifier' &&
+    (node.name === 'global' || node.name === 'globalThis' || globalAliases.has(node.name));
+}
+function recordAliasBindings(pattern) {
+  if (!pattern || typeof pattern !== 'object') return;
+  if (pattern.type === 'Identifier') {
+    globalAliases.add(pattern.name);
+    return;
+  }
+  if (pattern.type === 'RestElement') {
+    recordAliasBindings(pattern.argument);
+    return;
+  }
+  if (pattern.type === 'AssignmentPattern') {
+    recordAliasBindings(pattern.left);
+    return;
+  }
+  if (pattern.type === 'ArrayPattern') {
+    pattern.elements.forEach(recordAliasBindings);
+    return;
+  }
+  if (pattern.type === 'ObjectPattern') {
+    pattern.properties.forEach((property) =>
+      recordAliasBindings(property.type === 'RestElement' ? property.argument : property.value));
+  }
+}
 function runnerMutationMember(node) {
   if (node && node.type === 'ChainExpression') node = node.expression;
   if (!node || node.type !== 'MemberExpression') return false;
-  const globalObject = identifier(node.object, 'global') || identifier(node.object, 'globalThis');
-  return staticName(node.property, 'test') || (globalObject && node.computed);
+  return staticName(node.property, 'test') || (globalObject(node.object) && node.computed);
 }
 function containsRunnerMutation(node) {
   if (!node || typeof node !== 'object') return false;
@@ -135,17 +162,23 @@ function isTopLevelCall(node, parent, ancestors) {
 function mutationCall(node) {
   if (!node || node.type !== 'CallExpression' || node.arguments.length < 2) return false;
   const callee = node.callee;
-  const define = member(callee, 'Object', 'defineProperty') ||
+  const mutatesTarget = member(callee, 'Object', 'assign') ||
+    member(callee, 'Object', 'defineProperty') ||
+    member(callee, 'Object', 'defineProperties') ||
     member(callee, 'Reflect', 'defineProperty') || member(callee, 'Reflect', 'set');
-  if (define && staticName(node.arguments[1], 'test')) {
-    return true;
-  }
-  return member(callee, 'Object', 'assign') &&
-    (identifier(node.arguments[0], 'global') || identifier(node.arguments[0], 'globalThis'));
+  return mutatesTarget && globalObject(node.arguments[0]);
 }
 function walk(node, parent = null, key = '', ancestors = []) {
   if (!node || typeof node !== 'object' || bad) return;
   if (typeof node.type === 'string' && !SUPPORTED.has(node.type)) { bad = true; return; }
+  if (node.type === 'VariableDeclarator' && globalObject(node.init)) {
+    recordAliasBindings(node.id);
+    bad = true;
+  }
+  if (node.type === 'AssignmentExpression' && globalObject(node.right)) {
+    recordAliasBindings(node.left);
+    bad = true;
+  }
   if (node.type === 'AssignmentExpression' && containsRunnerMutation(node.left)) bad = true;
   if ((node.type === 'ForInStatement' || node.type === 'ForOfStatement') &&
       containsRunnerMutation(node.left)) bad = true;

@@ -713,6 +713,111 @@ def test_javascript_shadow_variants_and_non_runner_calls_are_rejected(
 @pytest.mark.parametrize(
     "contents",
     [
+        (
+            'const alias=globalThis; const key="test"; '
+            'alias[key]=(n,b)=>0; test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; const key="test"; '
+            'Reflect.set(alias,key,(n,b)=>0); test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; const payload={test:(n,b)=>0}; '
+            'Object.assign(alias,payload); test("fake",()=>{});\n'
+        ),
+        'const alias = global; test("fake",()=>{});\n',
+        'const first = globalThis; const second = first; test("fake",()=>{});\n',
+        'let alias; alias = globalThis; test("fake",()=>{});\n',
+        'const {globalThis: alias} = globalThis; test("fake",()=>{});\n',
+        'let alias; ({global: alias} = global); test("fake",()=>{});\n',
+        (
+            'const alias=globalThis; const key="te" + "st"; '
+            'Reflect.set(alias,key,(n,b)=>0); test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; Object.defineProperty(alias,key,{value: runner}); '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=global; Object.defineProperties(alias,payload); '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; Reflect.defineProperty(alias,key,descriptor); '
+            'test("fake",()=>{});\n'
+        ),
+        'Reflect.set(globalThis,key,runner); test("fake",()=>{});\n',
+        'Object.assign(global,payload); test("fake",()=>{});\n',
+        'Object.defineProperty(globalThis,key,descriptor); test("fake",()=>{});\n',
+        'Object.defineProperties(global,payload); test("fake",()=>{});\n',
+        'Reflect.defineProperty(globalThis,key,descriptor); test("fake",()=>{});\n',
+    ],
+    ids=[
+        "required-computed-assignment",
+        "required-reflect-set",
+        "required-object-assign",
+        "global-alias-binding",
+        "alias-chain",
+        "assignment-alias",
+        "destructured-global-this-alias",
+        "destructured-global-assignment-alias",
+        "computed-key-construction",
+        "object-define-property-unknown-key",
+        "object-define-properties-unknown-payload",
+        "reflect-define-property-unknown-key",
+        "direct-reflect-set-unknown-key",
+        "direct-object-assign-unknown-payload",
+        "direct-object-define-property-unknown-key",
+        "direct-object-define-properties-unknown-payload",
+        "direct-reflect-define-property-unknown-key",
+    ],
+)
+def test_javascript_global_alias_flows_and_mutation_apis_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """Candidate code cannot retain or mutate the process-global object."""
+    source = tmp_path / "global-alias-flow.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const alias = "global"; test("real",()=>{});\n',
+        'const alias = "global" + "This"; test("real",()=>{});\n',
+        'const alias = holder["global" + "This"]; test("real",()=>{});\n',
+        'Reflect.set(local, "te" + "st", runner); test("real",()=>{});\n',
+        'Object.assign(local, payload); test("real",()=>{});\n',
+        'Object.defineProperty(local, key, descriptor); test("real",()=>{});\n',
+        'Object.defineProperties(local, payload); test("real",()=>{});\n',
+        'Reflect.defineProperty(local, key, descriptor); test("real",()=>{});\n',
+    ],
+    ids=[
+        "global-string",
+        "constructed-global-this-string",
+        "computed-local-member",
+        "local-reflect-set",
+        "local-object-assign",
+        "local-object-define-property",
+        "local-object-define-properties",
+        "local-reflect-define-property",
+    ],
+)
+def test_javascript_global_alias_near_neighbors_remain_runner_managed(
+    tmp_path: Path, contents: str
+) -> None:
+    """Textual lookalikes and mutations of local objects are not global aliases."""
+    source = tmp_path / "global-alias-neighbor.test.js"
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
         'test("arrow", () => {});\n',
         'test(`template ${name}`, async () => {});\n',
         'test("function", function () {});\n',

@@ -9,11 +9,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 
-def _load_cluster(path: Path) -> ModuleType:
+def _load_cluster(path: Path, code_bytes: bytes | None = None) -> ModuleType:
     module = ModuleType("hindsight_replay_cluster")
     module.__file__ = str(path)
     sys.modules[module.__name__] = module
-    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
+    exec(compile(path.read_bytes() if code_bytes is None else code_bytes, str(path), "exec"), module.__dict__)
     return module
 
 def _canonical(groups: Sequence[Sequence[str]]) -> tuple[tuple[str, ...], ...]:
@@ -36,8 +36,21 @@ def _load_expected(path: Path, *, l1_ids: set[str], backend: str, threshold: flo
               "linkage": linkage}
     if not isinstance(rows[0], dict) or set(rows[0]) != {"_meta"}:
         raise ValueError(f"{path}:1: first row must be exactly one _meta object")
-    if rows[0]["_meta"] != wanted:
-        raise ValueError(f"{path}:1: metadata mismatch: expected={wanted!r}, actual={rows[0]['_meta']!r}")
+    metadata = rows[0]["_meta"]
+    if not isinstance(metadata, dict) or set(metadata) != set(wanted):
+        raise ValueError(f"{path}:1: metadata must be exactly an object with fields {sorted(wanted)}")
+    validators = {
+        "backend": lambda value: isinstance(value, str),
+        "threshold": lambda value: isinstance(value, (int, float)) and not isinstance(value, bool),
+        "entry_count": lambda value: isinstance(value, int) and not isinstance(value, bool),
+        "linkage": lambda value: isinstance(value, str),
+    }
+    for field, valid in validators.items():
+        if not valid(metadata[field]) or metadata[field] != wanted[field]:
+            raise ValueError(
+                f"{path}:1: metadata mismatch: metadata {field} must exactly match {wanted[field]!r} "
+                f"with the required type; actual={metadata[field]!r}"
+            )
     groups: list[list[str]] = []
     seen: set[str] = set()
     duplicates: set[str] = set()
@@ -64,12 +77,19 @@ def _mapping(partition: Sequence[Sequence[str]], members: set[str]) -> dict[str,
     return {member: tuple(group) for group in partition for member in group if member in members}
 
 def replay(input_dir: Path, snapshot: Path, clusters_path: Path, cluster_code: Path) -> tuple[int, int]:
-    cluster = _load_cluster(cluster_code)
+    code_bytes = cluster_code.read_bytes()
+    cluster = _load_cluster(cluster_code, code_bytes)
+    l1_digest = cluster.l1_corpus_digest(input_dir)
     entries = cluster.load_entries(input_dir)
+    if cluster.l1_corpus_digest(input_dir) != l1_digest:
+        raise RuntimeError("L1 changed during replay")
+    cluster_digest = cluster.cluster_code_config_digest(cluster_code)
+    if cluster_code.read_bytes() != code_bytes:
+        raise RuntimeError("cluster code/config changed during replay")
     matrix = cluster.load_embedding_snapshot(
         snapshot, entries, cluster.HTTP_BACKEND_IDENTITY,
-        expected_l1_digest=cluster.l1_corpus_digest(input_dir),
-        expected_cluster_digest=cluster.cluster_code_config_digest(cluster_code),
+        expected_l1_digest=l1_digest,
+        expected_cluster_digest=cluster_digest,
     )
     threshold = cluster.default_threshold("http")
     expected = _load_expected(clusters_path, l1_ids={entry.id for entry in entries}, backend="http",
@@ -78,6 +98,11 @@ def replay(input_dir: Path, snapshot: Path, clusters_path: Path, cluster_code: P
         entries, matrix, backend_name="http", threshold=threshold
     )
     actual = _canonical([item.members for item in actual_clusters])
+    if cluster.l1_corpus_digest(input_dir) != l1_digest:
+        raise RuntimeError("L1 changed during replay")
+    if (cluster.cluster_code_config_digest(cluster_code) != cluster_digest or
+            cluster_code.read_bytes() != code_bytes):
+        raise RuntimeError("cluster code/config changed during replay")
     if expected != actual:
         expected_only = tuple(group for group in expected if group not in actual)
         replay_only = tuple(group for group in actual if group not in expected)

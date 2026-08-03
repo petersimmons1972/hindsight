@@ -39,7 +39,7 @@ def replay_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Pa
     monkeypatch.setattr(CLUSTER, "HTTP_BACKEND_IDENTITY", {
         "name": "http", "model": "fixture", "revision": "v1", "dimensions": 2,
     })
-    monkeypatch.setattr(REPLAY, "_load_cluster", lambda _path: CLUSTER)
+    monkeypatch.setattr(REPLAY, "_load_cluster", lambda _path, _code_bytes=None: CLUSTER)
     vectors = {"a": [1.0, 0.0], "b": [0.99, 0.01], "c": [0.0, 1.0],
                "d": [-1.0, 0.0], "e": [0.0, -1.0]}
     snapshot = tmp_path / "snapshot.json"
@@ -101,6 +101,67 @@ def test_malformed_blank_missing_or_drifted_metadata_fails(replay_case, capsys, 
     replay_case["clusters"].write_text(contents, encoding="utf-8")
     assert _run(replay_case) == 1
     assert needle in capsys.readouterr().err
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("backend", 7),
+    ("threshold", True),
+    ("entry_count", 5.0),
+    ("entry_count", True),
+    ("linkage", 7),
+])
+def test_metadata_rejects_equal_or_invalid_scalar_types(
+    replay_case, capsys, field, value
+) -> None:
+    metadata = {
+        "backend": "http", "threshold": CLUSTER.default_threshold("http"),
+        "entry_count": 5, "linkage": CLUSTER.LINKAGE,
+    }
+    metadata[field] = value
+    _write_clusters(
+        replay_case["clusters"], [["e"], ["b", "a"], ["d"], ["c"]], meta=metadata
+    )
+    assert _run(replay_case) == 1
+    assert f"metadata {field}" in capsys.readouterr().err
+
+def test_l1_drift_after_digest_before_comparison_fails(
+    replay_case, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_digest = CLUSTER.l1_corpus_digest
+    changed = False
+
+    def digest_then_change(path: Path) -> str:
+        nonlocal changed
+        digest = real_digest(path)
+        if not changed:
+            changed = True
+            record = path / "records.jsonl"
+            record.write_text(
+                record.read_text(encoding="utf-8").replace("distinct incident a", "drifted incident a"),
+                encoding="utf-8",
+            )
+        return digest
+
+    monkeypatch.setattr(CLUSTER, "l1_corpus_digest", digest_then_change)
+    assert _run(replay_case) == 1
+    assert "L1 changed during replay" in capsys.readouterr().err
+
+def test_cluster_code_drift_after_digest_before_comparison_fails(
+    replay_case, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_digest = CLUSTER.cluster_code_config_digest
+    changed = False
+
+    def digest_then_change(path: Path) -> str:
+        nonlocal changed
+        digest = real_digest(path)
+        if not changed:
+            changed = True
+            path.write_text(path.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+        return digest
+
+    monkeypatch.setattr(CLUSTER, "cluster_code_config_digest", digest_then_change)
+    assert _run(replay_case) == 1
+    assert "cluster code/config changed during replay" in capsys.readouterr().err
 def test_replay_never_selects_or_contacts_http(replay_case, monkeypatch) -> None:
     def poisoned(*_args, **_kwargs):
         raise AssertionError("network/backend path reached")

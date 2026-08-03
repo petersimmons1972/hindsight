@@ -17,7 +17,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -29,6 +33,7 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+TRUSTED_JS_BINDING = "const { test, assert, eq } = global.__ff;\n"
 
 
 def write_records(l1_dir: Path, source: str, *records: dict[object, object]) -> None:
@@ -49,6 +54,17 @@ def write_known_phantoms(path: Path, records: list[dict[str, str]]) -> None:
 
 def write_enforcement_floor(path: Path, floor: int | str) -> None:
     path.write_text(f"{floor}\n", encoding="utf-8")
+
+
+def write_executable(path: Path) -> None:
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def write_runner_source(path: Path, contents: str) -> None:
+    """Write a deliberately non-executable source file for a managed runner."""
+    path.write_text(contents, encoding="utf-8")
+    path.chmod(0o664)
 
 
 def run_verifier(
@@ -107,7 +123,7 @@ def test_root_known_and_path_exists_is_enforced_and_silent(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -139,6 +155,1649 @@ def test_root_known_and_path_absent_is_phantom_names_entry_and_source(
     assert "phantom: missing/control.py (sample:example," in err
 
 
+@pytest.mark.parametrize("kind", ["test", "hook"])
+def test_non_executable_stub_is_phantom_for_executable_mechanism_kinds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    """A present inert stub must not satisfy a test or hook enforcement claim."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    (repo / "decoy.sh").write_text("decoy\n", encoding="utf-8")
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("decoy", {"file": "decoy.sh", "kind": kind}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    assert f"phantom: decoy.sh (sample:decoy," in capsys.readouterr().err
+
+
+def test_non_executable_runner_managed_test_source_is_plausible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A test runner may execute a source file without its execute bit."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    (repo / "feature.test.js").write_text(
+        TRUSTED_JS_BINDING + "test('feature', () => {});\n", encoding="utf-8"
+    )
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", machine_record("runner-test", {"file": "feature.test.js", "kind": "test"})
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    assert "phantom:" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("test_feature.py", "def test_feature():\n    assert True\n"),
+        ("test_async.py", "async def test_feature():\n    assert True\n"),
+        ("test_class.py", "class TestFeature:\n    async def test_feature(self):\n        assert True\n"),
+        ("feature.bats", '@test "feature works" {\n  run true\n  [ "$status" -eq 0 ]\n}\n'),
+    ],
+)
+def test_non_executable_structurally_valid_runner_sources_are_plausible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    filename: str,
+    contents: str,
+) -> None:
+    """Mode-0664 Pytest and Bats sources are runner inputs, not inert stubs.
+
+    This restores the old Pytest-positive direction that origin/main accepted
+    before the executable-only predicate was introduced.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    runner_source = repo / filename
+    write_runner_source(runner_source, contents)
+    assert runner_source.stat().st_mode & 0o777 == 0o664
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("runner-test", {"file": filename, "kind": "test"}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    assert "phantom:" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("test_decoy.py", "# def test_comment():\npass\n"),
+        ("test_decoy.py", '"def test_string(): pass"\n'),
+        ("test_decoy.py", "test_name = True\n"),
+        ("test_decoy.py", "def test_broken(:\n    pass\n"),
+        ("test_decoy.py", "class TestOnly:\n    pass\n"),
+        ("decoy.bats", "# @test \"commented\" { true; }\n"),
+        ("decoy.bats", 'echo "@test \\\"string\\\" { true; }"\n'),
+        ("decoy.bats", '@test "unterminated" {\n  true\n'),
+        ("decoy.bats", '@test "empty" {\n  # decoy\n}\n'),
+        ("decoy.bats", "decoy\n"),
+    ],
+)
+def test_invalid_non_executable_runner_sources_are_phantoms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, contents: str
+) -> None:
+    """Suffixes, comments, strings, and substrings cannot establish a runner contract."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    write_runner_source(repo / filename, contents)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("decoy", {"file": filename, "kind": "test"}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+
+
+def test_runner_source_predicate_rejects_suffix_and_substring_only_mutants(tmp_path: Path) -> None:
+    """Mutation evidence: neither an allowed suffix nor a test substring is sufficient."""
+    suffix_only = tmp_path / "test_suffix.py"
+    substring_only = tmp_path / "not_a_test.txt"
+    write_runner_source(suffix_only, "decoy\n")
+    write_runner_source(substring_only, "def test_but_wrong_suffix():\n    assert True\n")
+
+    assert not MODULE._is_runner_managed_test_source(suffix_only)
+    assert not MODULE._is_runner_managed_test_source(substring_only)
+
+
+def test_javascript_invalid_template_interpolation_is_rejected(tmp_path: Path) -> None:
+    """Acorn syntax, not a template-oblivious lexer, decides whole-file validity."""
+    source = tmp_path / "invalid-template.test.js"
+    write_runner_source(source, 'test("ok", () => { const x = `${foo(}`; });')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_regex_literal_cannot_impersonate_test_call(tmp_path: Path) -> None:
+    """Syntactically valid regex data is not a JavaScript call expression."""
+    source = tmp_path / "regex-decoy.test.js"
+    write_runner_source(source, 'const re = /test("x", () => {})/;\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_for_of_regex_cannot_impersonate_test_call(tmp_path: Path) -> None:
+    """Contextual keywords cannot expose regex contents to candidate scanning."""
+    source = tmp_path / "for-of-regex-decoy.test.js"
+    write_runner_source(source, 'for (const x of /test("x", () => {})/) {}\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '<!-- test("x", () => {})\n',
+        '--> test("x", () => {})\n',
+        '#! test("x", () => {})\n',
+    ],
+    ids=["html-open-comment", "html-close-comment", "hashbang"],
+)
+def test_javascript_line_comment_forms_cannot_impersonate_test_call(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "line-comment-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_nested_template_data_cannot_impersonate_test_call(tmp_path: Path) -> None:
+    """Nested template literal text must stay outside candidate scanning."""
+    source = tmp_path / "nested-template-decoy.test.js"
+    write_runner_source(source, 'const value = `${`test("x", () => {})`}`;\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        (
+            "class C { #test(name, body) {} "
+            'run() { this.#test("x", () => {}); } }\n'
+        ),
+        'class test {}\nnew test("x", () => {});\n',
+    ],
+    ids=["private-method", "constructor"],
+)
+def test_javascript_non_bare_test_invocations_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "non-bare.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const x=6 / 2; test("ok",()=>{});\n',
+        'const a=`a`; test("ok",()=>{}); const b=`b`;\n',
+        'test /* call-site trivia */ ("ok",()=>{});\n',
+    ],
+    ids=["division-before-test", "templates-around-test", "comment-before-call"],
+)
+def test_javascript_parser_oracle_accepts_valid_slash_and_template_source(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "parser-oracle.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const value = "test( data";\n',
+        "// test( data\nconst value = 1;\n",
+        "/* test( data */ const value = 1;\n",
+        "const value = `test( data`;\n",
+        "const value = /test\\( data/;\n",
+    ],
+    ids=["string", "line-comment", "block-comment", "template-raw", "regex"],
+)
+def test_javascript_parser_oracle_rejects_test_candidates_in_data(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "data-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_parser_oracle_accepts_test_in_template_interpolation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "template-interpolation.test.js"
+    write_runner_source(
+        source,
+        TRUSTED_JS_BINDING
+        + 'test("outer",()=>{ const value = `${test("nested",()=>{})}`; });\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "test();\n",
+        "test(123);\n",
+        'test("name");\n',
+        'test("name", 123);\n',
+        'test("name", callback);\n',
+        'test("name", () => {}, "extra");\n',
+        'test("name", function () {}, "extra");\n',
+        'test("name", function () {}, injected = 1);\n',
+        'test("name", () => {}, {injected} = obj);\n',
+        'const test=(x)=>x; test("not a runner test");\n',
+    ],
+    ids=[
+        "missing-arguments",
+        "non-name-only-argument",
+        "missing-callback",
+        "number-callback",
+        "callback-reference",
+        "extra-arrow-argument",
+        "extra-function-argument",
+        "extra-assignment-argument",
+        "extra-destructuring-argument",
+        "review-decoy",
+    ],
+)
+def test_javascript_runner_call_requires_name_and_inline_callable(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "call-shape-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const test = (name, body) => body; test("name", () => {});\n',
+        'let test; test("name", () => {});\n',
+        'var test = () => {}; test("name", () => {});\n',
+        'function wrapper(test) { test("name", () => {}); }\n',
+        'import { runnerTest as test } from "runner"; test("name", () => {});\n',
+        'function test(name, body) {} test("name", () => {});\n',
+    ],
+    ids=["const", "let", "var", "parameter", "import-alias", "function"],
+)
+def test_javascript_shadowed_test_identifier_is_not_runner_managed(
+    tmp_path: Path, contents: str
+) -> None:
+    if contents.startswith("import "):
+        (tmp_path / "package.json").write_text(
+            '{"type":"module"}\n', encoding="utf-8"
+        )
+    source = tmp_path / "shadowed.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const { test } = { test: (name, body) => 0 }; test("fake",()=>{});\n',
+        'const { test } = require("fake"); test("fake",()=>{});\n',
+        'try {} catch (test) { test("fake",()=>{}); }\n',
+        'class X { m(test) { test("fake",()=>{}); } }\n',
+    ],
+    ids=["destructuring-literal", "destructuring-require", "catch", "method-parameter"],
+)
+def test_javascript_all_bare_test_bindings_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """Any additional code-level bare ``test`` is a conservative shadow."""
+    source = tmp_path / "shadowed-binding.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'test("fake",()=>{});\n',
+        'const alias = condition ? globalThis : local; alias.test = runner; test("fake",()=>{});\n',
+        'const alias = globalThis || local; alias.test = runner; test("fake",()=>{});\n',
+        'const alias = (local, globalThis); alias.test = runner; test("fake",()=>{});\n',
+        'const [alias] = [globalThis]; alias.test = runner; test("fake",()=>{});\n',
+        'const alias = (() => globalThis)(); alias.test = runner; test("fake",()=>{});\n',
+    ],
+    ids=["ambient", "conditional", "logical", "sequence", "array", "iife"],
+)
+def test_javascript_ambient_test_calls_without_trusted_binding_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """No ambient-global value flow can substitute for the concrete runner binding."""
+    source = tmp_path / "ambient-wrapper.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        (
+            "const { test, assert, eq } = global.__ff\n"
+            'test("trusted", () => {});\n'
+        ),
+        (
+            "const{test,assert,eq}=global.__ff;\n"
+            'test("trusted", async function () {});\n'
+        ),
+    ],
+    ids=["live-spacing", "compact-spacing"],
+)
+def test_javascript_trusted_global_ff_binding_is_runner_managed(
+    tmp_path: Path, contents: str
+) -> None:
+    """Fleet's exact immutable runner binding may supply genuine test calls."""
+    source = tmp_path / "global-ff.test.js"
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "prologue",
+    [
+        "",
+        "  /* runner prelude */\n// binding follows\n",
+        "'use strict'\n",
+        '"use strict"; /* runner prelude */\n',
+    ],
+    ids=["empty", "comments", "single-quoted-strict", "double-quoted-strict"],
+)
+def test_javascript_global_ff_binding_allows_only_the_runner_prologue(
+    tmp_path: Path, prologue: str
+) -> None:
+    source = tmp_path / "global-ff-prologue.test.js"
+    write_runner_source(
+        source,
+        f"{prologue}const {{ test, assert, eq }} = global.__ff; "
+        'test("trusted",()=>{});\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "global.__ff = {test:(name,body)=>0,assert:0,eq:0}; ",
+        (
+            'Object.defineProperty(global,"__ff",'
+            "{value:{test:(name,body)=>0,assert:0,eq:0}}); "
+        ),
+        "const alias = global; alias.__ff = {test:(name,body)=>0,assert:0,eq:0}; ",
+        (
+            'const key = "__" + "ff"; global[key] = '
+            "{test:(name,body)=>0,assert:0,eq:0}; "
+        ),
+    ],
+    ids=["direct-assignment", "define-property", "alias", "computed-built-key"],
+)
+def test_javascript_global_ff_prebinding_mutations_are_rejected(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Candidate code cannot replace the runner object before it is read."""
+    source = tmp_path / "global-ff-prebinding-mutation.test.js"
+    write_runner_source(
+        source,
+        f"{mutation}const {{ test, assert, eq }} = global.__ff; "
+        'test("fake",()=>{});\n',
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "prologue",
+    [
+        "0; ",
+        "const harmless = 0; ",
+        '"another directive"; ',
+        'import "runner-setup"; ',
+    ],
+    ids=["expression", "declaration", "other-directive", "import"],
+)
+def test_javascript_global_ff_binding_rejects_other_executable_prologues(
+    tmp_path: Path, prologue: str
+) -> None:
+    source = tmp_path / "global-ff-executable-prologue.test.js"
+    write_runner_source(
+        source,
+        f"{prologue}const {{ test, assert, eq }} = global.__ff; "
+        'test("fake",()=>{});\n',
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const { test, assert, eq } = local.__ff; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.fake; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global["__ff"]; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.__ff.fake; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.__ff || local; test("fake",()=>{});\n',
+        'const { assert, test, eq } = global.__ff; test("fake",()=>{});\n',
+        'const { test, assert, eq, extra } = global.__ff; test("fake",()=>{});\n',
+        'const { test: alias, assert, eq } = global.__ff; alias("fake",()=>{});\n',
+        'const { test: test, assert, eq } = global.__ff; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.__ff;\n',
+        'const { test, assert, eq } = global.__ff; test("inert");\n',
+        (
+            'if (false) { const { test, assert, eq } = global.__ff; '
+            'test("inert",()=>{}); }\n'
+        ),
+        (
+            'function inert() { const { test, assert, eq } = global.__ff; '
+            'test("inert",()=>{}); }\n'
+        ),
+        (
+            'for (; false;) { const { test, assert, eq } = global.__ff; '
+            'test("inert",()=>{}); }\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            'if (false) test("inert",()=>{});\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            'function inert() { test("inert",()=>{}); }\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            'false && test("inert",()=>{});\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; test = local; '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'let { test, assert, eq } = global.__ff; test = local; '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            '({test} = local); test("fake",()=>{});\n'
+        ),
+    ],
+    ids=[
+        "local-object",
+        "wrong-global-property",
+        "computed-source",
+        "chained-source",
+        "fallback-source",
+        "member-order",
+        "extra-member",
+        "different-local-alias",
+        "explicit-test-alias",
+        "missing-call",
+        "malformed-call",
+        "unreachable-branch-binding",
+        "uncalled-function-binding",
+        "zero-iteration-binding",
+        "top-level-binding-unreachable-call",
+        "top-level-binding-uncalled-function",
+        "top-level-binding-short-circuit-call",
+        "later-reassignment",
+        "mutable-declaration",
+        "later-destructuring-mutation",
+    ],
+)
+def test_javascript_global_ff_near_neighbors_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """Only the exact immutable Fleet binding is trusted; close decoys fail."""
+    source = tmp_path / "global-ff-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        'test = replacement; test("fake",()=>{});\n',
+        'test++; test("fake",()=>{});\n',
+        'delete test; test("fake",()=>{});\n',
+        '({test} = replacement); test("fake",()=>{});\n',
+        'import { runner as test } from "fake"; test("fake",()=>{});\n',
+        'function shadow(test) { test("fake",()=>{}); } test("real",()=>{});\n',
+        'function test() {} test("fake",()=>{});\n',
+    ],
+    ids=[
+        "assignment",
+        "update",
+        "delete",
+        "destructuring-assignment",
+        "import",
+        "parameter",
+        "declaration",
+    ],
+)
+def test_javascript_trusted_test_binding_cannot_be_mutated_or_shadowed(
+    tmp_path: Path, suffix: str
+) -> None:
+    source = tmp_path / "mutated-trusted-binding.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + suffix)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const \\u0074est = (name, body) => 0; test("fake",()=>{});\n',
+        'const {...test} = obj; test("fake",()=>{});\n',
+        'new test("fake",()=>{});\n',
+        'globalThis.test = (name, body) => 0; test("fake",()=>{});\n',
+        'globalThis.test ||= (name, body) => 0; test("fake",()=>{});\n',
+        'globalThis.test &&= (name, body) => 0; test("fake",()=>{});\n',
+        'globalThis.test ??= (name, body) => 0; test("fake",()=>{});\n',
+        'const alias = globalThis; alias.test = (name, body) => 0; test("fake",()=>{});\n',
+        'const key = "test"; globalThis[key] = (name, body) => 0; test("fake",()=>{});\n',
+        (
+            'const alias = globalThis; Object.defineProperty(alias,"test",'
+            '{value:(name,body)=>0}); test("fake",()=>{});\n'
+        ),
+        '[globalThis.test] = [(name, body) => 0]; test("fake",()=>{});\n',
+        '({test:globalThis.test}={test:(name, body)=>0}); test("fake",()=>{});\n',
+        'for (globalThis.test of [(name, body)=>0]) {} test("fake",()=>{});\n',
+        'delete globalThis.test; test("fake",()=>{});\n',
+        'delete globalThis?.test; test("fake",()=>{});\n',
+        'delete (globalThis.test); test("fake",()=>{});\n',
+        'delete (0, globalThis.test); test("fake",()=>{});\n',
+        'with ({test:(name, body)=>0}) { test("fake",()=>{}); }\n',
+    ],
+    ids=[
+        "unicode-escaped-binding",
+        "rest-binding",
+        "constructor-call",
+        "member-assignment",
+        "member-logical-or-assignment",
+        "member-logical-and-assignment",
+        "member-nullish-assignment",
+        "aliased-member-assignment",
+        "computed-member-assignment",
+        "aliased-define-property",
+        "member-array-target",
+        "member-object-target",
+        "member-for-of-target",
+        "member-delete",
+        "member-optional-delete",
+        "member-parenthesized-delete",
+        "member-sequence-delete",
+        "with-binding",
+    ],
+)
+def test_javascript_shadow_variants_and_non_runner_calls_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "shadow-variant.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        (
+            'const alias=globalThis; const key="test"; '
+            'alias[key]=(n,b)=>0; test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; const key="test"; '
+            'Reflect.set(alias,key,(n,b)=>0); test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; const payload={test:(n,b)=>0}; '
+            'Object.assign(alias,payload); test("fake",()=>{});\n'
+        ),
+        'const alias = global; test("fake",()=>{});\n',
+        'const first = globalThis; const second = first; test("fake",()=>{});\n',
+        'let alias; alias = globalThis; test("fake",()=>{});\n',
+        'const {globalThis: alias} = globalThis; test("fake",()=>{});\n',
+        'let alias; ({global: alias} = global); test("fake",()=>{});\n',
+        (
+            'const alias=globalThis; const key="te" + "st"; '
+            'Reflect.set(alias,key,(n,b)=>0); test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; Object.defineProperty(alias,key,{value: runner}); '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=global; Object.defineProperties(alias,payload); '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'const alias=globalThis; Reflect.defineProperty(alias,key,descriptor); '
+            'test("fake",()=>{});\n'
+        ),
+        'Reflect.set(globalThis,key,runner); test("fake",()=>{});\n',
+        'Object.assign(global,payload); test("fake",()=>{});\n',
+        'Object.defineProperty(globalThis,key,descriptor); test("fake",()=>{});\n',
+        'Object.defineProperties(global,payload); test("fake",()=>{});\n',
+        'Reflect.defineProperty(globalThis,key,descriptor); test("fake",()=>{});\n',
+    ],
+    ids=[
+        "required-computed-assignment",
+        "required-reflect-set",
+        "required-object-assign",
+        "global-alias-binding",
+        "alias-chain",
+        "assignment-alias",
+        "destructured-global-this-alias",
+        "destructured-global-assignment-alias",
+        "computed-key-construction",
+        "object-define-property-unknown-key",
+        "object-define-properties-unknown-payload",
+        "reflect-define-property-unknown-key",
+        "direct-reflect-set-unknown-key",
+        "direct-object-assign-unknown-payload",
+        "direct-object-define-property-unknown-key",
+        "direct-object-define-properties-unknown-payload",
+        "direct-reflect-define-property-unknown-key",
+    ],
+)
+def test_javascript_global_alias_flows_and_mutation_apis_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """Candidate code cannot retain or mutate the process-global object."""
+    source = tmp_path / "global-alias-flow.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const alias = "global"; test("real",()=>{});\n',
+        'const alias = "global" + "This"; test("real",()=>{});\n',
+        'const alias = holder["global" + "This"]; test("real",()=>{});\n',
+        'Reflect.set(local, "te" + "st", runner); test("real",()=>{});\n',
+        'Object.assign(local, payload); test("real",()=>{});\n',
+        'Object.defineProperty(local, key, descriptor); test("real",()=>{});\n',
+        'Object.defineProperties(local, payload); test("real",()=>{});\n',
+        'Reflect.defineProperty(local, key, descriptor); test("real",()=>{});\n',
+    ],
+    ids=[
+        "global-string",
+        "constructed-global-this-string",
+        "computed-local-member",
+        "local-reflect-set",
+        "local-object-assign",
+        "local-object-define-property",
+        "local-object-define-properties",
+        "local-reflect-define-property",
+    ],
+)
+def test_javascript_global_alias_near_neighbors_remain_runner_managed(
+    tmp_path: Path, contents: str
+) -> None:
+    """Textual lookalikes and mutations of local objects are not global aliases."""
+    source = tmp_path / "global-alias-neighbor.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'test("arrow", () => {});\n',
+        'test(`template ${name}`, async () => {});\n',
+        'test("function", function () {});\n',
+        'test("async function", async function () {});\n',
+    ],
+    ids=["arrow", "async-arrow-template", "function", "async-function"],
+)
+def test_javascript_runner_call_accepts_supported_inline_callbacks(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "supported-callback.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'test("regex block", () => { expect(/}/.test("}")); });\n',
+        'test("expression arrow", () => expect(1).toBe(1));\n',
+        'test("first", () => {}); test("second", async () => 2);\n',
+        'test("compact async", async()=>{});\n',
+        'test("commented async", async /* trivia */ () => {});\n',
+        'test("regex paren", function () { expect(/\\)/.test(")")); });\n',
+    ],
+    ids=[
+        "regex-in-block",
+        "expression-bodied-arrow",
+        "multiple-global-calls",
+        "compact-async-arrow",
+        "commented-async-arrow",
+        "regex-paren-function",
+    ],
+)
+def test_javascript_parser_oracle_accepts_required_runner_shapes(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "required-shape.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_candidate_bound_allows_256_global_calls(tmp_path: Path) -> None:
+    """The runner-call ceiling is reachable by legitimate runner calls."""
+    source = tmp_path / "candidate-bound.test.js"
+    write_runner_source(
+        source,
+        TRUSTED_JS_BINDING
+        + "".join(f'test("{index}",()=>{{}});\n' for index in range(256)),
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_large_256_call_source_completes_with_one_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large valid boundary source must not regress to per-candidate parsing."""
+    source = tmp_path / "large-boundary.test.js"
+    write_runner_source(
+        source,
+        TRUSTED_JS_BINDING
+        + "const payload = " + repr("x" * 28_000) + ";\n"
+        + "".join(f'test("{index}",()=>{{ void payload; }});\n' for index in range(256)),
+    )
+    real_run = subprocess.run
+    node_calls = 0
+
+    def count_node(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal node_calls
+        if argv and argv[0] == "node":
+            node_calls += 1
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", count_node)
+    started = time.monotonic()
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert time.monotonic() - started < 2.0
+    assert node_calls == 1
+
+
+def test_live_fleet_javascript_source_classifies_true_and_is_byte_identical() -> None:
+    """Exercise the exact 28 KiB Fleet source when that checkout is present."""
+    source = Path("/home/psimmons/projects/fleet/orchestration/test/adversarial-loop.test.js")
+    if not source.is_file():
+        pytest.skip("live Fleet checkout is not present")
+    before = source.read_bytes()
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert source.read_bytes() == before
+
+
+def test_duplicate_javascript_references_parse_once_per_verifier_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / "duplicate.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + 'test("one",()=>{});\n')
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("first", {"file": source.name, "kind": "test"}),
+        machine_record("second", {"file": source.name, "kind": "test"}),
+    )
+    real_run = subprocess.run
+    node_calls = 0
+
+    def count_node(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal node_calls
+        if argv and argv[0] == "node":
+            node_calls += 1
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", count_node)
+
+    report = MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+    assert not report.phantoms
+    assert node_calls == 1
+
+
+def test_javascript_runner_source_is_never_executed(tmp_path: Path) -> None:
+    sentinel = tmp_path / "javascript-executed"
+    source = tmp_path / "inert.test.js"
+    write_runner_source(
+        source,
+        TRUSTED_JS_BINDING
+        + f'require("fs").writeFileSync("{sentinel}", "executed");\n'
+        'test("name", () => {});\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "function test() {}\n",
+        'const suite = {test() {}}; suite.test("ok",()=>{});\n',
+        'const suite = {}; suite /* a */ . /* b */ test("ok",()=>{});\n',
+        "const saved = test;\n",
+        "const \u03c0test = () => {}; \u03c0test();\n",
+    ],
+    ids=[
+        "function-declaration",
+        "property-call",
+        "commented-property-call",
+        "bare-reference",
+        "unicode-identifier",
+    ],
+)
+def test_javascript_non_call_contexts_do_not_count(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "context-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_top_level_commands_are_never_executed(tmp_path: Path) -> None:
+    sentinel = tmp_path / "top-level-executed"
+    source = tmp_path / "top-level.bats"
+    write_runner_source(
+        source,
+        f'touch "{sentinel}"\n@test "ok" {{ true; }}\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+def test_bats_test_body_commands_are_never_executed(tmp_path: Path) -> None:
+    sentinel = tmp_path / "body-executed"
+    source = tmp_path / "body.bats"
+    write_runner_source(
+        source,
+        f'@test "ok" {{ touch "{sentinel}"; }}\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+def test_bats_heredoc_data_is_counted_without_executing_test_body(
+    tmp_path: Path,
+) -> None:
+    """A literal closing brace in heredoc data is valid and remains inert."""
+    sentinel = tmp_path / "body-executed"
+    source = tmp_path / "heredoc.bats"
+    write_runner_source(
+        source,
+        (
+            '@test "heredoc data" {\n'
+            "  cat <<'HEREDOC'\n"
+            "}\n"
+            "HEREDOC\n"
+            f'  touch "{sentinel}"\n'
+            "}\n"
+        ),
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+def test_bats_heredoc_test_text_is_not_a_declaration(tmp_path: Path) -> None:
+    source = tmp_path / "heredoc-decoy.bats"
+    write_runner_source(
+        source,
+        "cat <<'HEREDOC'\n@test \"fake\" { true; }\nHEREDOC\n",
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_missing_preprocessor_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "missing-preprocessor.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    monkeypatch.setattr(shutil, "which", lambda executable: None)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_missing_bash_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "missing-bash.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    real_run = subprocess.run
+
+    def fail_bash(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "bash":
+            raise FileNotFoundError("bash missing")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_bash)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "bash_failure",
+    [
+        subprocess.CompletedProcess(["bash", "-n"], 2, "", "invalid"),
+        subprocess.TimeoutExpired(cmd=["bash", "-n"], timeout=5),
+        OSError("bash failed"),
+    ],
+    ids=["syntax-failure", "timeout", "os-error"],
+)
+def test_bats_bash_validation_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bash_failure: subprocess.CompletedProcess[str]
+    | subprocess.TimeoutExpired
+    | OSError,
+) -> None:
+    source = tmp_path / "bash-failure.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    real_run = subprocess.run
+
+    def fail_bash(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if argv == ["bash", "-n"]:
+            if isinstance(bash_failure, BaseException):
+                raise bash_failure
+            return bash_failure
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_bash)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "runner_error",
+    [
+        subprocess.TimeoutExpired(cmd=["node", "--check", "-"], timeout=5),
+        OSError("node failed"),
+    ],
+    ids=["timeout", "os-error"],
+)
+def test_javascript_parser_error_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    runner_error: subprocess.TimeoutExpired | OSError,
+) -> None:
+    source = tmp_path / "probe-error.test.js"
+    write_runner_source(source, 'test("ok",()=>{});\n')
+    real_run = subprocess.run
+
+    def fail_probe(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if argv == MODULE.JAVASCRIPT_ACORN_ARGV:
+            raise runner_error
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_probe)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "true",
+        '{"managed":true,"extra":false}',
+        "not-json",
+        '{"managed":true}' + (" " * MODULE.MAX_JAVASCRIPT_PARSER_OUTPUT_BYTES),
+    ],
+    ids=["empty", "wrong-shape", "extra-field", "invalid-json", "oversized"],
+)
+def test_javascript_malformed_parser_output_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    source = tmp_path / "malformed-parser-output.test.js"
+    write_runner_source(source, 'test("ok",()=>{});\n')
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout, ""),
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        (
+            "too-many.test.js",
+            TRUSTED_JS_BINDING
+            + "".join(
+                f'test("{index}",()=>{{}});\n'
+                for index in range(MODULE.MAX_RUNNER_CANDIDATES + 1)
+            ),
+        ),
+        (
+            "too-many.bats",
+            '@test "bounded" { true; }\n' * (MODULE.MAX_RUNNER_CANDIDATES + 1),
+        ),
+        (
+            "too-many-bindings.test.js",
+            ("{ const test = null; }\n" * (MODULE.MAX_RUNNER_CANDIDATES + 1))
+            + 'test("real",()=>{});\n',
+        ),
+    ],
+)
+def test_runner_candidate_limit_fails_closed(
+    tmp_path: Path, filename: str, contents: str
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("missing.test.js", 'test("ok", () => {});\n'),
+        ("missing.bats", '@test "ok" { true; }\n'),
+    ],
+)
+@pytest.mark.parametrize(
+    "runner_error",
+    [
+        FileNotFoundError("runner missing"),
+        PermissionError("runner not executable"),
+        subprocess.TimeoutExpired(cmd=["runner"], timeout=5),
+    ],
+    ids=["missing-executable", "os-error", "timeout"],
+)
+def test_runner_invocation_error_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    runner_error: OSError | subprocess.TimeoutExpired,
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    def fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise runner_error
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "stdout"),
+    [
+        ("failed.test.js", 'test("ok", () => {});\n', ""),
+        ("failed.bats", '@test "ok" { true; }\n', "1\n"),
+    ],
+)
+def test_runner_nonzero_exit_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    stdout: str,
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout, "parse failed"),
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "stdout", ["", "echo no-tests\n", ")\n", None]
+)
+def test_bats_invalid_or_empty_preprocessor_output_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str | None,
+) -> None:
+    source = tmp_path / "malformed-preprocessor.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        (
+            "runner; touch PWNED $(echo x).test.js",
+            'test("ok", () => {});\n',
+        ),
+        (
+            "runner; touch PWNED $(echo x).bats",
+            '@test "ok" { true; }\n',
+        ),
+    ],
+)
+def test_runner_source_path_is_one_argv_element_without_a_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+) -> None:
+    source = tmp_path / filename
+    trusted_contents = (
+        TRUSTED_JS_BINDING + contents if filename.endswith(".test.js") else contents
+    )
+    write_runner_source(source, trusted_contents)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    real_run = subprocess.run
+
+    def record_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+
+    assert MODULE._is_runner_managed_test_source(source)
+    if filename.endswith(".test.js"):
+        assert len(calls) == 1
+        argv, kwargs = calls[0]
+        assert argv == MODULE.JAVASCRIPT_ACORN_ARGV
+        assert kwargs["input"] == trusted_contents
+        assert all(str(source) not in argument for argument in argv)
+    else:
+        path_calls = [(argv, kwargs) for argv, kwargs in calls if str(source) in argv]
+        assert len(path_calls) == 1
+        argv, _ = path_calls[0]
+        assert Path(argv[0]).name == "bats-preprocess"
+        assert argv[1:] == [str(source)]
+        assert all(Path(call[0][0]).name != "bats" for call in calls)
+    for call_argv, kwargs in calls:
+        assert isinstance(call_argv, list)
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert 0 < kwargs["timeout"] <= 10
+        assert kwargs.get("shell", False) is False
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "replacement", "stdout"),
+    [
+        (
+            "changed.test.js",
+            'test("ok", () => {});\n',
+            'test("broken", () =>',
+            "",
+        ),
+        (
+            "changed.bats",
+            '@test "ok" { true; }\n',
+            "echo no-tests-remain\n",
+            "1\n",
+        ),
+    ],
+)
+def test_source_change_during_runner_parse_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    replacement: str,
+    stdout: str,
+) -> None:
+    """A runner result must not certify different bytes at the same path."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    def replace_during_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        write_runner_source(source, replacement)
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", replace_during_run)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "replacement", "stdout"),
+    [
+        (
+            "aba.test.js",
+            'test("ok", () => {});\n',
+            'test("broken", () =>',
+            "",
+        ),
+        (
+            "aba.bats",
+            '@test "ok" { true; }\n',
+            "echo no-tests-remain\n",
+            "1\n",
+        ),
+    ],
+)
+def test_source_aba_change_during_runner_parse_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    replacement: str,
+    stdout: str,
+) -> None:
+    """Restoring the original bytes cannot hide an intervening source change."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    def replace_and_restore(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        write_runner_source(source, replacement)
+        write_runner_source(source, contents)
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", replace_and_restore)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "invalid"),
+    [
+        (
+            "repeat.test.js",
+            TRUSTED_JS_BINDING + 'test("ok", () => {});\n',
+            TRUSTED_JS_BINDING + 'test("broken", () =>\n',
+        ),
+        ("repeat.bats", '@test "ok" { true; }\n', "echo no-tests-remain\n"),
+    ],
+)
+def test_runner_validation_is_fresh_on_repeat_invocation(
+    tmp_path: Path,
+    filename: str,
+    contents: str,
+    invalid: str,
+) -> None:
+    source = tmp_path / filename
+
+    write_runner_source(source, invalid)
+    assert not MODULE._is_runner_managed_test_source(source)
+    write_runner_source(source, contents)
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("ordinary.test.js", "#!/bin/sh\nexit 0\n"),
+        ("ordinary.bats", "#!/bin/sh\nexit 0\n"),
+    ],
+)
+def test_executable_test_file_does_not_invoke_runner_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / filename
+    source.write_text(contents, encoding="utf-8")
+    source.chmod(0o755)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("ordinary", {"file": filename, "kind": "test"}),
+    )
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ordinary executable tests must not invoke a language runner")
+        ),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("extra-paren.bats", '@test "ok" { true; }\n)\n'),
+        ("unclosed-paren.bats", '@test "ok" { true; }\necho (\n'),
+        ("unclosed-quote.bats", '@test "ok" { true; }\necho "unterminated\n'),
+        ("malformed-second.bats", '@test "ok" { true; }\n@test "broken" nope\n'),
+        ("extra-paren.test.js", 'test("ok", () => {}); )'),
+        ("extra-bracket.test.js", 'test("ok", () => {}); ]'),
+        ("unclosed-paren.test.js", 'test("ok", () => {}); ('),
+        ("unclosed-brace.test.js", 'test("ok", () => {}); {'),
+        ("unclosed-bracket.test.js", 'test("ok", () => {}); ['),
+        ("unclosed-block-comment.test.js", 'test("ok", () => {}); /* unterminated'),
+        ("unclosed-quote.test.js", 'test("ok", () => {}); "unterminated'),
+        ("unclosed-template.test.js", 'test("ok", () => {}); `unterminated'),
+        ("malformed-second.test.js", 'test("ok", () => {}); test("broken", () =>);'),
+    ],
+)
+def test_valid_runner_test_prefix_does_not_hide_invalid_suffix(
+    tmp_path: Path, filename: str, contents: str
+) -> None:
+    """A candidate is evidence only when the bounded whole file is valid."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_valid_prefix_does_not_hide_invalid_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "valid-prefix.bats"
+    write_runner_source(source, '@test "ok" { true; }\n}\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_valid_prefix_does_not_hide_invalid_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "valid-prefix.test.js"
+    write_runner_source(source, 'test("ok", () => {}); }')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize("shell_word", ["{", "["])
+def test_bats_authoritative_parser_accepts_delimiter_like_shell_words(
+    tmp_path: Path, shell_word: str
+) -> None:
+    """The removed delimiter lexer rejected these valid ordinary arguments."""
+    source = tmp_path / "shell-word.bats"
+    write_runner_source(source, f'@test "ok" {{ true; }}\necho {shell_word}\n')
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        (
+            "multiple.bats",
+            (
+                "setup() { true; }\n"
+                '@test "first" { true; }\n'
+                '@test "second" { run true; }\n'
+                "teardown() { true; }\n"
+                "echo '}])'\n"
+                "# harmless trailing comment with ({["
+            ),
+        ),
+        (
+            "multiple.test.js",
+            (
+                "const before = [1];\n"
+                r"const delimiters = /[)}\]]/;" "\n"
+                'test("first", () => {});\n'
+                'test("second", async () => { const nested = {}; });\n'
+                'const text = "}])"; /* harmless unmatched-looking ({[ */\n'
+                "/ok/.test(text);\n"
+                "const after = {ok: true}; // harmless trailing statement and comment"
+            ),
+        ),
+    ],
+)
+def test_whole_file_runner_scan_retains_multiple_tests_and_harmless_trailing_source(
+    tmp_path: Path, filename: str, contents: str
+) -> None:
+    """Scanning to EOF must retain ordinary multi-test runner sources."""
+    source = tmp_path / filename
+    trusted_contents = (
+        TRUSTED_JS_BINDING + contents if filename.endswith(".test.js") else contents
+    )
+    write_runner_source(source, trusted_contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_runner_source_with_invalid_utf8_fails_closed(tmp_path: Path) -> None:
+    source = tmp_path / "invalid-utf8.test.js"
+    source.write_bytes(b'test("ok", () => {});\n\xff')
+    source.chmod(0o664)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize("read_error", [PermissionError("denied"), FileNotFoundError("vanished")])
+def test_javascript_runner_source_read_error_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    read_error: OSError,
+) -> None:
+    source = tmp_path / "read-error.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + 'test("ok", () => {});\n')
+    real_open = MODULE.os.open
+
+    def fail_target_open(path: Path, *args: object, **kwargs: object) -> int:
+        if Path(path) == source:
+            raise read_error
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(MODULE.os, "open", fail_target_open)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize("suffix", [".test.js", ".bats"])
+def test_non_regular_fifo_runner_source_fails_closed_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+) -> None:
+    source = tmp_path / f"blocking{suffix}"
+    MODULE.os.mkfifo(source)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("non-regular source must not invoke a language runner")
+        ),
+    )
+    results: list[bool] = []
+    worker = threading.Thread(
+        target=lambda: results.append(MODULE._is_runner_managed_test_source(source)),
+        daemon=True,
+    )
+
+    worker.start()
+    worker.join(timeout=0.5)
+
+    assert not worker.is_alive(), "regular-file check blocked while opening a FIFO"
+    assert results == [False]
+
+
+def test_runner_plausibility_uses_stat_not_a_separate_exists_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Containment-to-plausibility must not have an exists/stat TOCTOU split."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / "feature.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + 'test("ok", () => {});\n')
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("runner-test", {"file": "feature.test.js", "kind": "test"}),
+    )
+    real_exists = Path.exists
+
+    def reject_target_exists(path: Path) -> bool:
+        if path == source:
+            raise AssertionError("enforcement path must not be checked with exists() before stat/read")
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", reject_target_exists)
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    assert "phantom:" not in capsys.readouterr().err
+
+
+def test_runner_source_stat_error_is_a_phantom_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Disappearance at metadata inspection fails closed inside the verifier."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / "vanished.test.js"
+    write_runner_source(source, 'test("ok", () => {});\n')
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("runner-test", {"file": "vanished.test.js", "kind": "test"}),
+    )
+    real_stat = Path.stat
+
+    def fail_target_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == source:
+            raise FileNotFoundError("vanished during metadata inspection")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    assert "phantom: vanished.test.js (sample:runner-test," in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ["test(", "// test(\n", 'test("x",,)', 'test("x", function)', 'test("x", () =>)', 'test("x", () =>;)', 'test("x", () => {)'],
+)
+def test_invalid_or_commented_runner_test_stub_is_phantom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
+) -> None:
+    """A filename and substring alone are not evidence of a runnable test."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    (repo / "decoy.test.js").write_text(contents, encoding="utf-8")
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("decoy", {"file": "decoy.test.js", "kind": "test"}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+
+
+def test_escaping_runner_managed_test_path_is_rejected_before_plausibility_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Containment must gate the content probe for an escaped test path."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    (projects / "outside.test.js").write_text("test('outside', () => {});\n", encoding="utf-8")
+    (projects / "repo").mkdir()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("escape", {"file": "../outside.test.js", "kind": "test"}),
+    )
+
+    monkeypatch.setattr(
+        MODULE,
+        "_is_runner_managed_test_source",
+        lambda path: (_ for _ in ()).throw(AssertionError(f"must not inspect {path}")),
+    )
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    assert "phantom: ../outside.test.js (sample:escape," in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # UNVERIFIABLE: two distinct reasons, neither counted as enforced (silent pass).
 # ---------------------------------------------------------------------------
@@ -154,7 +1813,7 @@ def test_root_unknown_is_unverifiable_not_enforced(
     # root floor sees at least one genuinely useful root and doesn't mask
     # what we're testing here behind the SKIPPED (zero-useful-roots) path.
     (projects / "anchor-repo").mkdir(parents=True)
-    (projects / "anchor-repo" / "control.py").touch()
+    write_executable(projects / "anchor-repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"anchor": "anchor-repo"})
     write_records(
@@ -191,7 +1850,7 @@ def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
     projects = tmp_path / "projects"
     projects.mkdir()
     (projects / "anchor-repo").mkdir()
-    (projects / "anchor-repo" / "control.py").touch()
+    write_executable(projects / "anchor-repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     # "vanished" is mapped, but its target directory does not exist on this
     # machine -- exactly the CI-runner-without-checkouts case, but scoped to
@@ -244,7 +1903,7 @@ def test_require_roots_flag_raises_the_floor(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo-a").mkdir(parents=True)
-    (projects / "repo-a" / "control.py").touch()
+    write_executable(projects / "repo-a" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"a": "repo-a", "b": "repo-b-not-checked-out"})
     # "a" has a real, resolving, non-null entry -- genuinely useful, not just
@@ -478,7 +2137,7 @@ def test_enforcement_bearing_count_dropping_below_floor_is_an_error(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     # Only 1 enforcement-bearing entry exists this run...
@@ -503,7 +2162,7 @@ def test_enforcement_bearing_count_at_or_above_floor_is_fine(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -645,7 +2304,7 @@ def test_missing_known_phantoms_ledger_fails_loud_not_a_silent_no_op(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -669,7 +2328,7 @@ def test_empty_known_phantoms_ledger_is_a_valid_zero_debt_state(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -732,7 +2391,7 @@ def test_corrupt_l1_corpus_exits_nonzero_not_a_clean_run(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     (l1_dir / "sample.jsonl").write_text(
@@ -778,7 +2437,7 @@ def test_nulling_every_enforcement_value_breaches_the_debt_floor(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     # Two machine entries; the enforcement value of one was removed. Present
@@ -846,7 +2505,7 @@ def test_require_roots_counts_roots_that_verified_something_not_roots_that_resol
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo-a").mkdir(parents=True)
-    (projects / "repo-a" / "control.py").touch()
+    write_executable(projects / "repo-a" / "control.py")
     (projects / "repo-b").mkdir(parents=True)  # resolves, but checks nothing
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"a": "repo-a", "b": "repo-b"})
@@ -890,7 +2549,7 @@ def test_unrecognised_auto_value_raises_instead_of_dropping_the_record(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     write_records(
         l1_dir,
         "sample",
@@ -907,7 +2566,7 @@ def test_blank_l1_record_raises_instead_of_being_skipped(tmp_path: Path) -> None
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     (l1_dir / "sample.jsonl").write_text(
         json.dumps(machine_record("one", {"file": "control.py", "kind": "test"}))
         + "\n\n"
@@ -990,7 +2649,7 @@ def test_M04_M05_malformed_source_roots_line_is_fatal_not_skipped(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     # One valid mapping so an empty-map check cannot absorb the failure;
     # the malformed line is the only thing that must make the loader raise.
@@ -1037,7 +2696,7 @@ def test_judgment_entry_with_resolving_enforcement_is_checked_and_passes(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1076,7 +2735,7 @@ def test_machine_entry_remains_checked_when_a_judgment_entry_is_also_present(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1100,7 +2759,7 @@ def test_debt_floor_counts_every_enforcement_bearing_row_and_reports_old_total(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1197,7 +2856,7 @@ def test_M23_multi_value_floor_file_is_fatal_not_first_wins(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -1224,7 +2883,7 @@ def test_M24_non_object_known_phantoms_line_is_fatal_not_skipped(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -1308,7 +2967,7 @@ def test_P01_checked_run_discloses_measured_zero_not_unmeasured(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1370,7 +3029,7 @@ def test_P01_summary_distinguishes_unmeasured_from_measured_zero(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "checked-repo").mkdir(parents=True)
-    (projects / "checked-repo" / "control.py").touch()
+    write_executable(projects / "checked-repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(
         roots_path,
@@ -1413,7 +3072,7 @@ def test_P01_all_environment_shapes_load_known_phantoms_ledger(
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     if checked:
-        (projects / "repo" / "control.py").touch()
+        write_executable(projects / "repo" / "control.py")
         write_records(
             l1_dir,
             "sample",

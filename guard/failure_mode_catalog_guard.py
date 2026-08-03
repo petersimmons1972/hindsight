@@ -9,11 +9,15 @@ as unbacked must remain visible without being treated as build failures.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import os
 import re
+import shutil
+import stat
+import subprocess
 import sys
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +26,406 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 # appear legitimately as provenance annotations inside the bug-class column
 # (e.g. "Container Runtime - Design (FM-RC-01)") and must not be flagged.
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
+RUNNER_PARSE_TIMEOUT_SECONDS = 5
+MAX_RUNNER_CANDIDATES = 256
+FileFingerprint = tuple[int, int, int, int, int]
+RunnerSourceCache = dict[tuple[Path, FileFingerprint], bool]
+BATS_GENERATED_TEST_RE = re.compile(
+    r"(?m)^bats_test_function --description [^\n]* -- "
+    r"(?P<name>test_[A-Za-z0-9_-]+);(?P=name)\(\) \{"
+)
+BATS_UNTRANSFORMED_TEST_RE = re.compile(r"(?m)^[ \t]*@test\b")
+JAVASCRIPT_ACORN_PROGRAM = r"""
+'use strict';
+const acorn = require('internal/deps/acorn/acorn/dist/acorn');
+const fs = require('fs');
+const source = fs.readFileSync(0, 'utf8');
+const MAX_CALLS = 256;
+const SUPPORTED = new Set([
+  'ArrayExpression','ArrayPattern','ArrowFunctionExpression','AssignmentExpression',
+  'AssignmentPattern','AwaitExpression','BinaryExpression','BlockStatement',
+  'BreakStatement','CallExpression','CatchClause','ChainExpression','ClassBody',
+  'ClassDeclaration','ClassExpression','ConditionalExpression','ContinueStatement',
+  'DebuggerStatement','DoWhileStatement','EmptyStatement','ExportAllDeclaration',
+  'ExportDefaultDeclaration','ExportNamedDeclaration','ExportSpecifier',
+  'ExpressionStatement','ForInStatement','ForOfStatement','ForStatement',
+  'FunctionDeclaration','FunctionExpression','Identifier','IfStatement',
+  'ImportAttribute','ImportDeclaration','ImportDefaultSpecifier','ImportExpression',
+  'ImportNamespaceSpecifier','ImportSpecifier','LabeledStatement','Literal',
+  'LogicalExpression','MemberExpression','MetaProperty','MethodDefinition',
+  'NewExpression','ObjectExpression','ObjectPattern','ParenthesizedExpression',
+  'PrivateIdentifier','Program','Property','PropertyDefinition','RestElement',
+  'ReturnStatement','SequenceExpression','SpreadElement','StaticBlock',
+  'Super','SwitchCase','SwitchStatement','TaggedTemplateExpression',
+  'TemplateElement','TemplateLiteral','ThisExpression','ThrowStatement',
+  'TryStatement','UnaryExpression','UpdateExpression','VariableDeclaration',
+  'VariableDeclarator','WhileStatement','WithStatement','YieldExpression'
+]);
+let bad = false;
+let calls = 0;
+let topLevelCalls = 0;
+let trusted = null;
+
+function identifier(node, name) {
+  return node && node.type === 'Identifier' && node.name === name;
+}
+function staticName(node, name) {
+  return identifier(node, name) ||
+    (node && node.type === 'Literal' && node.value === name) ||
+    (node && node.type === 'TemplateLiteral' && node.expressions.length === 0 &&
+      node.quasis.length === 1 && node.quasis[0].value.cooked === name);
+}
+function member(node, objectName, propertyName) {
+  return node && node.type === 'MemberExpression' &&
+    identifier(node.object, objectName) && staticName(node.property, propertyName);
+}
+function exactTrustedBinding(node) {
+  if (!node || node.type !== 'VariableDeclaration' || node.kind !== 'const' ||
+      node.declarations.length !== 1) return false;
+  const declaration = node.declarations[0];
+  if (!declaration.id || declaration.id.type !== 'ObjectPattern' ||
+      !member(declaration.init, 'global', '__ff') || declaration.init.computed) return false;
+  const names = ['test', 'assert', 'eq'];
+  return declaration.id.properties.length === names.length &&
+    declaration.id.properties.every((property, index) =>
+      property.type === 'Property' && property.kind === 'init' &&
+      property.shorthand && !property.computed && !property.method &&
+      identifier(property.key, names[index]) && identifier(property.value, names[index]));
+}
+function isTrustedIdentifier(node) {
+  if (!trusted || node.start < trusted.start || node.end > trusted.end) return false;
+  return node.name === 'test';
+}
+function isInertKey(node, parent, key) {
+  return parent && (
+    ((parent.type === 'Property' || parent.type === 'MethodDefinition' ||
+      parent.type === 'PropertyDefinition') && key === 'key' && !parent.computed) ||
+    (parent.type === 'MemberExpression' && key === 'property' && !parent.computed) ||
+    ((parent.type === 'LabeledStatement' || parent.type === 'BreakStatement' ||
+      parent.type === 'ContinueStatement') && key === 'label'));
+}
+function isRunnerCall(node) {
+  if (node.optional || !identifier(node.callee, 'test') || node.arguments.length !== 2 ||
+      node.arguments.some((argument) => argument.type === 'SpreadElement')) return false;
+  const name = node.arguments[0];
+  const callback = node.arguments[1];
+  return ((name.type === 'Literal' && typeof name.value === 'string') ||
+    name.type === 'TemplateLiteral') &&
+    (callback.type === 'ArrowFunctionExpression' || callback.type === 'FunctionExpression');
+}
+function isTopLevelCall(node, parent, ancestors) {
+  return parent && parent.type === 'ExpressionStatement' &&
+    ancestors.length >= 2 && ancestors[ancestors.length - 2].type === 'Program';
+}
+function walk(node, parent = null, key = '', ancestors = []) {
+  if (!node || typeof node !== 'object' || bad) return;
+  if (typeof node.type === 'string' && !SUPPORTED.has(node.type)) { bad = true; return; }
+  if (node.type === 'CallExpression' && identifier(node.callee, 'test')) {
+    if (!isRunnerCall(node)) bad = true;
+    else {
+      if (++calls > MAX_CALLS) bad = true;
+      if (isTopLevelCall(node, parent, ancestors)) ++topLevelCalls;
+    }
+  }
+  if (node.type === 'Identifier' && node.name === 'test' &&
+      !(parent && parent.type === 'CallExpression' && key === 'callee' && isRunnerCall(parent)) &&
+      !isTrustedIdentifier(node) && !isInertKey(node, parent, key)) bad = true;
+  const nextAncestors = ancestors.concat(node);
+  for (const childKey of Object.keys(node)) {
+    if (['start','end','loc','range'].includes(childKey)) continue;
+    const child = node[childKey];
+    if (Array.isArray(child)) child.forEach((item) => walk(item, node, childKey, nextAncestors));
+    else if (child && typeof child === 'object') walk(child, node, childKey, nextAncestors);
+  }
+}
+
+try {
+  const tree = acorn.parse(source, {ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true});
+  let first = 0;
+  if (tree.body[0] && tree.body[0].type === 'ExpressionStatement' &&
+      tree.body[0].directive === 'use strict' &&
+      ["'use strict'", '"use strict"'].includes(
+        source.slice(tree.body[0].expression.start, tree.body[0].expression.end))) first = 1;
+  if (exactTrustedBinding(tree.body[first])) trusted = tree.body[first];
+  walk(tree);
+  process.stdout.write(JSON.stringify({
+    managed: !bad && trusted !== null && calls > 0 && topLevelCalls > 0
+  }));
+} catch (_) {
+  process.stdout.write('{"managed":false}');
+}
+"""
+JAVASCRIPT_ACORN_ARGV = [
+    "node",
+    "--expose-internals",
+    "-e",
+    JAVASCRIPT_ACORN_PROGRAM,
+]
+MAX_JAVASCRIPT_PARSER_OUTPUT_BYTES = 64
+
+
+def _read_regular_utf8_snapshot(path: Path) -> tuple[str, FileFingerprint] | None:
+    """Read and fingerprint one regular UTF-8 descriptor without blocking on a FIFO."""
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        fingerprint: FileFingerprint = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source_file:
+            descriptor = None
+            source = source_file.read()
+    except (OSError, UnicodeError):
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    return source, fingerprint
+
+
+def _read_regular_utf8(path: Path) -> str | None:
+    """Read one regular UTF-8 file, failing closed at the narrow I/O boundary."""
+    snapshot = _read_regular_utf8_snapshot(path)
+    return None if snapshot is None else snapshot[0]
+
+
+def _run_runner_parser(
+    argv: list[str],
+    *,
+    input_text: str | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run one fixed-argv parser probe, preserving its status and failing closed."""
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=RUNNER_PARSE_TIMEOUT_SECONDS,
+            input=input_text,
+            env=env,
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return None
+    return completed
+
+
+def _resolve_bats_preprocessor() -> tuple[Path, dict[str, str]] | None:
+    """Resolve Bats' shipped preprocessor and its deterministic library environment."""
+    bats_executable = shutil.which("bats")
+    if bats_executable is None:
+        return None
+    try:
+        real_bats = Path(bats_executable).resolve(strict=True)
+        bats_root = real_bats.parent.parent
+        preprocessor = (
+            bats_root / "libexec" / "bats-core" / "bats-preprocess"
+        ).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+    bats_libdir: str | None = None
+    for candidate in ("lib", "lib64"):
+        try:
+            common = (bats_root / candidate / "bats-core" / "common.bash").stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(common.st_mode):
+            bats_libdir = candidate
+            break
+    if bats_libdir is None:
+        return None
+
+    return preprocessor, {
+        "BATS_ROOT": str(bats_root),
+        "BATS_LIBDIR": bats_libdir,
+        "PATH": os.defpath,
+    }
+
+
+def _bash_syntax(source: str) -> subprocess.CompletedProcess[str] | None:
+    """Parse shell source from stdin without sourcing or executing it."""
+    return _run_runner_parser(["bash", "-n"], input_text=source)
+
+
+def _mutation_is_shell_code(source: str, start: int, end: int) -> bool | None:
+    """Use Bash's parser to distinguish a raw candidate from inert shell data."""
+    mutated = f"{source[:start]}){source[end:]}"
+    parsed = _bash_syntax(mutated)
+    return None if parsed is None else parsed.returncode != 0
+
+
+def _is_runner_managed_test_source(
+    path: Path, cache: RunnerSourceCache | None = None
+) -> bool:
+    """Recognize structurally plausible non-executable runner sources.
+
+    A runner may execute its source input without an execute bit. Accepted
+    shapes are Pytest ``.py`` modules, Bats ``.bats`` files, and JavaScript
+    ``*.test.js`` files. Python uses its AST; Bats and JavaScript use the
+    repository's existing runner dependencies as authoritative syntax parsers.
+    No format is accepted from a suffix or substring alone.
+    """
+    if path.suffix == ".py":
+        return _is_pytest_source(path)
+    if path.suffix == ".bats":
+        return _is_bats_source(path)
+    if path.name.endswith(".test.js"):
+        return _is_javascript_test_source(path, cache)
+    return False
+
+
+def _is_pytest_source(path: Path) -> bool:
+    """Accept Python only when its AST contains an actual Pytest test node."""
+    source = _read_regular_utf8(path)
+    if source is None:
+        return False
+    try:
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError:
+        return False
+
+    def is_test_function(node: ast.stmt) -> bool:
+        return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+
+    return any(
+        is_test_function(node)
+        or (
+            isinstance(node, ast.ClassDef)
+            and node.name.startswith("Test")
+            and any(is_test_function(child) for child in node.body)
+        )
+        for node in module.body
+    )
+
+
+def _is_bats_source(path: Path) -> bool:
+    """Accept regular UTF-8 Bats sources that parse and declare a test.
+
+    Bats itself is never invoked because even collection executes top-level
+    source. Its shipped preprocessor performs a source-to-source declaration
+    transform; Bash then validates the transformed bytes from stdin without
+    sourcing them. Parser-oracle mutations distinguish generated declarations
+    in shell code from lookalikes inside heredoc data.
+    """
+    snapshot = _read_regular_utf8_snapshot(path)
+    if snapshot is None:
+        return False
+    source = snapshot[0]
+    resolved = _resolve_bats_preprocessor()
+    if resolved is None:
+        return False
+    preprocessor, env = resolved
+    preprocessed = _run_runner_parser(
+        [str(preprocessor), str(path)],
+        env=env,
+    )
+    if (
+        preprocessed is None
+        or preprocessed.returncode != 0
+        or not isinstance(preprocessed.stdout, str)
+        or not preprocessed.stdout.strip()
+    ):
+        return False
+    transformed = preprocessed.stdout
+    source_lines = source.splitlines()
+    transformed_lines = transformed.splitlines()
+    if len(transformed_lines) < len(source_lines) or any(
+        transformed_lines[len(source_lines) :]
+    ):
+        return False
+    syntax = _bash_syntax(transformed)
+    if syntax is None or syntax.returncode != 0:
+        return False
+
+    malformed_candidates = list(BATS_UNTRANSFORMED_TEST_RE.finditer(transformed))
+    declarations = list(BATS_GENERATED_TEST_RE.finditer(transformed))
+    if len(malformed_candidates) + len(declarations) > MAX_RUNNER_CANDIDATES:
+        return False
+    for candidate in malformed_candidates:
+        localized = _mutation_is_shell_code(
+            transformed, candidate.start(), candidate.end()
+        )
+        if localized is None or localized:
+            return False
+
+    for declaration in declarations:
+        line_number = transformed.count("\n", 0, declaration.start())
+        if source_lines[line_number] == transformed_lines[line_number]:
+            continue
+        function_start = declaration.end("name") + 1
+        function_end = function_start + len(declaration.group("name"))
+        localized = _mutation_is_shell_code(transformed, function_start, function_end)
+        if localized is None:
+            return False
+        if localized and _read_regular_utf8_snapshot(path) == snapshot:
+            return True
+    return False
+
+
+def _is_javascript_test_source(
+    path: Path, cache: RunnerSourceCache | None = None
+) -> bool:
+    """Classify a stable JavaScript snapshot with one inert Acorn AST parse.
+
+    Candidate bytes travel only on stdin to a fixed reviewer program. The
+    reviewer requires the exact leading Fleet ``global.__ff`` binding and a
+    direct runner-shaped call through its captured ``test`` identifier. It
+    rejects later shadows or mutations, non-call lookalikes, malformed syntax,
+    and unsupported AST nodes. Parser failures and malformed or oversized output
+    fail closed. A caller-owned cache may reuse only the same canonical path and
+    descriptor fingerprint within one verifier report.
+    """
+    snapshot = _read_regular_utf8_snapshot(path)
+    if snapshot is None:
+        return False
+    source, fingerprint = snapshot
+    try:
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    cache_key = (canonical, fingerprint)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    parsed = _run_runner_parser(JAVASCRIPT_ACORN_ARGV, input_text=source)
+    managed = False
+    if (
+        parsed is not None
+        and parsed.returncode == 0
+        and isinstance(parsed.stdout, str)
+        and len(parsed.stdout.encode("utf-8")) <= MAX_JAVASCRIPT_PARSER_OUTPUT_BYTES
+    ):
+        try:
+            result: Any = json.loads(parsed.stdout)
+        except (json.JSONDecodeError, UnicodeError):
+            result = None
+        managed = (
+            isinstance(result, dict)
+            and set(result) == {"managed"}
+            and isinstance(result["managed"], bool)
+            and result["managed"]
+        )
+
+    if _read_regular_utf8_snapshot(path) != snapshot:
+        return False
+    if cache is not None:
+        cache[cache_key] = managed
+    return managed
 
 
 @dataclass(frozen=True)
@@ -402,8 +806,14 @@ def verify_enforcement(
                           this machine. Reported loudly with a count; never silently
                           folded into "enforced" -- it is an admission, not a pass.
 
-    A resolved path establishes only that a claimed mechanism still exists; it
-    intentionally makes no claim about whether that file enforces its lesson.
+    A resolved path establishes only that a claimed mechanism still exists.
+    A ``hook`` must be a regular executable file. A ``test`` must be regular
+    and executable, except for runner-managed Pytest sources with a valid test
+    AST or Bats/``*.test.js`` sources accepted by their existing repository
+    runtime dependencies. Ordinary executable ``kind:test`` and ``kind:hook``
+    files short-circuit before runner inspection and do not invoke Node or
+    Bats. A present, non-executable stub is a phantom. The verifier intentionally
+    makes no broader claim that a plausible file enforces its recorded lesson.
     """
     if not l1_dir.is_dir():
         raise ValueError(f"L1 directory not found: {l1_dir}")
@@ -414,6 +824,7 @@ def verify_enforcement(
     unverifiable: list[str] = []
     roots_resolved: dict[str, Path] = {}
     roots_unresolved: dict[str, str] = {}
+    runner_source_cache: RunnerSourceCache = {}
 
     for jsonl_path in sorted(l1_dir.glob("*.jsonl")):
         source = jsonl_path.stem
@@ -478,7 +889,39 @@ def verify_enforcement(
 
             totals.checked += 1
             resolved = (source_root / enforcement_file).resolve()
-            if not resolved.is_relative_to(source_root) or not resolved.exists():
+            contained = resolved.is_relative_to(source_root)
+            resolved_mode: int | None = None
+            if contained:
+                try:
+                    resolved_mode = resolved.stat().st_mode
+                except OSError:
+                    pass
+            if resolved_mode is None:
+                totals.phantoms += 1
+                phantoms.append(
+                    PhantomEntry(
+                        source=source,
+                        entry_id=str(entry_id),
+                        enforcement_file=enforcement_file,
+                        location=f"{jsonl_path}:{line_number}",
+                    )
+                )
+                continue
+
+            kind = enforcement.get("kind")
+            executable_kind = kind in {"test", "hook"}
+            executable_file = stat.S_ISREG(resolved_mode) and bool(
+                resolved_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            )
+            plausible_mechanism = (
+                not executable_kind
+                or executable_file
+                or (
+                    kind == "test"
+                    and _is_runner_managed_test_source(resolved, runner_source_cache)
+                )
+            )
+            if not plausible_mechanism:
                 totals.phantoms += 1
                 phantoms.append(
                     PhantomEntry(
@@ -544,9 +987,15 @@ def print_enforcement_report(report: EnforcementReport) -> None:
         print(f"  {source}: {report.roots_unresolved[source]}", file=sys.stderr)
 
     print(
-        "enforcement-verifier: SCOPE: checks path existence only; a resolving path "
-        "is necessary, not sufficient evidence that it enforces the claimed lesson. "
-        "UNVERIFIABLE entries were not checked at all -- they are neither enforced nor phantom.",
+        "enforcement-verifier: SCOPE: checks containment and existence; hooks and "
+        "tests must be regular executable files, except runner-managed Pytest (.py) "
+        "sources with a test AST, Bats (.bats) sources parsed by Bats' non-executing "
+        "preprocessor plus Bash, or *.test.js sources parsed once by Node's bundled Acorn "
+        "and carrying the exact leading Fleet global.__ff runner binding. "
+        "Ordinary executable "
+        "test/hook files do not invoke those runners. A plausible path is necessary, "
+        "not sufficient evidence that it enforces the claimed lesson. UNVERIFIABLE "
+        "entries were not checked at all -- they are neither enforced nor phantom.",
         file=sys.stderr,
     )
 

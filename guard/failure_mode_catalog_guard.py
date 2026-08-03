@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from itertools import pairwise
@@ -22,6 +23,92 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 # appear legitimately as provenance annotations inside the bug-class column
 # (e.g. "Container Runtime - Design (FM-RC-01)") and must not be flagged.
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
+
+
+def _is_runner_managed_test_source(path: Path) -> bool:
+    """Parse the supported non-executable JavaScript test-source shape.
+
+    The fleet runner imports ``*.test.js`` files, so they need not be
+    executable. This deliberately recognizes a bounded syntactic form instead
+    of substring matching: a balanced ``test(<quoted name>, () => {...})``
+    call (optionally ``async``).
+    It skips JavaScript comments and quoted strings while scanning, which keeps
+    ``test(`` and ``// test(`` stubs from becoming enforcement evidence.
+    """
+    if not path.is_file() or not path.name.endswith(".test.js"):
+        return False
+
+    source = path.read_text(encoding="utf-8")
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char.isspace():
+            index += 1
+        elif source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = len(source) if newline == -1 else newline + 1
+        elif source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            if end == -1:
+                return False
+            index = end + 2
+        elif char in "'\"`":
+            quote = char
+            index += 1
+            while index < len(source) and source[index] != quote:
+                index += 2 if source[index] == "\\" else 1
+            if index == len(source):
+                return False
+            tokens.append(("string", ""))
+            index += 1
+        elif char.isidentifier() or char in "$_":
+            end = index + 1
+            while end < len(source) and (source[end].isalnum() or source[end] in "$_"):
+                end += 1
+            tokens.append(("identifier", source[index:end]))
+            index = end
+        else:
+            tokens.append(("punctuation", char))
+            index += 1
+
+    for index, token in enumerate(tokens[:-4]):
+        if token != ("identifier", "test") or tokens[index + 1] != ("punctuation", "("):
+            continue
+        if tokens[index + 2][0] != "string" or tokens[index + 3] != ("punctuation", ","):
+            continue
+        body_index = index + 4
+        if tokens[body_index] == ("identifier", "async"):
+            body_index += 1
+        if body_index >= len(tokens) or tokens[body_index] != ("punctuation", "("):
+            continue
+        depth = 1
+        brace_depth = 0
+        arrow_seen = False
+        arrow_body_seen = False
+        for candidate_index, candidate in enumerate(tokens[body_index:], start=body_index):
+            if candidate == ("punctuation", "("):
+                depth += 1
+            elif candidate == ("punctuation", ")"):
+                depth -= 1
+                if depth == 0:
+                    return arrow_seen and arrow_body_seen and brace_depth == 0
+            elif candidate == ("punctuation", "{"):
+                brace_depth += 1
+                if arrow_seen and depth == 1:
+                    arrow_body_seen = True
+            elif candidate == ("punctuation", "}"):
+                brace_depth -= 1
+                if brace_depth < 0:
+                    return False
+            elif (
+                candidate == ("punctuation", "=")
+                and depth == 1
+                and candidate_index + 1 < len(tokens)
+                and tokens[candidate_index + 1] == ("punctuation", ">")
+            ):
+                arrow_seen = True
+    return False
 
 
 @dataclass(frozen=True)
@@ -402,8 +489,12 @@ def verify_enforcement(
                           this machine. Reported loudly with a count; never silently
                           folded into "enforced" -- it is an admission, not a pass.
 
-    A resolved path establishes only that a claimed mechanism still exists; it
-    intentionally makes no claim about whether that file enforces its lesson.
+    A resolved path establishes only that a claimed mechanism still exists.
+    A ``hook`` must be a regular executable file. A ``test`` must be regular
+    and executable, except for runner-managed ``*.test.js`` sources containing
+    a test declaration. A present, non-executable stub is a phantom. The
+    verifier intentionally makes no broader claim that a plausible file
+    enforces its recorded lesson.
     """
     if not l1_dir.is_dir():
         raise ValueError(f"L1 directory not found: {l1_dir}")
@@ -478,7 +569,31 @@ def verify_enforcement(
 
             totals.checked += 1
             resolved = (source_root / enforcement_file).resolve()
-            if not resolved.is_relative_to(source_root) or not resolved.exists():
+            contained = resolved.is_relative_to(source_root)
+            exists = contained and resolved.exists()
+            if not exists:
+                totals.phantoms += 1
+                phantoms.append(
+                    PhantomEntry(
+                        source=source,
+                        entry_id=str(entry_id),
+                        enforcement_file=enforcement_file,
+                        location=f"{jsonl_path}:{line_number}",
+                    )
+                )
+                continue
+
+            kind = enforcement.get("kind")
+            executable_kind = kind in {"test", "hook"}
+            executable_file = resolved.is_file() and bool(
+                resolved.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            )
+            plausible_mechanism = (
+                not executable_kind
+                or executable_file
+                or (kind == "test" and _is_runner_managed_test_source(resolved))
+            )
+            if not plausible_mechanism:
                 totals.phantoms += 1
                 phantoms.append(
                     PhantomEntry(
@@ -544,8 +659,10 @@ def print_enforcement_report(report: EnforcementReport) -> None:
         print(f"  {source}: {report.roots_unresolved[source]}", file=sys.stderr)
 
     print(
-        "enforcement-verifier: SCOPE: checks path existence only; a resolving path "
-        "is necessary, not sufficient evidence that it enforces the claimed lesson. "
+        "enforcement-verifier: SCOPE: checks containment and existence; hooks and tests must be "
+        "regular executable files, except runner-managed *.test.js sources with a balanced "
+        "test(name, body) call. A plausible path is necessary, not sufficient evidence that it "
+        "enforces the claimed lesson. "
         "UNVERIFIABLE entries were not checked at all -- they are neither enforced nor phantom.",
         file=sys.stderr,
     )

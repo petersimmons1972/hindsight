@@ -51,6 +51,11 @@ def write_enforcement_floor(path: Path, floor: int | str) -> None:
     path.write_text(f"{floor}\n", encoding="utf-8")
 
 
+def write_executable(path: Path) -> None:
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
 def run_verifier(
     monkeypatch: pytest.MonkeyPatch,
     l1_dir: Path,
@@ -107,7 +112,7 @@ def test_root_known_and_path_exists_is_enforced_and_silent(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -139,6 +144,93 @@ def test_root_known_and_path_absent_is_phantom_names_entry_and_source(
     assert "phantom: missing/control.py (sample:example," in err
 
 
+@pytest.mark.parametrize("kind", ["test", "hook"])
+def test_non_executable_stub_is_phantom_for_executable_mechanism_kinds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    """A present inert stub must not satisfy a test or hook enforcement claim."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    (repo / "decoy.sh").write_text("decoy\n", encoding="utf-8")
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("decoy", {"file": "decoy.sh", "kind": kind}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    assert f"phantom: decoy.sh (sample:decoy," in capsys.readouterr().err
+
+
+def test_non_executable_runner_managed_test_source_is_plausible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A test runner may execute a source file without its execute bit."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    (repo / "feature.test.js").write_text("test('feature', () => {});\n", encoding="utf-8")
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", machine_record("runner-test", {"file": "feature.test.js", "kind": "test"})
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    assert "phantom:" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "contents",
+    ["test(", "// test(\n", 'test("x",)', 'test("x",,)', 'test("x", async)', 'test("x", function)', 'test("x", () =>)', 'test("x", () =>;)', 'test("x", () => {)'],
+)
+def test_invalid_or_commented_runner_test_stub_is_phantom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str
+) -> None:
+    """A filename and substring alone are not evidence of a runnable test."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    (repo / "decoy.test.js").write_text(contents, encoding="utf-8")
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("decoy", {"file": "decoy.test.js", "kind": "test"}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+
+
+def test_escaping_runner_managed_test_path_is_rejected_before_plausibility_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Containment must gate the content probe for an escaped test path."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    projects.mkdir()
+    (projects / "outside.test.js").write_text("test('outside', () => {});\n", encoding="utf-8")
+    (projects / "repo").mkdir()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("escape", {"file": "../outside.test.js", "kind": "test"}),
+    )
+
+    monkeypatch.setattr(
+        MODULE,
+        "_is_runner_managed_test_source",
+        lambda path: (_ for _ in ()).throw(AssertionError(f"must not inspect {path}")),
+    )
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    assert "phantom: ../outside.test.js (sample:escape," in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # UNVERIFIABLE: two distinct reasons, neither counted as enforced (silent pass).
 # ---------------------------------------------------------------------------
@@ -154,7 +246,7 @@ def test_root_unknown_is_unverifiable_not_enforced(
     # root floor sees at least one genuinely useful root and doesn't mask
     # what we're testing here behind the SKIPPED (zero-useful-roots) path.
     (projects / "anchor-repo").mkdir(parents=True)
-    (projects / "anchor-repo" / "control.py").touch()
+    write_executable(projects / "anchor-repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"anchor": "anchor-repo"})
     write_records(
@@ -191,7 +283,7 @@ def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
     projects = tmp_path / "projects"
     projects.mkdir()
     (projects / "anchor-repo").mkdir()
-    (projects / "anchor-repo" / "control.py").touch()
+    write_executable(projects / "anchor-repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     # "vanished" is mapped, but its target directory does not exist on this
     # machine -- exactly the CI-runner-without-checkouts case, but scoped to
@@ -244,7 +336,7 @@ def test_require_roots_flag_raises_the_floor(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo-a").mkdir(parents=True)
-    (projects / "repo-a" / "control.py").touch()
+    write_executable(projects / "repo-a" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"a": "repo-a", "b": "repo-b-not-checked-out"})
     # "a" has a real, resolving, non-null entry -- genuinely useful, not just
@@ -478,7 +570,7 @@ def test_enforcement_bearing_count_dropping_below_floor_is_an_error(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     # Only 1 enforcement-bearing entry exists this run...
@@ -503,7 +595,7 @@ def test_enforcement_bearing_count_at_or_above_floor_is_fine(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -645,7 +737,7 @@ def test_missing_known_phantoms_ledger_fails_loud_not_a_silent_no_op(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -669,7 +761,7 @@ def test_empty_known_phantoms_ledger_is_a_valid_zero_debt_state(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -732,7 +824,7 @@ def test_corrupt_l1_corpus_exits_nonzero_not_a_clean_run(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     (l1_dir / "sample.jsonl").write_text(
@@ -778,7 +870,7 @@ def test_nulling_every_enforcement_value_breaches_the_debt_floor(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     # Two machine entries; the enforcement value of one was removed. Present
@@ -846,7 +938,7 @@ def test_require_roots_counts_roots_that_verified_something_not_roots_that_resol
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo-a").mkdir(parents=True)
-    (projects / "repo-a" / "control.py").touch()
+    write_executable(projects / "repo-a" / "control.py")
     (projects / "repo-b").mkdir(parents=True)  # resolves, but checks nothing
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"a": "repo-a", "b": "repo-b"})
@@ -890,7 +982,7 @@ def test_unrecognised_auto_value_raises_instead_of_dropping_the_record(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     write_records(
         l1_dir,
         "sample",
@@ -907,7 +999,7 @@ def test_blank_l1_record_raises_instead_of_being_skipped(tmp_path: Path) -> None
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     (l1_dir / "sample.jsonl").write_text(
         json.dumps(machine_record("one", {"file": "control.py", "kind": "test"}))
         + "\n\n"
@@ -990,7 +1082,7 @@ def test_M04_M05_malformed_source_roots_line_is_fatal_not_skipped(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     # One valid mapping so an empty-map check cannot absorb the failure;
     # the malformed line is the only thing that must make the loader raise.
@@ -1037,7 +1129,7 @@ def test_judgment_entry_with_resolving_enforcement_is_checked_and_passes(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1076,7 +1168,7 @@ def test_machine_entry_remains_checked_when_a_judgment_entry_is_also_present(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1100,7 +1192,7 @@ def test_debt_floor_counts_every_enforcement_bearing_row_and_reports_old_total(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1197,7 +1289,7 @@ def test_M23_multi_value_floor_file_is_fatal_not_first_wins(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -1224,7 +1316,7 @@ def test_M24_non_object_known_phantoms_line_is_fatal_not_skipped(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(l1_dir, "sample", machine_record("example", {"file": "control.py", "kind": "test"}))
@@ -1308,7 +1400,7 @@ def test_P01_checked_run_discloses_measured_zero_not_unmeasured(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "repo").mkdir(parents=True)
-    (projects / "repo" / "control.py").touch()
+    write_executable(projects / "repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -1370,7 +1462,7 @@ def test_P01_summary_distinguishes_unmeasured_from_measured_zero(
     l1_dir.mkdir()
     projects = tmp_path / "projects"
     (projects / "checked-repo").mkdir(parents=True)
-    (projects / "checked-repo" / "control.py").touch()
+    write_executable(projects / "checked-repo" / "control.py")
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(
         roots_path,
@@ -1413,7 +1505,7 @@ def test_P01_all_environment_shapes_load_known_phantoms_ledger(
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     if checked:
-        (projects / "repo" / "control.py").touch()
+        write_executable(projects / "repo" / "control.py")
         write_records(
             l1_dir,
             "sample",

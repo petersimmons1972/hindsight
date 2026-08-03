@@ -24,7 +24,7 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
 
     forbidden = (
         "pipeline/capture_embedding_snapshot.py",
-        "pipeline/cluster.py --backend",
+        "pipeline/cluster.py",
         "curl",
         "wget",
         "embedding HTTP",

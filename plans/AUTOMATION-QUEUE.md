@@ -105,13 +105,89 @@ cli-dispatch start \
   --brief-file plans/briefs/<packet>.md
 ```
 
-**The audition slot currently rejects every available pairing** (`codex`, `grok` and `claude` are all
-"established"; `opencode` fails on billing), so each start additionally needs `--audition-exempt`
-with a truthful reason until that is fixed. See `~/HANDOFF.md` BLOCKED ON FOUNDER item 7.
+`--audition-exempt` is **no longer routinely needed** (it was, until 2026-08-03). The audition gate
+keys on the `(model, harness)` **pair**, and no harness except `opencode` had a `model` configured,
+so every cli-dispatch row recorded `model=""` and all codex tiers collapsed into one permanently
+"established" pair. `~/.config/cli-dispatch/harnesses.toml` now pins a model per harness, so the
+ledger records the tier that actually ran and thin pairs are auditionable again. Pass
+`--audition-exempt` only when a specific start genuinely warrants it, with a truthful reason.
 
 `cli-dispatch` returns exit 10 (`committed-no-pr`) when the agent declines to self-certify — that is
 **not** a failure. Inspect the worktree under `.dispatch/worktrees/<task>/`, verify the baselines
 yourself, then push and open the PR manually.
+
+## Choosing a tier — and when to fan out
+
+**Default to `--harness codex-workflow` for anything with more than one moving part** (founder
+ruling, 2026-08-03). A `gpt-5.6-sol` coordinator plans, fans out to cheap children, and synthesizes.
+The point is not raw capability, it is **context hygiene**: each child reads the files its own
+subtask needs and returns a short answer, so the coordinator's window never accumulates the whole
+corpus. That is the same reason this campaign runs on workflows rather than one long session.
+
+Pick by what the work actually demands, not by what is available:
+
+| tier | price in/out per Mtok | use it for |
+|---|---|---|
+| `gpt-5.6-luna` | $0.20 / $1.20 | mechanical, fully specified: apply this diff, grep-and-report, rename, single-file edit against a stated contract |
+| `gpt-5.6-terra` | $2 / $12 | ordinary implementation where the shape is known but the details are not |
+| `gpt-5.6-sol` | $5 / $30 | coordination, security-adjacent reasoning, anything adversarial, and any packet whose failure mode is subtle |
+
+Children are `luna` by default; promote a child to `terra` only when a `luna` child has actually
+failed the subtask, not pre-emptively. Every packet in the queue above is single-file and
+fully specified, so `--harness codex --effort low` is the right call for them; reach for
+`codex-workflow` on the plan-04 chain, on #21, and on anything requiring independent verification.
+
+```bash
+cli-dispatch start --repo … --task <packet> --harness codex-workflow --base origin/main \
+  --expect-files … --check … --check-strength behavioral --negative-cases yes \
+  --brief-file plans/briefs/<packet>.md
+```
+
+### What a fan-out brief must contain
+
+The coordinator runs under `-s workspace-write`, so a child cannot simply be spawned — three
+ingredients are mandatory and each was isolated by experiment. Copy this block into any brief that
+fans out:
+
+```
+STEP 1 — give each child its own CODEX_HOME inside this worktree (they cannot share one):
+  for n in 1 2; do
+    mkdir -p ".cx-$n"
+    ln -sf "$HOME/.codex/auth.json"   ".cx-$n/auth.json"
+    ln -sf "$HOME/.codex/config.toml" ".cx-$n/config.toml"
+  done
+
+STEP 2 — run the children IN PARALLEL. CODEX_HOME and < /dev/null are mandatory:
+  CODEX_HOME=./.cx-1 codex exec -m gpt-5.6-luna -s read-only -C . "<subtask>" < /dev/null > .w1 2>&1 &
+  CODEX_HOME=./.cx-2 codex exec -m gpt-5.6-luna -s read-only -C . "<subtask>" < /dev/null > .w2 2>&1 &
+  wait
+
+HARD LIMITS: exactly N children, no nesting, no retries.
+STEP 3 — synthesize, then delete the .cx-* and .w* scratch files so only the real change is added.
+```
+
+Why each ingredient, stated so nobody removes one as noise:
+
+1. **`CODEX_HOME` inside the worktree, `ln -sf` not `cp`.** The default `~/.codex` is outside the
+   sandbox, and a child pointed at it dies with `failed to initialize in-process app-server client:
+   Read-only file system (os error 30)`. Symlink rather than copy — `~/.codex` is 2.3GB, and copying
+   would duplicate a credential. Children must not share one home.
+2. **`< /dev/null` on every child.** Without it the child prints `Reading additional input from
+   stdin...` and hangs until the stall timer kills the whole dispatch.
+3. **`sandbox_workspace_write.network_access=true`** — set for you by the `codex-workflow` harness,
+   not by the brief. Without it children spawn fine and then die with `stream disconnected before
+   completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)`.
+
+The coordinator keeps `-s workspace-write` throughout. Do **not** reach for
+`--dangerously-bypass-approvals-and-sandbox`: it is unnecessary once the three items above are
+right, and it is blocked by the Claude Code auto-mode classifier anyway.
+
+Children are `-s read-only` on purpose. If a subtask must write, have the child emit its patch to a
+scratch file and let the coordinator apply it — that keeps exactly one writer in the worktree and
+avoids two children racing on the same file.
+
+Verified end-to-end on 2026-08-03 through `cli-dispatch start --harness codex-workflow`:
+`agent_exit=0`, discriminating check passed, only the intended file added, scratch cleaned up.
 
 ## Verification gate before any merge
 

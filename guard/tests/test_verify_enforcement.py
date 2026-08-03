@@ -176,7 +176,7 @@ def test_root_unknown_is_unverifiable_not_enforced(
     # would leave this count at 0 and this line unprinted -- "unverifiable"
     # in err.lower() alone does NOT catch that, because the line is printed
     # unconditionally too (in the SCOPE footer, and per-source summary row).
-    assert "UNVERIFIABLE: 1 machine entries could not be checked" in err
+    assert "UNVERIFIABLE: 1 enforcement-bearing entries could not be checked" in err
     # The specific detail line, keyed to the entry that was actually
     # appended -- not just the source name, which also appears in the
     # always-printed summary table regardless of whether detection ran.
@@ -210,7 +210,7 @@ def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
     assert exit_code == 0
     assert "phantom:" not in err
     # Discriminating, same rationale as test_root_unknown_is_unverifiable_not_enforced.
-    assert "UNVERIFIABLE: 1 machine entries could not be checked" in err
+    assert "UNVERIFIABLE: 1 enforcement-bearing entries could not be checked" in err
     assert "unverifiable: control.py (vanished:v-1," in err
 
 
@@ -1293,7 +1293,7 @@ def test_P01_skip_discloses_debt_unbacked_and_not_measured(
     assert exit_code == 0
     assert "enforcement-verifier: PHANTOM-DEBT: 1 documented in conf/known-phantoms.conf" in err
     assert "enforcement-verifier: UNBACKED: 1 machine entries carry enforcement: null" in err
-    assert "enforcement-verifier: UNVERIFIABLE: 2 machine entries could not be checked" in err
+    assert "enforcement-verifier: UNVERIFIABLE: 2 enforcement-bearing entries could not be checked" in err
     assert (
         "enforcement-verifier: PHANTOMS-MEASURED: NOT MEASURED HERE "
         "(ROOTS 1/3, 0 entries checked)"
@@ -1448,3 +1448,38 @@ def test_P01_all_environment_shapes_load_known_phantoms_ledger(
     assert exit_code == 1
     assert str(ledger_path) in err
     assert "known-phantoms.conf" in err
+
+
+def test_committed_floor_has_no_slack_against_the_committed_corpus() -> None:
+    """The floor in conf/ must equal what the gate actually counts today.
+
+    Every other test in this file monkeypatches a synthetic floor, so none of
+    them can see the real one drift. That is precisely how issue #31 nearly
+    shipped a loosened ratchet: widening the counted population from 33 to 35
+    while leaving conf/enforcement-floor.conf at 33 left two rows of slack, so
+    nulling a real enforcement value would have passed green.
+
+    Slack is the whole failure: if floor < measured, an entry can be deleted or
+    its enforcement nulled and the fleet#152 gate stays silent. This asserts
+    equality rather than `>=` deliberately -- adding an enforcement-bearing row
+    must be accompanied by raising the floor, which is what the ratchet means.
+    """
+    source_roots = MODULE.load_source_roots(ROOT / "conf" / "source-roots.conf")
+    # A deliberately absent projects dir: enforcement_bearing is root-independent,
+    # so the count is identical here and on a CI runner with no repos checked out.
+    report = MODULE.verify_enforcement(
+        ROOT / "pipeline" / "L1", ROOT / "no-such-projects-dir", source_roots
+    )
+    measured = MODULE.total_enforcement_bearing(report)
+    committed = int(
+        [
+            line.strip()
+            for line in (ROOT / "conf" / "enforcement-floor.conf").read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ][0]
+    )
+    assert measured == committed, (
+        f"conf/enforcement-floor.conf says {committed} but the committed corpus carries "
+        f"{measured} enforcement-bearing rows. "
+        f"{'Slack of ' + str(measured - committed) + ' row(s): an entry could be deleted or nulled and the gate would stay green.' if measured > committed else 'The floor is above the corpus; the gate will fail every run.'}"
+    )

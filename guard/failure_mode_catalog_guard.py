@@ -511,7 +511,7 @@ def print_enforcement_report(report: EnforcementReport) -> None:
     unverifiable_count = sum(total.unverifiable for total in report.sources.values())
     if unverifiable_count:
         print(
-            f"enforcement-verifier: UNVERIFIABLE: {unverifiable_count} machine entries could "
+            f"enforcement-verifier: UNVERIFIABLE: {unverifiable_count} enforcement-bearing entries could "
             "not be checked (source root unknown or not present on this machine) -- this is "
             "an admission, not a pass:",
             file=sys.stderr,

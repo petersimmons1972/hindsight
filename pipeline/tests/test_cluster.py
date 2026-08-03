@@ -13,6 +13,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Self
+from urllib.error import HTTPError
 
 import numpy as np
 import pytest
@@ -286,6 +287,39 @@ def test_provenance_digests_change_with_l1_and_cluster_inputs(tmp_path: Path) ->
         MODULE.CLUSTER_CONFIG["http_dense_weight"] = original
 
 
+@pytest.mark.parametrize("changed_input", ["l1", "cluster"])
+def test_capture_rejects_provenance_drift_during_request_and_preserves_output(
+    tmp_path: Path, monkeypatch, changed_input: str
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("old code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+
+    def mutate_during_request(base_url: str, texts: list[str], timeout: float) -> np.ndarray:
+        assert "old text" in texts[0]
+        if changed_input == "l1":
+            _write_l1(l1, instance="new text")
+        else:
+            cluster_code.write_text("new code\n", encoding="utf-8")
+        return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(CAPTURE, "_request_vectors", mutate_during_request)
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    with pytest.raises(ValueError, match=r"provenance changed during capture"):
+        CAPTURE.capture(args)
+    assert output.read_bytes() == prior
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
 class _EmbeddingHandler(BaseHTTPRequestHandler):
     response: object = {"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]}
     status = 200
@@ -293,7 +327,14 @@ class _EmbeddingHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers["Content-Length"])
         self.server.requests.append(json.loads(self.rfile.read(length)))  # type: ignore[attr-defined]
-        body = json.dumps(type(self).response).encode()
+        response = type(self).response
+        if self.path == "/v1/embeddings" and isinstance(response, dict) and isinstance(response.get("data"), list):
+            response = dict(response)
+            response["data"] = [
+                ({**item, "index": index} if isinstance(item, dict) and "index" not in item else item)
+                for index, item in enumerate(response["data"])
+            ]
+        body = json.dumps(response).encode()
         self.send_response(type(self).status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -312,6 +353,51 @@ def _serve_embeddings(response: object, status: int = 200):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def test_openai_response_indices_bind_vectors_to_request_order() -> None:
+    payload = {
+        "data": [
+            {"index": 1, "embedding": [0.0, 1.0]},
+            {"index": 0, "embedding": [1.0, 0.0]},
+        ]
+    }
+    vectors = CAPTURE._indexed_openai_vectors(payload, 2)
+    np.testing.assert_array_equal(vectors, [[1.0, 0.0], [0.0, 1.0]])
+
+
+@pytest.mark.parametrize(
+    "data,error",
+    [
+        ([{"embedding": [1.0, 0.0]}], "missing or invalid index"),
+        ([{"index": True, "embedding": [1.0, 0.0]}], "missing or invalid index"),
+        ([{"index": 0, "embedding": [1.0, 0.0]}, {"index": 0, "embedding": [0.0, 1.0]}], "duplicate index"),
+        ([{"index": 1, "embedding": [1.0, 0.0]}], "coverage mismatch"),
+    ],
+)
+def test_openai_response_rejects_ambiguous_indices(data: list[object], error: str) -> None:
+    with pytest.raises(ValueError, match=error):
+        CAPTURE._indexed_openai_vectors({"data": data}, 1)
+
+
+def test_capture_falls_back_to_native_per_text_endpoint(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def post(base_url: str, endpoint: str, payload: dict[str, object], timeout: float) -> object:
+        calls.append((endpoint, payload))
+        if endpoint == "/v1/embeddings":
+            raise HTTPError(base_url + endpoint, 404, "not supported", None, None)
+        content = payload["content"]
+        return {"embedding": [1.0, 0.0] if content == "first" else [0.0, 1.0]}
+
+    monkeypatch.setattr(CAPTURE, "_post_json", post)
+    matrix = CAPTURE._request_vectors("http://192.168.0.98:8004", ["first", "second"], 1.0)
+    np.testing.assert_array_equal(matrix, [[1.0, 0.0], [0.0, 1.0]])
+    assert calls == [
+        ("/v1/embeddings", {"input": ["first", "second"]}),
+        ("/embedding", {"content": "first"}),
+        ("/embedding", {"content": "second"}),
+    ]
 
 
 def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(
@@ -454,6 +540,63 @@ def test_capture_rejects_invalid_declared_backend_identity_without_replacing_out
         ]) != 0
     finally:
         server.shutdown()
+    assert output.read_bytes() == b"prior"
+
+
+def test_capture_refuses_redirect_without_contacting_unauthorized_destination(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class DestinationHandler(BaseHTTPRequestHandler):
+        hits = 0
+
+        def _respond(self) -> None:
+            type(self).hits += 1
+            self.send_response(200)
+            body = json.dumps({"data": [{"embedding": [1.0, 0.0]}]}).encode()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = _respond
+        do_POST = _respond
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    destination = ThreadingHTTPServer(("127.0.0.1", 0), DestinationHandler)
+    destination_thread = threading.Thread(target=destination.serve_forever, daemon=True)
+    destination_thread.start()
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header(
+                "Location", f"http://localhost:{destination.server_port}/stolen"
+            )
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output),
+            "--backend-url", f"http://127.0.0.1:{redirect.server_port}",
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+    finally:
+        redirect.shutdown()
+        destination.shutdown()
+    assert DestinationHandler.hits == 0
     assert output.read_bytes() == b"prior"
 
 

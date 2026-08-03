@@ -26,7 +26,7 @@ have produced the defect.
 |---|---|---|---|---|---|
 | 01 | `01-enforcement-disclosure.md` | #18 | COMPLETE — PR #27 merged; main guard green | — | — |
 | 02 | `02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green | — | 03, 06 |
-| 03 | `03-recurrence-trend-instrument.md` | #29 | RULED 2026-08-02 — three arms; serial split P0…P4, P0 next | 02 | X4, X6 |
+| 03 | `03-recurrence-trend-instrument.md` | #29 | **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok); `docs/DECISIONS.md` rows 22–26 | 02 | — |
 | 04 | `04-sync-repair-and-distribute.md` | #22 (closes #24) | READY | — | 05 |
 | 05 | `05-enforcement-locality.md` | #20, PR #12 | BLOCKED | 04 | — |
 | 06 | `06-l3-invariant-ledger.md` | #21 | BLOCKED | 02 | — |
@@ -34,6 +34,7 @@ have produced the defect.
 | 08 | `08-reconcile-partial-is-not-pass.md` | #25 | COMPLETE — PR #26 merged, main green | — | X2 |
 
 Recommended order is `08 → 01 → 02 → 03 → 04 → 05 → 06 → 07`; the rationale is in `../PLAN.md`.
+**03 is WITHDRAWN as of 2026-08-03** — skip it; the slot is not refilled.
 **Serial only** (R8): one dispatch in flight in this repo at a time, and no writes to the shared
 checkout while one is running.
 

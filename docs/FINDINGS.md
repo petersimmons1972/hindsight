@@ -210,3 +210,26 @@ The enforcement verifier checks only rows tagged `auto: machine`
 recorded path, and it appears in no ledger because judgment rows are structurally invisible to the
 check. The phantom ledger is a census of the machine-tagged subset only, and reads as a census of
 everything. Repairing the path is P1 work; widening the checker's scope is not yet scheduled.
+
+## Two orthogonal adversarial reviews rejected Plan 03 from opposite directions
+
+Commissioned 2026-08-03, each with a **different premise to reject** — one told to attack validity,
+the other told to attack worth. Neither is neutral. **Both returned REJECTED**, and they converged
+without sharing a premise:
+
+- **Codex-on-validity:** the outcome's time axis measures corpus assembly, not failures — roughly
+  90% of repaired rows are ingest-dated rather than organically logged. Arm A randomises whether
+  *prior art is displayed*, not whether a family is mechanized. Family-level assignment is
+  incoherent with per-write delivery. There is no power model. Arm C is selected on the very
+  property it is meant to compare.
+- **Grok-on-worth:** the census already answers the question — 8 of 192 families have a resolving
+  mechanism, and the two largest recurrent families were never mechanized at all. That is
+  non-treatment, not a causal gap, so a holdout would manufacture a control arm out of live
+  governance risk to measure something the census shows directly.
+
+**Convergence from opposite premises is the load-bearing fact, not either critique alone**
+(`lesson-convergence-is-not-corroboration`'s inverse case: two independent lanes, two independent
+artifacts, same verdict). Also confirmed while the reviews were still running: Grok's claim that the
+P0 date-repair defect count was structural was borne out by a ninth defect instance. The Arm A
+holdout (P2a) was never implemented — `plans/02` stayed fully enabled corpus-wide, so no 90-day
+prior-art suppression occurred. Full record: `docs/DECISIONS.md` rows 22–26, `plans/03` §12.

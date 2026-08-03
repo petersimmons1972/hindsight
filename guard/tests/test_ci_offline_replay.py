@@ -1,7 +1,9 @@
+import hashlib
 from pathlib import Path
 
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "guard.yml"
+INTENDED_WORKFLOW_SHA256 = "aaac78d7b665714d3ade29290bfa6370f539941e877e9d77b2b77354f2018403"
 
 
 def _step_blocks(workflow: str) -> list[tuple[str, ...]]:
@@ -16,7 +18,11 @@ def _step_blocks(workflow: str) -> list[tuple[str, ...]]:
 
 
 def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
-    workflow = WORKFLOW.read_text()
+    workflow_bytes = WORKFLOW.read_bytes()
+    # Deliberately pin the full manifest: any future workflow edit must receive
+    # review and update this test, even if an evasion preserves surface tokens.
+    assert hashlib.sha256(workflow_bytes).hexdigest() == INTENDED_WORKFLOW_SHA256
+    workflow = workflow_bytes.decode()
 
     replay_steps = [
         block for block in _step_blocks(workflow)

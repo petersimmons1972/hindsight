@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -178,10 +179,18 @@ def _compute_repair(
 
 
 def _replace_staged_outputs(outputs: list[tuple[Path, str]]) -> None:
-    """Replace validated outputs one file at a time, cleaning temporary files on error."""
-    temp_paths: list[Path] = []
+    """Commit outputs with normal-failure compensation, not crash atomicity.
+
+    Every original has a same-directory backup before replacement. Ordinary
+    staging and replace errors are compensated, but a process crash between
+    replacements cannot make the whole directory atomic.
+    """
+    staged_paths: list[Path] = []
+    backup_paths: dict[Path, Path] = {}
+    preserve_for_recovery: set[Path] = set()
+    ordered_outputs = sorted(outputs, key=lambda item: str(item[0]))
     try:
-        for path, output in outputs:
+        for path, output in ordered_outputs:
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
@@ -189,18 +198,58 @@ def _replace_staged_outputs(outputs: list[tuple[Path, str]]) -> None:
                 prefix=f".{path.name}.",
                 delete=False,
             ) as temp:
+                temp_path = Path(temp.name)
+                # Register immediately: writes and metadata operations can fail.
+                staged_paths.append(temp_path)
                 temp.write(output)
                 temp.flush()
                 os.fsync(temp.fileno())
-                temp_path = Path(temp.name)
-            os.chmod(temp_path, path.stat().st_mode & 0o777)
-            temp_paths.append(temp_path)
-        for (path, _output), temp_path in zip(outputs, list(temp_paths)):
-            os.replace(temp_path, path)
-            temp_paths.remove(temp_path)
+            os.chmod(temp_path, stat.S_IMODE(path.stat().st_mode))
+
+        for path, _output in ordered_outputs:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.backup-",
+                delete=False,
+            ) as backup:
+                backup_path = Path(backup.name)
+                # Register immediately so a failed copy or chmod cannot leak it.
+                backup_paths[path] = backup_path
+                with path.open("rb") as original:
+                    while chunk := original.read(1024 * 1024):
+                        backup.write(chunk)
+                backup.flush()
+                os.fsync(backup.fileno())
+            os.chmod(backup_path, stat.S_IMODE(path.stat().st_mode))
+
+        replaced_paths: list[Path] = []
+        try:
+            for (path, _output), temp_path in zip(ordered_outputs, staged_paths):
+                os.replace(temp_path, path)
+                replaced_paths.append(path)
+        except OSError as primary_error:
+            rollback_errors: list[tuple[Path, OSError]] = []
+            for path in reversed(replaced_paths):
+                try:
+                    os.replace(backup_paths[path], path)
+                except OSError as rollback_error:
+                    preserve_for_recovery.add(backup_paths[path])
+                    rollback_errors.append((path, rollback_error))
+            if rollback_errors:
+                rollback_detail = "; ".join(
+                    f"{path}: {error}" for path, error in rollback_errors
+                )
+                raise OSError(
+                    f"replacement failed: {primary_error}; rollback failed: {rollback_detail}"
+                ) from primary_error
+            raise
     finally:
-        for temp_path in temp_paths:
-            temp_path.unlink(missing_ok=True)
+        for temporary_path in staged_paths:
+            temporary_path.unlink(missing_ok=True)
+        for backup_path in backup_paths.values():
+            if backup_path not in preserve_for_recovery:
+                backup_path.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -155,6 +155,94 @@ def test_directory_validation_error_preserves_every_file_byte_for_byte(
     assert "NOT MEASURED" in err
 
 
+def _directory_targets_with_repairable_rows(env: Env) -> tuple[Path, Path]:
+    env.conf.write_text("a:sample-root\nb:sample-root\n", encoding="utf-8")
+    _commit(env.source, "docs/source.md", "# source\n## Anchor\n", "2026-01-08T09:00:00+00:00")
+    first, second = env.l1 / "a.jsonl", env.l1 / "b.jsonl"
+    first.write_text(json.dumps(_row("a", "Anchor")) + "\n", encoding="utf-8")
+    second.write_text(json.dumps(_row("b", "Anchor")) + "\n", encoding="utf-8")
+    return first, second
+
+
+def test_directory_replace_failure_restores_every_original_and_cleans_temps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed later replacement compensates earlier replacements."""
+    env = Env(tmp_path)
+    first, second = _directory_targets_with_repairable_rows(env)
+    original = {path: path.read_bytes() for path in (first, second)}
+    real_replace = os.replace
+    calls = 0
+
+    def fail_second_replace(source: str | Path, destination: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected second replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(repair_first_seen.os, "replace", fail_second_replace)
+
+    assert repair_first_seen.main(env.args(env.l1)) == 1
+
+    assert {path: path.read_bytes() for path in (first, second)} == original
+    assert not list(env.l1.glob(".*"))
+    err = capsys.readouterr().err
+    assert "injected second replace failure" in err
+    assert "NOT MEASURED" in err
+
+
+def test_staging_metadata_failure_preserves_originals_and_cleans_registered_temp(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A chmod/stat failure cannot leak a staged output or mutate a target."""
+    env = Env(tmp_path)
+    first, second = _directory_targets_with_repairable_rows(env)
+    original = {path: path.read_bytes() for path in (first, second)}
+
+    def fail_chmod(_path: str | Path, _mode: int) -> None:
+        raise OSError("injected staging chmod failure")
+
+    monkeypatch.setattr(repair_first_seen.os, "chmod", fail_chmod)
+
+    assert repair_first_seen.main(env.args(env.l1)) == 1
+
+    assert {path: path.read_bytes() for path in (first, second)} == original
+    assert not list(env.l1.glob(".*"))
+    err = capsys.readouterr().err
+    assert "injected staging chmod failure" in err
+    assert "NOT MEASURED" in err
+
+
+def test_rollback_failure_names_both_errors_and_preserves_recovery_backup(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed rollback leaves the original's backup available for recovery."""
+    env = Env(tmp_path)
+    first, _second = _directory_targets_with_repairable_rows(env)
+    real_replace = os.replace
+    calls = 0
+
+    def fail_commit_and_rollback(source: str | Path, destination: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected primary replace failure")
+        if calls == 3:
+            raise OSError("injected rollback replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(repair_first_seen.os, "replace", fail_commit_and_rollback)
+
+    assert repair_first_seen.main(env.args(env.l1)) == 1
+
+    assert list(env.l1.glob(".a.jsonl.backup-*"))
+    err = capsys.readouterr().err
+    assert "injected primary replace failure" in err
+    assert "injected rollback replace failure" in err
+    assert "NOT MEASURED" in err
+
+
 def test_predated_row_with_resolvable_anchor_preserves_date_and_provenance(tmp_path: Path) -> None:
     env = Env(tmp_path)
     _commit(env.source, "docs/source.md", "# source\n## Anchor\n", "2026-01-08T09:00:00+00:00")

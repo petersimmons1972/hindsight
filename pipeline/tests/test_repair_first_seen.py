@@ -478,51 +478,174 @@ def test_differential_reports_provenance_split_not_just_dated_flag(
 
 
 # --------------------------------------------------------------------------
-# D-4: the fallback share (l1-ingest-fallback dates entered HINDSIGHT, not
-# the true logging moment) must trigger a named WARNING once it exceeds half
-# of everything dated this run.
+# D-4 / B-1: the >50%-fallback WARNING must be computed from CORPUS
+# PROVENANCE -- the first_seen_provenance tags already sitting on the L1
+# rows -- never from this run's own deltas. Repair is idempotent: the run
+# that dates rows only happens once per row, so a deltas-gated warning goes
+# permanently silent in steady state (dated_this_run == 0 forever after)
+# even while the corpus stays mostly fallback-dated. The warning must fire
+# on EVERY run against the real corpus, whether or not this run itself
+# dated anything.
 # --------------------------------------------------------------------------
 
-def test_warns_when_fallback_share_exceeds_half(
+def test_warning_fires_from_corpus_provenance_even_when_run_dates_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     env = Env(tmp_path)
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    (l2_dir / "clusters.jsonl").write_text("", encoding="utf-8")
+
+    # Steady state: every row already carries first_seen + provenance, so
+    # THIS run dates zero of them -- but the corpus itself is 3 fallback /
+    # 1 anchor = 75% fallback, which must still trigger the WARNING.
+    (corpus_dir / "sample.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in [
+            {"id": "x1", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"},
+            {"id": "x2", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+            {"id": "x3", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+            {"id": "x4", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+        ]),
+        encoding="utf-8",
+    )
+
+    exit_code = repair_first_seen.main(env.main_args())
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    # This run itself dated nothing -- the old deltas-based warning would
+    # have gone silent here. Prove it didn't.
+    assert "date-repair: DATED-BY-ANCHOR: 0" in captured.err
+    assert "date-repair: DATED-BY-FALLBACK: 0" in captured.err
+    assert "date-repair: WARNING:" in captured.err
+    assert "75.0%" in captured.err
+
+
+def test_warning_reflects_corpus_not_this_runs_deltas(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run that itself dates a single anchor row (a minority outcome)
+    must still warn, because the CORPUS around it is majority-fallback --
+    the opposite of what a deltas-based (this run only) computation would
+    show for a single anchor-only delta."""
+    env = Env(tmp_path)
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    (l2_dir / "clusters.jsonl").write_text("", encoding="utf-8")
 
     _commit(env.sample_root, "docs/anchor.md",
             "# Doc\n\n## Anchor Heading One\nOriginal text.\n",
             "2026-01-08T09:00:00+00:00", "add anchor heading")
-    _commit(env.hindsight_repo, "pipeline/L1/sample.jsonl",
-            '{"id": "sample-fb-1"}\n{"id": "sample-fb-2"}\n{"id": "sample-fb-3"}\n',
-            "2026-03-03T12:00:00+00:00", "ingest fallback rows")
 
-    anchor_row = {
-        "id": "sample-anchor-1",
-        "source_path": "sampleroot/docs/anchor.md",
-        "source_anchor": "Anchor Heading One",
-        "instance": "An anchor-dateable entry.",
-        "check": "n/a",
-        "enforcement": None,
-        "auto": "machine",
-    }
+    # Pre-existing corpus rows: already 3 fallback-dated, 0 anchor-dated.
+    # This run's OWN delta is 1 anchor / 0 fallback -- by itself a 0%
+    # fallback share -- but the corpus as a whole is still majority
+    # fallback once the new anchor row is folded in (3 of 4 = 75%).
+    (corpus_dir / "sample.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in [
+            {
+                "id": "sample-anchor-1",
+                "source_path": "sampleroot/docs/anchor.md",
+                "source_anchor": "Anchor Heading One",
+                "instance": "An anchor-dateable entry.",
+                "check": "n/a",
+                "enforcement": None,
+                "auto": "machine",
+            },
+            {"id": "x2", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+            {"id": "x3", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+            {"id": "x4", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+        ]),
+        encoding="utf-8",
+    )
 
-    def fb_row(n: int) -> dict:
-        return {
-            "id": f"sample-fb-{n}",
-            "source_path": "sampleroot/docs/missing.md",
-            "source_anchor": "Never Existed Heading",
-            "instance": "A fallback-dateable entry.",
-            "check": "n/a",
-            "enforcement": None,
-            "auto": "machine",
-        }
-
-    target = env.target(anchor_row, fb_row(1), fb_row(2), fb_row(3))
-
-    exit_code = repair_first_seen.main(env.main_args("--l1", str(target)))
+    exit_code = repair_first_seen.main(env.main_args())
 
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "date-repair: DATED-BY-ANCHOR: 1" in captured.err
-    assert "date-repair: DATED-BY-FALLBACK: 3" in captured.err
+    assert "date-repair: DATED-BY-FALLBACK: 0" in captured.err
     assert "date-repair: WARNING:" in captured.err
     assert "75.0%" in captured.err
+
+
+# --------------------------------------------------------------------------
+# B-2(a): a differential over a directory where cluster members don't
+# actually resolve (id absent from every loaded L1 row) must ALARM --
+# "NOT MEASURED (<n> of <m> cluster members did not resolve)" -- never
+# silently exclude the unresolved ids and print a count for the rest as if
+# it were the whole family.
+# --------------------------------------------------------------------------
+
+def test_differential_not_measured_when_cluster_members_do_not_resolve(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = Env(tmp_path)
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    (l2_dir / "clusters.jsonl").write_text(
+        json.dumps({"cluster_id": "c-043", "members": ["a1", "a2"]}) + "\n"
+        + json.dumps({"cluster_id": "c-003", "members": ["b1"]}) + "\n",
+        encoding="utf-8",
+    )
+    # Only a1 is ever loaded -- a2 and b1 are absent from every L1 row, i.e.
+    # never resolve. 2 of the 3 expected members are unresolved.
+    (corpus_dir / "sample.jsonl").write_text(
+        json.dumps({"id": "a1", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"}) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = repair_first_seen.main(env.main_args())
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    diff_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln]
+    assert diff_lines == [
+        "date-repair: DIFFERENTIAL: NOT MEASURED (2 of 3 cluster members did not resolve)"
+    ]
+    assert "intervention-family" not in captured.err
+    assert "comparator-pool" not in captured.err
+
+
+def test_differential_all_members_unresolved_reports_not_measured_not_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Reproduces the exact scratch-directory shape from the B-2 report:
+    a --self-dir/--l1/--clusters combination where the L1 rows loaded share
+    no ids with the cluster membership at all. 0 of N resolving must ALARM,
+    never print a fully-formed zero differential as if it were a real
+    measurement of an empty family."""
+    env = Env(tmp_path)
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    (l2_dir / "clusters.jsonl").write_text(
+        json.dumps({"cluster_id": "c-043", "members": ["a1", "a2", "a3"]}) + "\n"
+        + json.dumps({"cluster_id": "c-003", "members": ["b1"]}) + "\n",
+        encoding="utf-8",
+    )
+    # A scratch corpus with unrelated ids -- 0 of the 4 expected members
+    # resolve.
+    (corpus_dir / "sample.jsonl").write_text(
+        json.dumps({"id": "unrelated-1", "first_seen": "2020-01-01"}) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = repair_first_seen.main(env.main_args())
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    diff_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln]
+    assert diff_lines == [
+        "date-repair: DIFFERENTIAL: NOT MEASURED (4 of 4 cluster members did not resolve)"
+    ]
+    assert "n=0" not in captured.err
+    assert "n=3" not in captured.err
+    assert "n=1" not in captured.err

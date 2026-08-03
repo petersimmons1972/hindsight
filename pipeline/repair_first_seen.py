@@ -292,6 +292,22 @@ def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bo
                 else:
                     id_provenance[rid] = "undated"
 
+    # B-2(a): a member id absent from every loaded L1 row never resolved --
+    # it is not "0% of an empty family" or "excluded like the rest", it is
+    # unmeasured. Printing per-family counts while some members are absent
+    # would report a real-looking number computed over data that was never
+    # actually loaded (the fabricated-statistic failure this packet exists
+    # to close). ALARM instead, and print no counts at all.
+    expected_ids = arm_b_ids | comparator_ids
+    unresolved_ids = expected_ids - id_provenance.keys()
+    if unresolved_ids:
+        print(
+            f"date-repair: DIFFERENTIAL: NOT MEASURED "
+            f"({len(unresolved_ids)} of {len(expected_ids)} cluster members did not resolve)",
+            file=sys.stderr,
+        )
+        return
+
     def summarize(ids: set[str]) -> tuple[int, int, int, int]:
         pre = anchor = fallback = undated = 0
         for i in ids:
@@ -325,6 +341,41 @@ def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bo
             f"undated={undated} -> {pct_pre_dated(pre, anchor, fallback)} pre-dated",
             file=sys.stderr,
         )
+
+
+def _corpus_provenance_totals(l1_dir: Path) -> tuple[int, int] | None:
+    """Count ``git-anchor`` / ``l1-ingest-fallback`` provenance tags across
+    EVERY row currently sitting in *l1_dir* -- the corpus's own dated state,
+    independent of what (if anything) the CURRENT run itself dated.
+
+    Repair is idempotent: once a row is dated it is never touched again, so
+    a per-run delta is zero in steady state forever after the one run that
+    actually did the work. The corpus's provenance mix doesn't reset just
+    because this run had nothing left to do -- it must be read fresh, off
+    disk, every time.
+
+    Returns ``None`` when there is no corpus to read (directory absent or
+    contains no ``.jsonl`` files) -- a missing corpus is NOT MEASURED, never
+    a zero share standing in for "nothing is fallback-dated".
+    """
+    if not l1_dir.is_dir():
+        return None
+    files = sorted(l1_dir.glob("*.jsonl"))
+    if not files:
+        return None
+    anchor = fallback = 0
+    for jf in files:
+        for line in jf.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            prov = rec.get("first_seen_provenance")
+            if prov == "git-anchor":
+                anchor += 1
+            elif prov == "l1-ingest-fallback":
+                fallback += 1
+    return anchor, fallback
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -398,19 +449,27 @@ def main(argv: list[str] | None = None) -> int:
     print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)
     _print_differential(clusters_path, real_corpus_dir, is_real_corpus=is_real_corpus)
 
-    # D-4: ~90% of the real corpus's repaired rows fell back to when the row
-    # entered HINDSIGHT rather than a recovered logging date -- that is an
-    # honest outcome of ruling R-c, not a defect, but it must be stated
-    # loudly wherever these dates get consumed.
-    dated_this_run = total.dated_by_anchor + total.dated_by_fallback
-    if dated_this_run > 0:
-        fallback_share = total.dated_by_fallback / dated_this_run
-        if fallback_share > 0.5:
-            print(
-                f"date-repair: WARNING: {fallback_share * 100:.1f}% of rows dated this run used "
-                "l1-ingest-fallback (entered HINDSIGHT, not the true logging date)",
-                file=sys.stderr,
-            )
+    # B-1 (was D-4): ~90% of the real corpus's dated rows fell back to when
+    # the row entered HINDSIGHT rather than a recovered logging date -- that
+    # is an honest outcome of ruling R-c, not a defect, but it must be
+    # stated loudly wherever these dates get consumed. Measured from CORPUS
+    # PROVENANCE (every first_seen_provenance tag on disk at self_dir's own
+    # pipeline/L1), never from this run's deltas: repair is idempotent, so
+    # a deltas-gated warning fires on the one run that does the dating and
+    # then goes permanently silent -- unreproducible -- for every steady-
+    # state run after, even though the corpus stays just as fallback-heavy.
+    corpus_totals = _corpus_provenance_totals(real_corpus_dir)
+    if corpus_totals is not None:
+        corpus_anchor, corpus_fallback = corpus_totals
+        corpus_dated = corpus_anchor + corpus_fallback
+        if corpus_dated > 0:
+            corpus_fallback_share = corpus_fallback / corpus_dated
+            if corpus_fallback_share > 0.5:
+                print(
+                    f"date-repair: WARNING: {corpus_fallback_share * 100:.1f}% of the corpus's dated rows "
+                    "used l1-ingest-fallback (entered HINDSIGHT, not the true logging date)",
+                    file=sys.stderr,
+                )
 
     return 0
 

@@ -97,6 +97,16 @@ Three arms, reported separately and **never pooled** (founder ruling R-a, 2026-0
   post-period recurrence comes from write-time `recurrence_of`, whose recall is strictly higher.
   Post-period counts are therefore biased **upward** — conservative against REDUCED, uninformative
   for a null. **A drop smaller than the declared bias reads UNDERPOWERED by rule**, never REDUCED.
+- **D9** The corpus denominator is predominantly **ingest-dated, not source-dated**. Of the 242
+  previously-undated rows `repair_first_seen.py` processed, only 24 recovered a true git-anchor
+  date; 218 fell back to hindsight-ingest time (90.1% fallback share). Per-arm provenance split:
+  Arm B (32 members) is 53.1% pre-dated (17 pre-existing / 3 git-anchor / 12 fallback); the
+  comparator pool (102 members) is 64.7% pre-dated (66 pre-existing / 4 git-anchor / 32 fallback).
+  **Consequence:** a fallback-dated row's `first_seen` reflects when it entered hindsight, not when
+  the failure was logged, so month-to-month movement in the denominator is partly an artefact of
+  corpus construction rather than a real recurrence signal. The analyzer must report the
+  pre-existing/git-anchor/fallback provenance mix alongside any rate it computes from `first_seen`,
+  and any REDUCED/RELOCATED verdict must be read against that mix, not treated as clean.
 
 **Decision rule, pre-registered:**
 - **REDUCED** — post-period share ≤50% of pre-period for ≥2 test families, over ≥90 days post with

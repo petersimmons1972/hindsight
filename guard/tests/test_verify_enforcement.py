@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -1114,28 +1113,6 @@ def test_bats_missing_preprocessor_fails_closed(
     monkeypatch.setattr(shutil, "which", lambda executable: None)
 
     assert not MODULE._is_runner_managed_test_source(source)
-
-
-def test_bats_preprocessor_resolves_ubuntu_lib_layout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bats_root = tmp_path / "usr"
-    bats = bats_root / "bin" / "bats"
-    preprocessor = bats_root / "lib" / "bats-core" / "bats-preprocess"
-    common = bats_root / "lib" / "bats-core" / "common.bash"
-    for path in (bats, preprocessor, common):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("", encoding="utf-8")
-    monkeypatch.setattr(shutil, "which", lambda executable: str(bats))
-
-    assert MODULE._resolve_bats_preprocessor() == (
-        preprocessor,
-        {
-            "BATS_ROOT": str(bats_root),
-            "BATS_LIBDIR": "lib",
-            "PATH": os.defpath,
-        },
-    )
 
 
 def test_bats_missing_bash_fails_closed(

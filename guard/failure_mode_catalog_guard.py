@@ -232,21 +232,10 @@ def _resolve_bats_preprocessor() -> tuple[Path, dict[str, str]] | None:
     try:
         real_bats = Path(bats_executable).resolve(strict=True)
         bats_root = real_bats.parent.parent
+        preprocessor = (
+            bats_root / "libexec" / "bats-core" / "bats-preprocess"
+        ).resolve(strict=True)
     except (OSError, RuntimeError):
-        return None
-
-    preprocessor: Path | None = None
-    for candidate in ("libexec", "lib", "lib64"):
-        try:
-            resolved = (
-                bats_root / candidate / "bats-core" / "bats-preprocess"
-            ).resolve(strict=True)
-        except (OSError, RuntimeError):
-            continue
-        if resolved.is_file():
-            preprocessor = resolved
-            break
-    if preprocessor is None:
         return None
 
     bats_libdir: str | None = None

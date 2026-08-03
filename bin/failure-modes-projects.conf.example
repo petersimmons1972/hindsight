@@ -1,0 +1,4 @@
+# One consumer repository per line.  Pass an explicit copy with --consumers;
+# the sync tool intentionally has no default consumer list.
+#
+# /absolute/path/to/consumer-repository

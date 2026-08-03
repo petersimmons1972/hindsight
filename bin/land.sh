@@ -23,6 +23,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$HERE/require-real-ci.sh"
+DISCRIMINATING_GATE="$HERE/verify-discriminating.sh"
 PROG="$(basename "$0")"
 
 # Save the invocation BEFORE the parse loop consumes it. The banner below used
@@ -46,6 +47,14 @@ done
 if [ -z "$PR" ]; then
   echo "$PROG: usage: $PROG <pr-number> [--repo owner/repo] [--json-file path] [--merge]" >&2
   exit 2
+fi
+
+# The dispatcher supplies the checked-out PR base when this landing gate is
+# used for a branch.  No value means the historical CI-only gate remains
+# usable on an already-landed checkout, where there are deliberately no new
+# tests to evaluate.
+if [ -n "${VERIFY_DISCRIMINATING_BASE:-}" ]; then
+  bash "$DISCRIMINATING_GATE" --base "$VERIFY_DISCRIMINATING_BASE" || exit $?
 fi
 
 gate_args=("$PR")

@@ -392,6 +392,93 @@ def test_javascript_parser_oracle_accepts_test_in_template_interpolation(
 @pytest.mark.parametrize(
     "contents",
     [
+        "test();\n",
+        "test(123);\n",
+        'test("name");\n',
+        'test("name", 123);\n',
+        'test("name", callback);\n',
+        'test("name", () => {}, "extra");\n',
+        'const test=(x)=>x; test("not a runner test");\n',
+    ],
+    ids=[
+        "missing-arguments",
+        "non-name-only-argument",
+        "missing-callback",
+        "number-callback",
+        "callback-reference",
+        "extra-argument",
+        "review-decoy",
+    ],
+)
+def test_javascript_runner_call_requires_name_and_inline_callable(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "call-shape-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const test = (name, body) => body; test("name", () => {});\n',
+        'let test; test("name", () => {});\n',
+        'var test = () => {}; test("name", () => {});\n',
+        'function wrapper(test) { test("name", () => {}); }\n',
+        'import { runnerTest as test } from "runner"; test("name", () => {});\n',
+        'function test(name, body) {} test("name", () => {});\n',
+    ],
+    ids=["const", "let", "var", "parameter", "import-alias", "function"],
+)
+def test_javascript_shadowed_test_identifier_is_not_runner_managed(
+    tmp_path: Path, contents: str
+) -> None:
+    if contents.startswith("import "):
+        (tmp_path / "package.json").write_text(
+            '{"type":"module"}\n', encoding="utf-8"
+        )
+    source = tmp_path / "shadowed.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'test("arrow", () => {});\n',
+        'test(`template ${name}`, async () => {});\n',
+        'test("function", function () {});\n',
+        'test("async function", async function () {});\n',
+    ],
+    ids=["arrow", "async-arrow-template", "function", "async-function"],
+)
+def test_javascript_runner_call_accepts_supported_inline_callbacks(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "supported-callback.test.js"
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_runner_source_is_never_executed(tmp_path: Path) -> None:
+    sentinel = tmp_path / "javascript-executed"
+    source = tmp_path / "inert.test.js"
+    write_runner_source(
+        source,
+        f'require("fs").writeFileSync("{sentinel}", "executed");\n'
+        'test("name", () => {});\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
         "function test() {}\n",
         'const suite = {test() {}}; suite.test("ok",()=>{});\n',
         'const suite = {}; suite /* a */ . /* b */ test("ok",()=>{});\n',
@@ -588,6 +675,11 @@ def test_javascript_candidate_probe_error_fails_closed(
         (
             "too-many.bats",
             '@test "bounded" { true; }\n' * (MODULE.MAX_RUNNER_CANDIDATES + 1),
+        ),
+        (
+            "too-many-bindings.test.js",
+            ("{ const test = null; }\n" * (MODULE.MAX_RUNNER_CANDIDATES + 1))
+            + 'test("real",()=>{});\n',
         ),
     ],
 )

@@ -48,6 +48,32 @@ JAVASCRIPT_FUNCTION_PREFIX_RE = re.compile(
     r"\bfunction" + JAVASCRIPT_TRIVIA + r"\*?" + JAVASCRIPT_TRIVIA + r"$",
     re.DOTALL,
 )
+JAVASCRIPT_TEST_BINDING_RES = (
+    re.compile(
+        r"\b(?:const|let|var)" + JAVASCRIPT_TRIVIA + r"(?P<name>test)\b",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"\bfunction" + JAVASCRIPT_TRIVIA + r"(?P<name>test)\b",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"\bfunction(?:" + JAVASCRIPT_TRIVIA + r"[\w$]+)?"
+        + JAVASCRIPT_TRIVIA
+        + r"\([^)]*\b(?P<name>test)\b[^)]*\)",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"\([^)]*\b(?P<name>test)\b[^)]*\)" + JAVASCRIPT_TRIVIA + r"=>",
+        re.DOTALL,
+    ),
+    re.compile(
+        r"\bimport\s*\{[^}]*\b(?:[\w$]+" + JAVASCRIPT_TRIVIA + r"as"
+        + JAVASCRIPT_TRIVIA
+        + r")?(?P<name>test)\b[^}]*\}",
+        re.DOTALL,
+    ),
+)
 
 
 def _read_regular_utf8_snapshot(path: Path) -> tuple[str, FileFingerprint] | None:
@@ -153,6 +179,136 @@ def _mutation_is_shell_code(source: str, start: int, end: int) -> bool | None:
     mutated = f"{source[:start]}){source[end:]}"
     parsed = _bash_syntax(mutated)
     return None if parsed is None else parsed.returncode != 0
+
+
+def _javascript_skip_trivia(source: str, index: int) -> int:
+    """Skip bounded JavaScript whitespace and comments in Node-validated source."""
+    while index < len(source):
+        if source[index].isspace():
+            index += 1
+        elif source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = len(source) if newline < 0 else newline + 1
+        elif source.startswith("/*", index):
+            end = source.find("*/", index + 2)
+            index = len(source) if end < 0 else end + 2
+        else:
+            break
+    return index
+
+
+def _javascript_string_end(source: str, index: int) -> int | None:
+    """Return the end of one Node-validated quoted or template literal."""
+    quote = source[index]
+    index += 1
+    while index < len(source):
+        if source[index] == "\\":
+            index += 2
+        elif source[index] == quote:
+            return index + 1
+        else:
+            index += 1
+    return None
+
+
+def _javascript_balanced_end(
+    source: str, index: int, opener: str, closer: str
+) -> int | None:
+    """Find a balanced delimiter end without interpreting JavaScript semantics."""
+    if index >= len(source) or source[index] != opener:
+        return None
+    depth = 1
+    index += 1
+    while index < len(source):
+        if source[index] in "'\"`":
+            end = _javascript_string_end(source, index)
+            if end is None:
+                return None
+            index = end
+            continue
+        if source.startswith("//", index) or source.startswith("/*", index):
+            index = _javascript_skip_trivia(source, index)
+            continue
+        if source[index] == opener:
+            depth += 1
+        elif source[index] == closer:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+    return None
+
+
+def _javascript_call_has_runner_shape(source: str, candidate_end: int) -> bool:
+    """Recognize the supported two-argument runner call around one candidate."""
+    index = _javascript_skip_trivia(source, candidate_end)
+    if index >= len(source) or source[index] != "(":
+        return False
+    index = _javascript_skip_trivia(source, index + 1)
+    if index >= len(source) or source[index] not in "'\"`":
+        return False
+    name_end = _javascript_string_end(source, index)
+    if name_end is None:
+        return False
+    index = _javascript_skip_trivia(source, name_end)
+    if index >= len(source) or source[index] != ",":
+        return False
+    index = _javascript_skip_trivia(source, index + 1)
+    if source.startswith("async", index) and (
+        index + 5 == len(source)
+        or not (source[index + 5].isalnum() or source[index + 5] in "_$")
+    ):
+        index = _javascript_skip_trivia(source, index + 5)
+
+    if source.startswith("function", index) and (
+        index + 8 == len(source)
+        or not (source[index + 8].isalnum() or source[index + 8] in "_$")
+    ):
+        index = _javascript_skip_trivia(source, index + 8)
+        if index < len(source) and (source[index].isalpha() or source[index] in "_$"):
+            while index < len(source) and (source[index].isalnum() or source[index] in "_$"):
+                index += 1
+            index = _javascript_skip_trivia(source, index)
+        parameters_end = _javascript_balanced_end(source, index, "(", ")")
+        if parameters_end is None:
+            return False
+        index = _javascript_skip_trivia(source, parameters_end)
+    else:
+        parameters_end = _javascript_balanced_end(source, index, "(", ")")
+        if parameters_end is None:
+            return False
+        index = _javascript_skip_trivia(source, parameters_end)
+        if not source.startswith("=>", index):
+            return False
+        index = _javascript_skip_trivia(source, index + 2)
+
+    body_end = _javascript_balanced_end(source, index, "{", "}")
+    if body_end is None:
+        return False
+    index = _javascript_skip_trivia(source, body_end)
+    return index < len(source) and source[index] == ")"
+
+
+def _javascript_has_test_binding(
+    source: str, syntax_argv: list[str]
+) -> bool | None:
+    """Use syntax-breaking mutations to reject obvious lexical test bindings."""
+    candidate_count = 0
+    for pattern in JAVASCRIPT_TEST_BINDING_RES:
+        for binding in pattern.finditer(source):
+            candidate_count += 1
+            if candidate_count > MAX_RUNNER_CANDIDATES:
+                return True
+            mutated = (
+                f"{source[:binding.start('name')]}@"
+                f"{source[binding.end('name'):]}"
+            )
+            parsed = _run_runner_parser(syntax_argv, input_text=mutated)
+            if parsed is None:
+                return None
+            if parsed.returncode != 0:
+                return True
+    return False
 
 
 def _is_runner_managed_test_source(path: Path) -> bool:
@@ -262,13 +418,15 @@ def _is_bats_source(path: Path) -> bool:
 
 
 def _is_javascript_test_source(path: Path) -> bool:
-    """Accept Node-parseable JavaScript with a bounded bare test call.
+    """Accept Node-parseable JavaScript with a global runner-shaped test call.
 
     The fleet runner imports ``*.test.js`` files, so they need not be
     executable. ``node --check`` is the authoritative whole-file syntax layer;
     parser-oracle mutations then distinguish code candidates from the same raw
     text in strings, comments, template raw segments, regular expressions, and
-    other data. Neither the original nor mutated source is executed.
+    other data. A bounded call-prefix scan requires a literal name and inline
+    callable body, while syntax-breaking mutations reject lexical ``test``
+    bindings. Neither the original nor mutated source is executed.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
@@ -278,6 +436,18 @@ def _is_javascript_test_source(path: Path) -> bool:
     if original is None or original.returncode != 0:
         return False
     if _read_regular_utf8_snapshot(path) != snapshot:
+        return False
+    syntax_argv = ["node", "--check", "-"]
+    stdin_syntax = _run_runner_parser(syntax_argv, input_text=source)
+    if stdin_syntax is None:
+        return False
+    if stdin_syntax.returncode != 0:
+        syntax_argv = ["node", "--check", "--input-type=module", "-"]
+        stdin_syntax = _run_runner_parser(syntax_argv, input_text=source)
+        if stdin_syntax is None or stdin_syntax.returncode != 0:
+            return False
+    has_binding = _javascript_has_test_binding(source, syntax_argv)
+    if has_binding is None or has_binding:
         return False
     candidates = list(JAVASCRIPT_TEST_CANDIDATE_RE.finditer(source))
     if len(candidates) > MAX_RUNNER_CANDIDATES:
@@ -290,16 +460,18 @@ def _is_javascript_test_source(path: Path) -> bool:
             continue
         if JAVASCRIPT_FUNCTION_PREFIX_RE.search(prefix):
             continue
+        if not _javascript_call_has_runner_shape(source, candidate.end()):
+            continue
         mutated = f"{source[: candidate.start()]}@{source[candidate.end() :]}"
         localized = _run_runner_parser(
-            ["node", "--check", "-"],
+            syntax_argv,
             input_text=mutated,
         )
         if localized is None:
             return False
         if localized.returncode != 0:
             call_shaped = _run_runner_parser(
-                ["node", "--check", "-"],
+                syntax_argv,
                 input_text=(
                     f"{source[: candidate.start()]}globalThis.test"
                     f"{source[candidate.end() :]}"

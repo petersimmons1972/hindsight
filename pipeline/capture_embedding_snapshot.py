@@ -148,16 +148,29 @@ def _atomic_write_json(
             else:
                 with tempfile.NamedTemporaryFile(
                     mode="wb", dir=output.parent,
-                    prefix=f".{output.name}.", suffix=".tmp", delete=False,
+                    prefix=f".{output.name}.", suffix=".recovery", delete=False,
                 ) as rollback_handle:
                     rollback = Path(rollback_handle.name)
                     rollback_handle.write(prior_bytes)
                     rollback_handle.flush()
                     os.fsync(rollback_handle.fileno())
+                restored = False
                 try:
                     os.replace(rollback, output)
+                    restored = True
+                except OSError:
+                    try:
+                        os.rename(rollback, output)
+                        restored = True
+                    except OSError as rollback_exc:
+                        output.unlink(missing_ok=True)
+                        _fsync_directory(output.parent)
+                        raise RuntimeError(
+                            f"snapshot rollback failed; prior snapshot preserved at {rollback}"
+                        ) from rollback_exc
                 finally:
-                    rollback.unlink(missing_ok=True)
+                    if restored:
+                        rollback.unlink(missing_ok=True)
             _fsync_directory(output.parent)
             raise
         _fsync_directory(output.parent)

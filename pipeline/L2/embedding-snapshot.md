@@ -58,7 +58,10 @@ before replacement. It writes and fsyncs a unique same-directory temporary
 file, then atomically replaces the destination and fsyncs the containing
 directory. Backend, protocol, coverage,
 vector, provenance-drift, or pre-replacement write errors exit nonzero and
-preserve the prior snapshot. Ordinary CI must never invoke this command.
+preserve the prior snapshot. If both atomic rollback methods fail, capture
+removes the known-stale destination, retains the prior bytes in a named
+`.recovery` file beside it, and fails loudly with that recovery path. Ordinary
+CI must never invoke this command.
 
 Example release invocation:
 

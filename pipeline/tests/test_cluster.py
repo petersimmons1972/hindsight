@@ -360,6 +360,57 @@ def test_capture_rolls_back_when_provenance_changes_inside_replace(
     assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
 
 
+@pytest.mark.parametrize("rename_fails", [False, True])
+def test_capture_rollback_replace_failure_restores_or_retains_recovery_copy(
+    tmp_path: Path, monkeypatch, rename_fails: bool
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+    monkeypatch.setattr(
+        CAPTURE,
+        "_request_vectors",
+        lambda base_url, texts, timeout: np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    real_replace = os.replace
+    replace_calls = 0
+
+    def fail_rollback_replace(source: Path, destination: Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            _write_l1(l1, instance="changed inside replace")
+            real_replace(source, destination)
+            return
+        raise OSError("rollback replace failed")
+
+    monkeypatch.setattr(CAPTURE.os, "replace", fail_rollback_replace)
+    if rename_fails:
+        monkeypatch.setattr(CAPTURE.os, "rename", lambda source, destination: (_ for _ in ()).throw(OSError("rename failed")))
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    if rename_fails:
+        with pytest.raises(RuntimeError, match=r"prior snapshot preserved at"):
+            CAPTURE.capture(args)
+        assert not output.exists()
+        recovery = list(tmp_path.glob(".snapshot.json.*.recovery"))
+        assert len(recovery) == 1
+        assert recovery[0].read_bytes() == prior
+    else:
+        with pytest.raises(ValueError, match=r"provenance changed during capture"):
+            CAPTURE.capture(args)
+        assert output.read_bytes() == prior
+        assert list(tmp_path.glob(".snapshot.json.*.recovery")) == []
+
+
 class _EmbeddingHandler(BaseHTTPRequestHandler):
     response: object = {"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]}
     status = 200

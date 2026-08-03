@@ -74,5 +74,23 @@ python3 pipeline/capture_embedding_snapshot.py \
 The vectors in the committed v2 snapshot are retained unchanged from the v1
 snapshot captured from the authorized HTTP service. The current L1 and cluster
 code/config provenance was added deterministically; this packet did **not**
-perform or claim a live backend recapture. CI wiring and canonical L2 comparison
-belong to later issue #30 packets.
+perform or claim a live backend recapture.
+
+Offline verification is read-only and never contacts HTTP:
+
+```bash
+python3 pipeline/replay_l2.py
+```
+
+The command validates snapshot provenance, backend identity, and exact L1/L2
+metadata and member coverage before replaying at the calibrated HTTP threshold.
+Committed L2 metadata is a closed, strictly typed schema: `backend` and
+`linkage` are exact strings, `threshold` is numeric but never boolean, and
+`entry_count` is an integer but never boolean; every value must also equal the
+runtime expectation. Replay captures the cluster source bytes it executes and
+checks L1 plus cluster code/config digests before and after parsing and
+clustering, failing if either input drifts during the run.
+It compares canonical partitions (sorted member IDs within sorted groups), so
+cluster numbering and row order are irrelevant but membership changes fail
+nonzero with deterministic group and member diagnostics. Snapshot capture and
+later CI wiring remain separate responsibilities.

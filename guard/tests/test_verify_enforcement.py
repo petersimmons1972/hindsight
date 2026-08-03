@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -273,7 +274,7 @@ def test_runner_source_predicate_rejects_suffix_and_substring_only_mutants(tmp_p
 
 
 def test_javascript_invalid_template_interpolation_is_rejected(tmp_path: Path) -> None:
-    """Node syntax, not a template-oblivious lexer, decides whole-file validity."""
+    """Acorn syntax, not a template-oblivious lexer, decides whole-file validity."""
     source = tmp_path / "invalid-template.test.js"
     write_runner_source(source, 'test("ok", () => { const x = `${foo(}`; });')
 
@@ -664,6 +665,12 @@ def test_javascript_global_ff_near_neighbors_are_rejected(
         'globalThis.test ||= (name, body) => 0; test("fake",()=>{});\n',
         'globalThis.test &&= (name, body) => 0; test("fake",()=>{});\n',
         'globalThis.test ??= (name, body) => 0; test("fake",()=>{});\n',
+        'const alias = globalThis; alias.test = (name, body) => 0; test("fake",()=>{});\n',
+        'const key = "test"; globalThis[key] = (name, body) => 0; test("fake",()=>{});\n',
+        (
+            'const alias = globalThis; Object.defineProperty(alias,"test",'
+            '{value:(name,body)=>0}); test("fake",()=>{});\n'
+        ),
         '[globalThis.test] = [(name, body) => 0]; test("fake",()=>{});\n',
         '({test:globalThis.test}={test:(name, body)=>0}); test("fake",()=>{});\n',
         'for (globalThis.test of [(name, body)=>0]) {} test("fake",()=>{});\n',
@@ -681,6 +688,9 @@ def test_javascript_global_ff_near_neighbors_are_rejected(
         "member-logical-or-assignment",
         "member-logical-and-assignment",
         "member-nullish-assignment",
+        "aliased-member-assignment",
+        "computed-member-assignment",
+        "aliased-define-property",
         "member-array-target",
         "member-object-target",
         "member-for-of-target",
@@ -748,7 +758,7 @@ def test_javascript_parser_oracle_accepts_required_runner_shapes(
 
 
 def test_javascript_candidate_bound_allows_256_global_calls(tmp_path: Path) -> None:
-    """The raw-candidate ceiling is reachable by legitimate runner calls."""
+    """The runner-call ceiling is reachable by legitimate runner calls."""
     source = tmp_path / "candidate-bound.test.js"
     write_runner_source(
         source,
@@ -756,6 +766,81 @@ def test_javascript_candidate_bound_allows_256_global_calls(tmp_path: Path) -> N
     )
 
     assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_large_256_call_source_completes_with_one_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A large valid boundary source must not regress to per-candidate parsing."""
+    source = tmp_path / "large-boundary.test.js"
+    write_runner_source(
+        source,
+        "const payload = " + repr("x" * 28_000) + ";\n"
+        + "".join(f'test("{index}",()=>{{ void payload; }});\n' for index in range(256)),
+    )
+    real_run = subprocess.run
+    node_calls = 0
+
+    def count_node(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal node_calls
+        if argv and argv[0] == "node":
+            node_calls += 1
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", count_node)
+    started = time.monotonic()
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert time.monotonic() - started < 2.0
+    assert node_calls == 1
+
+
+def test_live_fleet_javascript_source_classifies_true_and_is_byte_identical() -> None:
+    """Exercise the exact 28 KiB Fleet source when that checkout is present."""
+    source = Path("/home/psimmons/projects/fleet/orchestration/test/adversarial-loop.test.js")
+    if not source.is_file():
+        pytest.skip("live Fleet checkout is not present")
+    before = source.read_bytes()
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert source.read_bytes() == before
+
+
+def test_duplicate_javascript_references_parse_once_per_verifier_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / "duplicate.test.js"
+    write_runner_source(source, 'test("one",()=>{});\n')
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("first", {"file": source.name, "kind": "test"}),
+        machine_record("second", {"file": source.name, "kind": "test"}),
+    )
+    real_run = subprocess.run
+    node_calls = 0
+
+    def count_node(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal node_calls
+        if argv and argv[0] == "node":
+            node_calls += 1
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", count_node)
+
+    report = MODULE.verify_enforcement(l1_dir, projects, {"sample": "repo"})
+
+    assert not report.phantoms
+    assert node_calls == 1
 
 
 def test_javascript_runner_source_is_never_executed(tmp_path: Path) -> None:
@@ -916,7 +1001,6 @@ def test_bats_bash_validation_failure_fails_closed(
     assert not MODULE._is_runner_managed_test_source(source)
 
 
-@pytest.mark.parametrize("probe", ["illegal-token", "call-shape"])
 @pytest.mark.parametrize(
     "runner_error",
     [
@@ -925,10 +1009,9 @@ def test_bats_bash_validation_failure_fails_closed(
     ],
     ids=["timeout", "os-error"],
 )
-def test_javascript_candidate_probe_error_fails_closed(
+def test_javascript_parser_error_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    probe: str,
     runner_error: subprocess.TimeoutExpired | OSError,
 ) -> None:
     source = tmp_path / "probe-error.test.js"
@@ -938,23 +1021,36 @@ def test_javascript_candidate_probe_error_fails_closed(
     def fail_probe(
         argv: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
-        input_text = kwargs.get("input")
-        if argv == ["node", "--check", "-"]:
-            if (
-                probe == "illegal-token"
-                and isinstance(input_text, str)
-                and input_text.startswith("@")
-            ):
-                raise runner_error
-            if (
-                probe == "call-shape"
-                and isinstance(input_text, str)
-                and input_text.startswith("globalThis.test")
-            ):
-                raise runner_error
+        if argv == MODULE.JAVASCRIPT_ACORN_ARGV:
+            raise runner_error
         return real_run(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fail_probe)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "true",
+        '{"managed":true,"extra":false}',
+        "not-json",
+        '{"managed":true}' + (" " * MODULE.MAX_JAVASCRIPT_PARSER_OUTPUT_BYTES),
+    ],
+    ids=["empty", "wrong-shape", "extra-field", "invalid-json", "oversized"],
+)
+def test_javascript_malformed_parser_output_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    source = tmp_path / "malformed-parser-output.test.js"
+    write_runner_source(source, 'test("ok",()=>{});\n')
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, stdout, ""),
+    )
 
     assert not MODULE._is_runner_managed_test_source(source)
 
@@ -964,8 +1060,10 @@ def test_javascript_candidate_probe_error_fails_closed(
     [
         (
             "too-many.test.js",
-            ('"test(";\n' * (MODULE.MAX_RUNNER_CANDIDATES + 1))
-            + 'test("real",()=>{});\n',
+            "".join(
+                f'test("{index}",()=>{{}});\n'
+                for index in range(MODULE.MAX_RUNNER_CANDIDATES + 1)
+            ),
         ),
         (
             "too-many.bats",
@@ -1098,12 +1196,16 @@ def test_runner_source_path_is_one_argv_element_without_a_shell(
     monkeypatch.setattr(subprocess, "run", record_run)
 
     assert MODULE._is_runner_managed_test_source(source)
-    path_calls = [(argv, kwargs) for argv, kwargs in calls if str(source) in argv]
-    assert len(path_calls) == 1
-    argv, _ = path_calls[0]
     if filename.endswith(".test.js"):
-        assert argv == ["node", "--check", str(source)]
+        assert len(calls) == 1
+        argv, kwargs = calls[0]
+        assert argv == MODULE.JAVASCRIPT_ACORN_ARGV
+        assert kwargs["input"] == contents
+        assert all(str(source) not in argument for argument in argv)
     else:
+        path_calls = [(argv, kwargs) for argv, kwargs in calls if str(source) in argv]
+        assert len(path_calls) == 1
+        argv, _ = path_calls[0]
         assert Path(argv[0]).name == "bats-preprocess"
         assert argv[1:] == [str(source)]
         assert all(Path(call[0][0]).name != "bats" for call in calls)

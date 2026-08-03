@@ -28,59 +28,173 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
 RUNNER_PARSE_TIMEOUT_SECONDS = 5
 MAX_RUNNER_CANDIDATES = 256
-MAX_JAVASCRIPT_MUTATION_PROBES = 2048
-MAX_TRUSTED_GLOBAL_FF_MUTATION_PROBES = 4096
 FileFingerprint = tuple[int, int, int, int, int]
+RunnerSourceCache = dict[tuple[Path, FileFingerprint], bool]
 BATS_GENERATED_TEST_RE = re.compile(
     r"(?m)^bats_test_function --description [^\n]* -- "
     r"(?P<name>test_[A-Za-z0-9_-]+);(?P=name)\(\) \{"
 )
 BATS_UNTRANSFORMED_TEST_RE = re.compile(r"(?m)^[ \t]*@test\b")
-JAVASCRIPT_TRIVIA = r"(?:\s|/\*.*?\*/|//[^\r\n]*(?:\r?\n|$))*"
-JAVASCRIPT_TEST_CANDIDATE_RE = re.compile(
-    r"(?<![\w$\\])"
-    r"(?:t|\\u(?:0074|\{0*74\}))"
-    r"(?:e|\\u(?:0065|\{0*65\}))"
-    r"(?:s|\\u(?:0073|\{0*73\}))"
-    r"(?:t|\\u(?:0074|\{0*74\}))"
-    r"(?![\w$])"
-)
-JAVASCRIPT_PROPERTY_PREFIX_RE = re.compile(
-    r"(?<![.#])(?:\.|#)" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL
-)
-JAVASCRIPT_NEW_PREFIX_RE = re.compile(r"\bnew" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL)
-JAVASCRIPT_WITH_CANDIDATE_RE = re.compile(r"(?<![\w$])with(?![\w$])")
-JAVASCRIPT_GLOBAL_MEMBER_PREFIX_RE = re.compile(
-    r"\b(?:globalThis|global)" + JAVASCRIPT_TRIVIA + r"(?:\.|\?\.)"
-    + JAVASCRIPT_TRIVIA
-    + r"$",
-    re.DOTALL,
-)
-JAVASCRIPT_DELETE_CANDIDATE_RE = re.compile(r"(?<![\w$])delete(?![\w$])")
-JAVASCRIPT_TRUSTED_GLOBAL_FF_BINDING_RE = re.compile(
-    r"(?<![\w$])const[ \t\r\n]*\{[ \t\r\n]*"
-    r"(?P<test>test)[ \t\r\n]*,[ \t\r\n]*assert[ \t\r\n]*,"
-    r"[ \t\r\n]*eq[ \t\r\n]*\}[ \t\r\n]*=[ \t\r\n]*"
-    r"global[ \t\r\n]*\.[ \t\r\n]*__ff"
-    r"(?=[ \t]*(?:;|,|\r?\n|$))"
-)
-JAVASCRIPT_TRUSTED_GLOBAL_FF_PROLOGUE_RE = re.compile(
-    r"\A" + JAVASCRIPT_TRIVIA
-    + r"(?:(?:'use strict'|\"use strict\")[ \t]*;?"
-    + JAVASCRIPT_TRIVIA
-    + r")?\Z",
-    re.DOTALL,
-)
-JAVASCRIPT_CALLBACK_PREFIX_RE = re.compile(
-    r"(?:async" + JAVASCRIPT_TRIVIA + r"function\b|function\b|async"
-    + JAVASCRIPT_TRIVIA
-    + r"\([^)]*\)"
-    + JAVASCRIPT_TRIVIA
-    + r"=>|(?:\([^)]*\)|[A-Za-z_$][\w$]*)"
-    + JAVASCRIPT_TRIVIA
-    + r"=>)",
-    re.DOTALL,
-)
+JAVASCRIPT_ACORN_PROGRAM = r"""
+'use strict';
+const acorn = require('internal/deps/acorn/acorn/dist/acorn');
+const fs = require('fs');
+const source = fs.readFileSync(0, 'utf8');
+const MAX_CALLS = 256;
+const SUPPORTED = new Set([
+  'ArrayExpression','ArrayPattern','ArrowFunctionExpression','AssignmentExpression',
+  'AssignmentPattern','AwaitExpression','BinaryExpression','BlockStatement',
+  'BreakStatement','CallExpression','CatchClause','ChainExpression','ClassBody',
+  'ClassDeclaration','ClassExpression','ConditionalExpression','ContinueStatement',
+  'DebuggerStatement','DoWhileStatement','EmptyStatement','ExportAllDeclaration',
+  'ExportDefaultDeclaration','ExportNamedDeclaration','ExportSpecifier',
+  'ExpressionStatement','ForInStatement','ForOfStatement','ForStatement',
+  'FunctionDeclaration','FunctionExpression','Identifier','IfStatement',
+  'ImportAttribute','ImportDeclaration','ImportDefaultSpecifier','ImportExpression',
+  'ImportNamespaceSpecifier','ImportSpecifier','LabeledStatement','Literal',
+  'LogicalExpression','MemberExpression','MetaProperty','MethodDefinition',
+  'NewExpression','ObjectExpression','ObjectPattern','ParenthesizedExpression',
+  'PrivateIdentifier','Program','Property','PropertyDefinition','RestElement',
+  'ReturnStatement','SequenceExpression','SpreadElement','StaticBlock',
+  'Super','SwitchCase','SwitchStatement','TaggedTemplateExpression',
+  'TemplateElement','TemplateLiteral','ThisExpression','ThrowStatement',
+  'TryStatement','UnaryExpression','UpdateExpression','VariableDeclaration',
+  'VariableDeclarator','WhileStatement','WithStatement','YieldExpression'
+]);
+let bad = false;
+let calls = 0;
+let topLevelCalls = 0;
+let trusted = null;
+
+function identifier(node, name) {
+  return node && node.type === 'Identifier' && node.name === name;
+}
+function staticName(node, name) {
+  return identifier(node, name) ||
+    (node && node.type === 'Literal' && node.value === name) ||
+    (node && node.type === 'TemplateLiteral' && node.expressions.length === 0 &&
+      node.quasis.length === 1 && node.quasis[0].value.cooked === name);
+}
+function member(node, objectName, propertyName) {
+  return node && node.type === 'MemberExpression' &&
+    identifier(node.object, objectName) && staticName(node.property, propertyName);
+}
+function runnerMutationMember(node) {
+  if (node && node.type === 'ChainExpression') node = node.expression;
+  if (!node || node.type !== 'MemberExpression') return false;
+  const globalObject = identifier(node.object, 'global') || identifier(node.object, 'globalThis');
+  return staticName(node.property, 'test') || (globalObject && node.computed);
+}
+function containsRunnerMutation(node) {
+  if (!node || typeof node !== 'object') return false;
+  if (runnerMutationMember(node)) return true;
+  return Object.keys(node).some((key) =>
+    !['start','end','loc','range'].includes(key) &&
+    (Array.isArray(node[key])
+      ? node[key].some(containsRunnerMutation)
+      : containsRunnerMutation(node[key])));
+}
+function exactTrustedBinding(node) {
+  if (!node || node.type !== 'VariableDeclaration' || node.kind !== 'const' ||
+      node.declarations.length !== 1) return false;
+  const declaration = node.declarations[0];
+  if (!declaration.id || declaration.id.type !== 'ObjectPattern' ||
+      !member(declaration.init, 'global', '__ff') || declaration.init.computed) return false;
+  const names = ['test', 'assert', 'eq'];
+  return declaration.id.properties.length === names.length &&
+    declaration.id.properties.every((property, index) =>
+      property.type === 'Property' && property.kind === 'init' &&
+      property.shorthand && !property.computed && !property.method &&
+      identifier(property.key, names[index]) && identifier(property.value, names[index]));
+}
+function isTrustedIdentifier(node) {
+  if (!trusted || node.start < trusted.start || node.end > trusted.end) return false;
+  return node.name === 'test';
+}
+function isInertKey(node, parent, key) {
+  return parent && (
+    ((parent.type === 'Property' || parent.type === 'MethodDefinition' ||
+      parent.type === 'PropertyDefinition') && key === 'key' && !parent.computed) ||
+    (parent.type === 'MemberExpression' && key === 'property' && !parent.computed) ||
+    ((parent.type === 'LabeledStatement' || parent.type === 'BreakStatement' ||
+      parent.type === 'ContinueStatement') && key === 'label'));
+}
+function isRunnerCall(node) {
+  if (node.optional || !identifier(node.callee, 'test') || node.arguments.length !== 2 ||
+      node.arguments.some((argument) => argument.type === 'SpreadElement')) return false;
+  const name = node.arguments[0];
+  const callback = node.arguments[1];
+  return ((name.type === 'Literal' && typeof name.value === 'string') ||
+    name.type === 'TemplateLiteral') &&
+    (callback.type === 'ArrowFunctionExpression' || callback.type === 'FunctionExpression');
+}
+function isTopLevelCall(node, parent, ancestors) {
+  return parent && parent.type === 'ExpressionStatement' &&
+    ancestors.length >= 2 && ancestors[ancestors.length - 2].type === 'Program';
+}
+function mutationCall(node) {
+  if (!node || node.type !== 'CallExpression' || node.arguments.length < 2) return false;
+  const callee = node.callee;
+  const define = member(callee, 'Object', 'defineProperty') ||
+    member(callee, 'Reflect', 'defineProperty') || member(callee, 'Reflect', 'set');
+  if (define && staticName(node.arguments[1], 'test')) {
+    return true;
+  }
+  return member(callee, 'Object', 'assign') &&
+    (identifier(node.arguments[0], 'global') || identifier(node.arguments[0], 'globalThis'));
+}
+function walk(node, parent = null, key = '', ancestors = []) {
+  if (!node || typeof node !== 'object' || bad) return;
+  if (typeof node.type === 'string' && !SUPPORTED.has(node.type)) { bad = true; return; }
+  if (node.type === 'AssignmentExpression' && containsRunnerMutation(node.left)) bad = true;
+  if ((node.type === 'ForInStatement' || node.type === 'ForOfStatement') &&
+      containsRunnerMutation(node.left)) bad = true;
+  if (node.type === 'UpdateExpression' && containsRunnerMutation(node.argument)) bad = true;
+  if (node.type === 'UnaryExpression' && node.operator === 'delete' &&
+      containsRunnerMutation(node.argument)) bad = true;
+  if (mutationCall(node)) bad = true;
+  if (node.type === 'CallExpression' && identifier(node.callee, 'test')) {
+    if (!isRunnerCall(node)) bad = true;
+    else {
+      if (++calls > MAX_CALLS) bad = true;
+      if (isTopLevelCall(node, parent, ancestors)) ++topLevelCalls;
+    }
+  }
+  if (node.type === 'Identifier' && node.name === 'test' &&
+      !(parent && parent.type === 'CallExpression' && key === 'callee' && isRunnerCall(parent)) &&
+      !isTrustedIdentifier(node) && !isInertKey(node, parent, key)) bad = true;
+  const nextAncestors = ancestors.concat(node);
+  for (const childKey of Object.keys(node)) {
+    if (['start','end','loc','range'].includes(childKey)) continue;
+    const child = node[childKey];
+    if (Array.isArray(child)) child.forEach((item) => walk(item, node, childKey, nextAncestors));
+    else if (child && typeof child === 'object') walk(child, node, childKey, nextAncestors);
+  }
+}
+
+try {
+  const tree = acorn.parse(source, {ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true});
+  let first = 0;
+  if (tree.body[0] && tree.body[0].type === 'ExpressionStatement' &&
+      tree.body[0].directive === 'use strict' &&
+      ["'use strict'", '"use strict"'].includes(
+        source.slice(tree.body[0].expression.start, tree.body[0].expression.end))) first = 1;
+  if (exactTrustedBinding(tree.body[first])) trusted = tree.body[first];
+  walk(tree);
+  process.stdout.write(JSON.stringify({
+    managed: !bad && calls > 0 && (!trusted || topLevelCalls > 0)
+  }));
+} catch (_) {
+  process.stdout.write('{"managed":false}');
+}
+"""
+JAVASCRIPT_ACORN_ARGV = [
+    "node",
+    "--expose-internals",
+    "-e",
+    JAVASCRIPT_ACORN_PROGRAM,
+]
+MAX_JAVASCRIPT_PARSER_OUTPUT_BYTES = 64
 
 
 def _read_regular_utf8_snapshot(path: Path) -> tuple[str, FileFingerprint] | None:
@@ -188,137 +302,9 @@ def _mutation_is_shell_code(source: str, start: int, end: int) -> bool | None:
     return None if parsed is None else parsed.returncode != 0
 
 
-def _javascript_skip_trivia(source: str, index: int) -> int:
-    """Skip bounded JavaScript whitespace and comments in Node-validated source."""
-    while index < len(source):
-        if source[index].isspace():
-            index += 1
-        elif source.startswith("//", index):
-            newline = source.find("\n", index + 2)
-            index = len(source) if newline < 0 else newline + 1
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            index = len(source) if end < 0 else end + 2
-        else:
-            break
-    return index
-
-
-def _javascript_call_has_runner_shape(
-    source: str,
-    candidate_start: int,
-    candidate_end: int,
-    syntax_argv: list[str],
-    probe_budget: list[int],
-    *,
-    prove_top_level: bool = False,
-) -> tuple[bool, bool] | None:
-    """Prove one call using bounded whole-source syntax-oracle mutations."""
-    index = _javascript_skip_trivia(source, candidate_end)
-    if index >= len(source) or source[index] != "(":
-        return False, False
-    name_start = _javascript_skip_trivia(source, index + 1)
-    if name_start >= len(source) or source[name_start] not in "'\"`":
-        return False, False
-    comma_count = 0
-    for comma in (
-        position
-        for position in range(name_start + 1, len(source))
-        if source[position] == ","
-    ):
-        comma_count += 1
-        if comma_count > MAX_RUNNER_CANDIDATES:
-            return False, False
-        name = source[name_start:comma].strip()
-        name_syntax = _javascript_mutation_probe(
-            syntax_argv, f"const __runner_name = () => {name};\n", probe_budget
-        )
-        if name_syntax is None:
-            return None
-        if name_syntax.returncode != 0:
-            continue
-        callback_start = _javascript_skip_trivia(source, comma + 1)
-        if not JAVASCRIPT_CALLBACK_PREFIX_RE.match(source[callback_start:]):
-            continue
-        closing_count = 0
-        for close in (
-            position
-            for position in range(callback_start, len(source))
-            if source[position] == ")"
-        ):
-            closing_count += 1
-            if closing_count > MAX_RUNNER_CANDIDATES:
-                return False, False
-            callback = source[callback_start:close].strip()
-            if not callback:
-                continue
-            has_extra_argument = False
-            for possible_extra in (
-                position
-                for position in range(callback_start, close)
-                if source[position] == ","
-            ):
-                arity_probe = _javascript_mutation_probe(
-                    syntax_argv,
-                    f"{source[:callback_start]}()=>{{}}"
-                    f"{source[possible_extra:]}",
-                    probe_budget,
-                )
-                if arity_probe is None:
-                    return None
-                if arity_probe.returncode == 0:
-                    has_extra_argument = True
-                    break
-            if has_extra_argument:
-                continue
-            isolated = _javascript_mutation_probe(
-                syntax_argv,
-                # An arrow's expression body admits one AssignmentExpression,
-                # so an unparenthesized comma proves an extra call argument.
-                f"const __runner_callback = () => {callback};\n",
-                probe_budget,
-            )
-            if isolated is None:
-                return None
-            if isolated.returncode != 0:
-                continue
-            replaced = (
-                f"{source[:candidate_start]}globalThis.test(\"oracle\",()=>{{}})"
-                f"{source[close + 1:]}"
-            )
-            localized = _javascript_mutation_probe(
-                syntax_argv, replaced, probe_budget
-            )
-            if localized is None:
-                return None
-            if localized.returncode == 0:
-                if not prove_top_level:
-                    return True, True
-                top_level = _javascript_mutation_probe(
-                    ["node", "--check", "--input-type=module", "-"],
-                    (
-                        f'{source[:candidate_start]}import "__runner_call_oracle__"'
-                        f"{source[close + 1:]}"
-                    ),
-                    probe_budget,
-                )
-                if top_level is None:
-                    return None
-                return True, top_level.returncode == 0
-    return False, False
-
-
-def _javascript_mutation_probe(
-    syntax_argv: list[str], source: str, probe_budget: list[int]
-) -> subprocess.CompletedProcess[str] | None:
-    """Run one stdin-only syntax mutation within the per-source global budget."""
-    if probe_budget[0] <= 0:
-        return None
-    probe_budget[0] -= 1
-    return _run_runner_parser(syntax_argv, input_text=source)
-
-
-def _is_runner_managed_test_source(path: Path) -> bool:
+def _is_runner_managed_test_source(
+    path: Path, cache: RunnerSourceCache | None = None
+) -> bool:
     """Recognize structurally plausible non-executable runner sources.
 
     A runner may execute its source input without an execute bit. Accepted
@@ -332,7 +318,7 @@ def _is_runner_managed_test_source(path: Path) -> bool:
     if path.suffix == ".bats":
         return _is_bats_source(path)
     if path.name.endswith(".test.js"):
-        return _is_javascript_test_source(path)
+        return _is_javascript_test_source(path, cache)
     return False
 
 
@@ -424,154 +410,54 @@ def _is_bats_source(path: Path) -> bool:
     return False
 
 
-def _is_javascript_test_source(path: Path) -> bool:
-    """Accept Node-parseable JavaScript with a trusted runner-shaped test call.
+def _is_javascript_test_source(
+    path: Path, cache: RunnerSourceCache | None = None
+) -> bool:
+    """Classify a stable JavaScript snapshot with one inert Acorn AST parse.
 
-    The fleet runner imports ``*.test.js`` files, so they need not be
-    executable. ``node --check`` is the authoritative whole-file syntax layer;
-    parser-oracle mutations then distinguish code candidates from the same raw
-    text in strings, comments, template raw segments, regular expressions, and
-    other data. Further bounded whole-source mutations prove the closing edge
-    of each literal-name, inline-callback call. Every other code-level bare
-    ``test`` occurrence is rejected, except the exact immutable, top-level
-    Fleet binding ``const { test, assert, eq } = global.__ff`` when it is the
-    first executable statement (after trivia and an optional exact strict-mode
-    directive). That exception is limited to the declaration's matched token
-    after syntax mutations prove it is both code and top-level; aliases, other
-    sources, nested bindings, pre-binding code, and later mutations remain
-    ordinary bare candidates and fail closed. Neither original nor mutated
-    source executes.
+    Candidate bytes travel only on stdin to a fixed reviewer program. The
+    reviewer rejects shadows, runner mutations, non-call lookalikes, malformed
+    syntax and unsupported AST nodes, while preserving the exact top-level
+    Fleet ``global.__ff`` binding. Parser failures and malformed or oversized
+    output fail closed. A caller-owned cache may reuse only the same canonical
+    path and descriptor fingerprint within one verifier report.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
         return False
-    source = snapshot[0]
-    original = _run_runner_parser(["node", "--check", str(path)])
-    if original is None or original.returncode != 0:
+    source, fingerprint = snapshot
+    try:
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError):
         return False
+    cache_key = (canonical, fingerprint)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    parsed = _run_runner_parser(JAVASCRIPT_ACORN_ARGV, input_text=source)
+    managed = False
+    if (
+        parsed is not None
+        and parsed.returncode == 0
+        and isinstance(parsed.stdout, str)
+        and len(parsed.stdout.encode("utf-8")) <= MAX_JAVASCRIPT_PARSER_OUTPUT_BYTES
+    ):
+        try:
+            result: Any = json.loads(parsed.stdout)
+        except (json.JSONDecodeError, UnicodeError):
+            result = None
+        managed = (
+            isinstance(result, dict)
+            and set(result) == {"managed"}
+            and isinstance(result["managed"], bool)
+            and result["managed"]
+        )
+
     if _read_regular_utf8_snapshot(path) != snapshot:
         return False
-    syntax_argv = ["node", "--check", "-"]
-    stdin_syntax = _run_runner_parser(syntax_argv, input_text=source)
-    if stdin_syntax is None:
-        return False
-    if stdin_syntax.returncode != 0:
-        syntax_argv = ["node", "--check", "--input-type=module", "-"]
-        stdin_syntax = _run_runner_parser(syntax_argv, input_text=source)
-        if stdin_syntax is None or stdin_syntax.returncode != 0:
-            return False
-    candidates = list(JAVASCRIPT_TEST_CANDIDATE_RE.finditer(source))
-    with_candidates = list(JAVASCRIPT_WITH_CANDIDATE_RE.finditer(source))
-    delete_candidates = list(JAVASCRIPT_DELETE_CANDIDATE_RE.finditer(source))
-    trusted_binding_candidates = list(
-        JAVASCRIPT_TRUSTED_GLOBAL_FF_BINDING_RE.finditer(source)
-    )
-    if (
-        len(candidates) + len(with_candidates) + len(delete_candidates)
-        > MAX_RUNNER_CANDIDATES
-    ):
-        return False
-    trusted_binding_spans: set[tuple[int, int]] = set()
-    for binding in trusted_binding_candidates:
-        if JAVASCRIPT_TRUSTED_GLOBAL_FF_PROLOGUE_RE.fullmatch(
-            source[: binding.start()]
-        ) is None:
-            continue
-        start, end = binding.span("test")
-        localized = _run_runner_parser(
-            syntax_argv, input_text=f"{source[:start]}@{source[end:]}"
-        )
-        if localized is None:
-            return False
-        if localized.returncode == 0:
-            continue
-        top_level = _run_runner_parser(
-            ["node", "--check", "--input-type=module", "-"],
-            input_text=(
-                f'{source[:binding.start()]}import "__global_ff_oracle__"'
-                f"{source[binding.end():]}"
-            ),
-        )
-        if top_level is None:
-            return False
-        if top_level.returncode == 0:
-            trusted_binding_spans.add((start, end))
-    probe_budget = [
-        MAX_TRUSTED_GLOBAL_FF_MUTATION_PROBES
-        if trusted_binding_spans
-        else MAX_JAVASCRIPT_MUTATION_PROBES
-    ]
-    for candidate in with_candidates:
-        prefix = source[: candidate.start()]
-        suffix = source[candidate.end() :]
-        if JAVASCRIPT_PROPERTY_PREFIX_RE.search(prefix) or re.match(
-            JAVASCRIPT_TRIVIA + r":", suffix, re.DOTALL
-        ):
-            continue
-        mutated = f"{prefix}@{suffix}"
-        localized = _javascript_mutation_probe(
-            syntax_argv, mutated, probe_budget
-        )
-        if localized is None or localized.returncode != 0:
-            return False
-    runner_calls = 0
-    for candidate in candidates:
-        if candidate.span() in trusted_binding_spans:
-            continue
-        mutated = f"{source[: candidate.start()]}@{source[candidate.end() :]}"
-        localized = _javascript_mutation_probe(
-            syntax_argv, mutated, probe_budget
-        )
-        if localized is None:
-            return False
-        if localized.returncode == 0:
-            continue
-        prefix = source[: candidate.start()]
-        if JAVASCRIPT_PROPERTY_PREFIX_RE.search(prefix):
-            global_prefix = JAVASCRIPT_GLOBAL_MEMBER_PREFIX_RE.search(prefix)
-            if global_prefix is not None:
-                for delete_candidate in delete_candidates:
-                    delete_prefix = source[: delete_candidate.start()]
-                    delete_suffix = source[delete_candidate.end() :]
-                    if JAVASCRIPT_PROPERTY_PREFIX_RE.search(
-                        delete_prefix
-                    ) or re.match(
-                        JAVASCRIPT_TRIVIA + r":", delete_suffix, re.DOTALL
-                    ):
-                        continue
-                    delete_probe = _javascript_mutation_probe(
-                        syntax_argv,
-                        f"{delete_prefix}@{delete_suffix}",
-                        probe_budget,
-                    )
-                    if delete_probe is None or delete_probe.returncode != 0:
-                        return False
-                read_probe = _javascript_mutation_probe(
-                    syntax_argv,
-                    f"{source[:global_prefix.start()]}0{source[candidate.end():]}",
-                    probe_budget,
-                )
-                if read_probe is None or read_probe.returncode != 0:
-                    return False
-            continue
-        if JAVASCRIPT_NEW_PREFIX_RE.search(prefix):
-            return False
-        suffix = source[candidate.end() :]
-        if re.match(JAVASCRIPT_TRIVIA + r":", suffix, re.DOTALL):
-            continue
-        call_result = _javascript_call_has_runner_shape(
-            source,
-            candidate.start(),
-            candidate.end(),
-            syntax_argv,
-            probe_budget,
-            prove_top_level=bool(trusted_binding_spans),
-        )
-        if call_result is None or not call_result[0]:
-            return False
-        if call_result[1]:
-            runner_calls += 1
-    return runner_calls > 0 and _read_regular_utf8_snapshot(path) == snapshot
+    if cache is not None:
+        cache[cache_key] = managed
+    return managed
 
 
 @dataclass(frozen=True)
@@ -970,6 +856,7 @@ def verify_enforcement(
     unverifiable: list[str] = []
     roots_resolved: dict[str, Path] = {}
     roots_unresolved: dict[str, str] = {}
+    runner_source_cache: RunnerSourceCache = {}
 
     for jsonl_path in sorted(l1_dir.glob("*.jsonl")):
         source = jsonl_path.stem
@@ -1061,7 +948,10 @@ def verify_enforcement(
             plausible_mechanism = (
                 not executable_kind
                 or executable_file
-                or (kind == "test" and _is_runner_managed_test_source(resolved))
+                or (
+                    kind == "test"
+                    and _is_runner_managed_test_source(resolved, runner_source_cache)
+                )
             )
             if not plausible_mechanism:
                 totals.phantoms += 1
@@ -1132,7 +1022,8 @@ def print_enforcement_report(report: EnforcementReport) -> None:
         "enforcement-verifier: SCOPE: checks containment and existence; hooks and "
         "tests must be regular executable files, except runner-managed Pytest (.py) "
         "sources with a test AST, Bats (.bats) sources parsed by Bats' non-executing "
-        "preprocessor plus Bash, or *.test.js sources parsed by Node. Ordinary executable "
+        "preprocessor plus Bash, or *.test.js sources parsed once by Node's bundled Acorn. "
+        "Ordinary executable "
         "test/hook files do not invoke those runners. A plausible path is necessary, "
         "not sufficient evidence that it enforces the claimed lesson. UNVERIFIABLE "
         "entries were not checked at all -- they are neither enforced nor phantom.",

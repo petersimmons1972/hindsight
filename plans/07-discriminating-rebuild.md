@@ -31,7 +31,7 @@ Repo:        /home/psimmons/projects/hindsight
 Branch from: main    Work on: feat/23-verify-discriminating
 Prior art:   PR #10 (to be closed with evidence, not merged) -- read it, reuse nothing uncritically;
              its 671 lines predate this repo's hardening and were never mutation-tested.
-Green baseline: pytest 181, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
+Green baseline: pytest 179 passed + 2 skipped, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
 ```
 
 **Run this as a three-stage cross-vendor triangle, and record each stage in

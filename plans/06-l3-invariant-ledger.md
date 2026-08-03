@@ -102,7 +102,7 @@ observe every test fail on absence. Paste it. Only then implement.
 | A4 | *fixture with single-repo provenance* → validate | exit 1 naming the row (D3) |
 | A5 | `python3 pipeline/validate_l3.py --clusters /dev/null; echo "exit=$?"` | exit 1 (D5) |
 | A6 | `grep -c '"kind": *"judgment"' pipeline/L3/invariants.jsonl` vs rows carrying a substitute | equal (D4) |
-| A7 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥181 passed |
+| A7 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥179 passed, 0 failed |
 | A8 | `git diff --numstat origin/main...HEAD -- pipeline/L1 catalog conf` | **empty** |
 | A9 | `bats guard/tests/*.bats bin/tests/*.bats` | ≥109 ok, 0 failures |
 

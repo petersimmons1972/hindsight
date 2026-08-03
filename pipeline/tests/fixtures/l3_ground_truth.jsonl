@@ -1,0 +1,6 @@
+{"case":"valid-machine","row":{"cluster_ids":["fixture-multirepo"],"source_repos":["repo-a","repo-b"],"kind":"machine","enforcement":{"repo":"hindsight","path":"README.md"}},"expect_valid":true}
+{"case":"valid-judgment","row":{"cluster_ids":["fixture-multirepo"],"source_repos":["repo-a","repo-b"],"kind":"judgment","procedural_substitute":"Require an independent reviewer to inspect the rendered artifact before release."},"expect_valid":true}
+{"case":"third-state","row":{"cluster_ids":["fixture-multirepo"],"source_repos":["repo-a","repo-b"],"kind":"documented","procedural_substitute":"This must not make an unsupported state valid."},"expect_valid":false,"expect_error":"kind"}
+{"case":"machine-missing-path","row":{"cluster_ids":["fixture-multirepo"],"source_repos":["repo-a","repo-b"],"kind":"machine","enforcement":{"repo":"hindsight","path":"does/not/exist"}},"expect_valid":false,"expect_error":"path"}
+{"case":"single-repo-provenance","row":{"cluster_ids":["fixture-single-repo"],"source_repos":["repo-a"],"kind":"judgment","procedural_substitute":"Keep the finding at repo level rather than promote it to L3."},"expect_valid":false,"expect_error":"source_repos"}
+{"case":"judgment-without-substitute","row":{"cluster_ids":["fixture-multirepo"],"source_repos":["repo-a","repo-b"],"kind":"judgment"},"expect_valid":false,"expect_error":"procedural_substitute"}

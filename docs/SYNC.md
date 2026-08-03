@@ -29,8 +29,12 @@ overwritten.
 
 Before its first write, an apply run creates an undo journal and prints its
 path on stderr. The journal records every target's prior state (`absent`,
-`untracked`, or `tracked+hash`) and keeps a backup for existing files. Restore
-the exact prior target contents with:
+`untracked`, `tracked+hash`, or `tracked+link`) and keeps a backup for every
+existing filesystem entry, including dangling symbolic links. `--undo` restores
+the recorded target entry exactly. Apply refuses a symbolic-link target rather
+than writing through it; the journal still preserves that link for undo.
+
+Restore the recorded target entries with:
 
 ```bash
 bash bin/sync-failure-modes.sh --undo /tmp/hindsight-sync-undo.XXXXXX/journal.tsv

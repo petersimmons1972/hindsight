@@ -69,10 +69,11 @@ restore_journal() {
       absent)
         rm -f -- "$target"
         ;;
-      untracked|tracked+hash:*)
-        [ -f "$backup" ] || die "undo backup missing for: $target"
+      untracked|tracked+hash:*|tracked+link)
+        { [ -e "$backup" ] || [ -L "$backup" ]; } || die "undo backup missing for: $target"
         mkdir -p -- "$(dirname "$target")"
-        cp -- "$backup" "$target"
+        rm -f -- "$target"
+        cp --no-dereference -- "$backup" "$target"
         ;;
       *) die "unknown undo state '$state' for: $target" ;;
     esac
@@ -118,14 +119,20 @@ if [ "$mode" = apply ]; then
   for project in "${projects[@]}"; do
     target="$project/$TARGET_REL"
     backup='-'
-    if [ -e "$target" ]; then
-      if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ -L "$target" ]; then
+        if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
+          state=tracked+link
+        else
+          state=untracked
+        fi
+      elif git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
         state="tracked+hash:$(sha256sum "$target" | awk '{print $1}')"
       else
         state=untracked
       fi
       backup="$journal_dir/$index.before"
-      cp -- "$target" "$backup"
+      cp --no-dereference -- "$target" "$backup"
     else
       state=absent
     fi
@@ -149,6 +156,11 @@ for project in "${projects[@]}"; do
   target="$project/$TARGET_REL"
   if [ ! -d "$project" ]; then
     printf 'FAIL: %s (consumer directory missing)\n' "$project" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if [ -L "$target" ]; then
+    printf 'ERROR: symlinked target: %s -> %s\n' "$target" "$(readlink -- "$target")" >&2
     failed=$((failed + 1))
     continue
   fi

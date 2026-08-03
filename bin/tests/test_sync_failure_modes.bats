@@ -184,3 +184,68 @@ write_owned_copy() {
   [[ "$output" == *"unchanged=1"* ]]
   [[ "$output" == *"failed=0"* ]]
 }
+
+@test "symlinked target outside its consumer is refused without changing the link destination" {
+  local repo target outside before
+  repo="$(make_repo symlink-outside)"
+  target="$(target_for "$repo")"
+  outside="$WORK/outside-catalog.md"
+  printf '%s\n%s\n' "$OWNERSHIP_MARKER" 'outside prior content' >"$outside"
+  before="$(file_hash "$outside")"
+  mkdir -p "$(dirname "$target")"
+  ln -s "$outside" "$target"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"symlinked target: $target -> $outside"* ]]
+  [ "$(file_hash "$outside")" = "$before" ]
+  [ -L "$target" ]
+}
+
+@test "dangling target symlink is journaled as present and preserved by undo" {
+  local repo target destination journal
+  repo="$(make_repo dangling-symlink)"
+  target="$(target_for "$repo")"
+  destination="$WORK/missing-outside-catalog.md"
+  mkdir -p "$(dirname "$target")"
+  ln -s "$destination" "$target"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  [ -f "$journal" ]
+  grep -Fq "$target" "$journal"
+  ! grep -Fq "$target"$'\tabsent\t' "$journal"
+
+  run bash "$TOOL" --undo "$journal"
+
+  [ "$status" -eq 0 ]
+  [ -L "$target" ]
+  [ "$(readlink "$target")" = "$destination" ]
+}
+
+@test "regular owned target still syncs and undoes cleanly" {
+  local repo target before journal
+  repo="$(make_repo regular-control)"
+  target="$(target_for "$repo")"
+  mkdir -p "$(dirname "$target")"
+  printf '%s\n%s\n' "$OWNERSHIP_MARKER" 'regular prior content' >"$target"
+  before="$(file_hash "$target")"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -eq 0 ]
+  [ -f "$target" ]
+  [ ! -L "$target" ]
+  [ "$(file_hash "$target")" != "$before" ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+
+  run bash "$TOOL" --undo "$journal"
+
+  [ "$status" -eq 0 ]
+  [ -f "$target" ]
+  [ ! -L "$target" ]
+  [ "$(file_hash "$target")" = "$before" ]
+}

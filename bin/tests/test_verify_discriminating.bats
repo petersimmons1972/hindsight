@@ -8,7 +8,7 @@ fi
 
 setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  SCRIPT="$ROOT/bin/verify-discriminating.sh"
+  SCRIPT="${VERIFY_SCRIPT:-$ROOT/bin/verify-discriminating.sh}"
   REPO="$BATS_TEST_TMPDIR/repo"
   git init -q -b main "$REPO"
   git -C "$REPO" config user.email test@example.com
@@ -82,6 +82,8 @@ EOF
   run_verify
   [ "$status" -eq 0 ]
   [[ "$output" == *"test_renamed.py"* ]]
+  [[ "$output" == *"discriminating: 1/1"* ]]
+  [[ "$output" != *"test_old.py:"* ]]
 }
 
 @test "D6: symlinked test files are rejected without execution" {

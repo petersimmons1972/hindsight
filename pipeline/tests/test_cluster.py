@@ -52,6 +52,163 @@ def _assignments(clusters: list[object]) -> dict[str, str]:
     }
 
 
+def _snapshot_entries() -> list[MODULE.Entry]:
+    return [
+        MODULE.Entry(
+            id="snapshot-a",
+            instance="The completion signal claimed success without an artifact.",
+            check=None,
+            class_hint=None,
+            first_seen=None,
+            source_path="one/failures.md",
+        ),
+        MODULE.Entry(
+            id="snapshot-b",
+            instance="A successful status was emitted although the artifact was absent.",
+            check=None,
+            class_hint=None,
+            first_seen=None,
+            source_path="two/failures.md",
+        ),
+        MODULE.Entry(
+            id="snapshot-c",
+            instance="Certificate renewal used the wrong DNS challenge token.",
+            check=None,
+            class_hint=None,
+            first_seen=None,
+            source_path="three/failures.md",
+        ),
+        MODULE.Entry(
+            id="snapshot-d",
+            instance="A database migration waited forever on a schema lock.",
+            check=None,
+            class_hint=None,
+            first_seen=None,
+            source_path="four/failures.md",
+        ),
+        MODULE.Entry(
+            id="snapshot-e",
+            instance="A cache key omitted the tenant identifier.",
+            check=None,
+            class_hint=None,
+            first_seen=None,
+            source_path="five/failures.md",
+        ),
+    ]
+
+
+def _write_snapshot(path: Path, *, backend: dict[str, object], vectors: dict[str, list[float]]) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "hindsight.embedding-snapshot/v1",
+                "backend": backend,
+                "embeddings": vectors,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_snapshot_matrix_reproduces_equivalent_live_vector_partition(tmp_path: Path) -> None:
+    """Offline replay consumes the same vectors without invoking a backend."""
+    entries = _snapshot_entries()
+    identity = {
+        "name": "test-dense",
+        "model": "BAAI/bge-m3",
+        "revision": "example-revision",
+        "dimensions": 4,
+    }
+    live_matrix = np.asarray(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.99, 0.01, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
+    )
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(
+        snapshot,
+        backend=identity,
+        vectors={entry.id: live_matrix[index].tolist() for index, entry in enumerate(entries)},
+    )
+
+    replay_matrix = MODULE.load_embedding_snapshot(snapshot, entries, identity)
+    live = MODULE.cluster_entries(entries, live_matrix, backend_name="test-dense", threshold=0.95)
+    replay = MODULE.cluster_entries(entries, replay_matrix, backend_name="test-dense", threshold=0.95)
+
+    live_assignments = _assignments(live)
+    assert live_assignments["snapshot-a"] == live_assignments["snapshot-b"]
+    assert live_assignments["snapshot-a"] != live_assignments["snapshot-c"]
+    assert _assignments(replay) == live_assignments
+
+
+def test_precomputed_matrix_rejects_ambiguous_unsorted_entry_order() -> None:
+    entries = _snapshot_entries()
+    matrix = np.eye(len(entries), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=r"entries must be sorted by L1 id.*matrix row order"):
+        MODULE.cluster_entries(list(reversed(entries)), matrix, backend_name="test-dense")
+
+
+def test_snapshot_backend_identity_mismatch_is_rejected_loudly(tmp_path: Path) -> None:
+    entries = _snapshot_entries()
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(
+        snapshot,
+        backend={"name": "http", "model": "BAAI/bge-m3", "revision": "rev-a", "dimensions": 2},
+        vectors={entry.id: [1.0, 0.0] for entry in entries},
+    )
+
+    with pytest.raises(ValueError, match=r"backend identity mismatch.*revision.*rev-a.*rev-b"):
+        MODULE.load_embedding_snapshot(
+            snapshot,
+            entries,
+            {"name": "http", "model": "BAAI/bge-m3", "revision": "rev-b", "dimensions": 2},
+        )
+
+
+def test_snapshot_id_mismatch_names_missing_and_unexpected_ids(tmp_path: Path) -> None:
+    entries = _snapshot_entries()
+    identity = {"name": "http", "model": "model", "revision": "rev", "dimensions": 2}
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(
+        snapshot,
+        backend=identity,
+        vectors={"snapshot-a": [1.0, 0.0], "snapshot-c": [0.0, 1.0], "snapshot-extra": [0.5, 0.5]},
+    )
+
+    with pytest.raises(ValueError, match=r"missing.*snapshot-b.*unexpected.*snapshot-extra"):
+        MODULE.load_embedding_snapshot(snapshot, entries, identity)
+
+
+def test_snapshot_zero_overlap_alarms_and_names_both_id_sets(tmp_path: Path) -> None:
+    entries = _snapshot_entries()
+    identity = {"name": "http", "model": "model", "revision": "rev", "dimensions": 2}
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(snapshot, backend=identity, vectors={"foreign-a": [1.0, 0.0], "foreign-b": [0.0, 1.0]})
+
+    with pytest.raises(
+        ValueError,
+        match=r"ALARM: zero ID overlap.*snapshot-a.*snapshot-b.*snapshot-c.*foreign-a.*foreign-b",
+    ):
+        MODULE.load_embedding_snapshot(snapshot, entries, identity)
+
+
+def test_committed_snapshot_covers_the_current_l1_corpus_exactly() -> None:
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    matrix = MODULE.load_embedding_snapshot(
+        ROOT / "pipeline" / "L2" / "embedding-snapshot.json",
+        entries,
+        MODULE.HTTP_BACKEND_IDENTITY,
+    )
+
+    assert matrix.shape == (len(entries), 1024)
+
+
 def _assert_fixture_contract(clusters: list[object]) -> None:
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assignments = _assignments(clusters)
@@ -78,7 +235,7 @@ def _assert_fixture_contract(clusters: list[object]) -> None:
 def test_ground_truth_contract_with_forced_tfidf_backend() -> None:
     """Fallback output is held to the same recall and precision gate as HTTP."""
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
-    clusters = MODULE.cluster_entries(entries, MODULE.TfidfEmbeddingBackend())
+    clusters = MODULE.cluster_entries_from_backend(entries, MODULE.TfidfEmbeddingBackend())
     _assert_fixture_contract(clusters)
 
 
@@ -95,7 +252,7 @@ def test_active_http_backend_meets_the_ground_truth_contract_when_reachable() ->
         pytest.skip("authorised HTTP embedding backend is unreachable")
 
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
-    clusters = MODULE.cluster_entries(entries, backend)
+    clusters = MODULE.cluster_entries_from_backend(entries, backend)
     _assert_fixture_contract(clusters)
 
 
@@ -121,7 +278,7 @@ def test_degenerate_uniform_embeddings_fail_loudly_instead_of_emitting_one_clust
     ]
 
     with pytest.raises(RuntimeError, match=r"degenerate clustering.*uniform.*0\.17"):
-        MODULE.cluster_entries(entries, UniformEmbeddingBackend())
+        MODULE.cluster_entries_from_backend(entries, UniformEmbeddingBackend())
 
 
 def test_plausible_low_threshold_is_rejected_not_silently_written(tmp_path: Path) -> None:
@@ -219,7 +376,7 @@ def test_markers_disabled_still_clears_a_stated_lower_recall_bound() -> None:
     original_markers = MODULE._cause_shape_markers
     MODULE._cause_shape_markers = lambda text: ()
     try:
-        clusters = MODULE.cluster_entries(entries, MODULE.TfidfEmbeddingBackend())
+        clusters = MODULE.cluster_entries_from_backend(entries, MODULE.TfidfEmbeddingBackend())
     finally:
         MODULE._cause_shape_markers = original_markers
     assignments = _assignments(clusters)
@@ -271,7 +428,7 @@ def test_false_positive_novel_failure_does_not_join_an_existing_family() -> None
         first_seen=None,
         source_path="novel/adversarial",
     )
-    clusters = MODULE.cluster_entries(
+    clusters = MODULE.cluster_entries_from_backend(
         [*entries, novel_session_confusion, novel_control], MODULE.TfidfEmbeddingBackend()
     )
     assignments = _assignments(clusters)
@@ -331,7 +488,7 @@ def test_false_positive_distractor_paraphrases_do_not_join_any_family() -> None:
         )
 
     holdout_entries = [make(item["id"], item["text"]) for item in holdout["entries"]]
-    clusters = MODULE.cluster_entries([*entries, *holdout_entries], MODULE.TfidfEmbeddingBackend())
+    clusters = MODULE.cluster_entries_from_backend([*entries, *holdout_entries], MODULE.TfidfEmbeddingBackend())
     assignments = _assignments(clusters)
 
     family_cluster_ids = {
@@ -413,7 +570,7 @@ def test_held_out_paraphrase_recall_meets_the_measured_floor() -> None:
         )
 
     holdout_entries = [make(item["id"], item["text"]) for item in holdout["entries"]]
-    clusters = MODULE.cluster_entries([*entries, *holdout_entries], MODULE.TfidfEmbeddingBackend())
+    clusters = MODULE.cluster_entries_from_backend([*entries, *holdout_entries], MODULE.TfidfEmbeddingBackend())
     hits, total = _held_out_recall(clusters, families, holdout["entries"])
 
     documented_hits = 0
@@ -453,7 +610,7 @@ def test_active_http_backend_held_out_gate_when_reachable() -> None:
         )
 
     holdout_entries = [make(item["id"], item["text"]) for item in holdout["entries"]]
-    clusters = MODULE.cluster_entries([*entries, *holdout_entries], backend)
+    clusters = MODULE.cluster_entries_from_backend([*entries, *holdout_entries], backend)
     assignments = _assignments(clusters)
 
     family_cluster_ids = {
@@ -476,8 +633,8 @@ def test_active_http_backend_held_out_gate_when_reachable() -> None:
 def test_same_input_produces_identical_assignment() -> None:
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
     backend = MODULE.TfidfEmbeddingBackend()
-    first = _assignments(MODULE.cluster_entries(entries, backend))
-    second = _assignments(MODULE.cluster_entries(entries, backend))
+    first = _assignments(MODULE.cluster_entries_from_backend(entries, backend))
+    second = _assignments(MODULE.cluster_entries_from_backend(entries, backend))
     assert first == second
 
 
@@ -500,7 +657,7 @@ def test_shared_id_prefix_does_not_merge_unrelated_records() -> None:
             source_path="ignored/b",
         ),
     ]
-    clusters = MODULE.cluster_entries(entries, MODULE.TfidfEmbeddingBackend())
+    clusters = MODULE.cluster_entries_from_backend(entries, MODULE.TfidfEmbeddingBackend())
     assert len(clusters) == 2
 
 

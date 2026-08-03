@@ -584,6 +584,29 @@ def test_atomic_snapshot_write_fsyncs_file_and_containing_directory(
     assert any(stat.S_ISDIR(mode) for mode in synced_modes)
 
 
+def test_atomic_snapshot_write_persists_recovery_name_before_replacement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"trusted prior\n")
+    events: list[str] = []
+    real_replace = os.replace
+
+    monkeypatch.setattr(
+        CAPTURE, "_fsync_directory", lambda directory: events.append("directory-fsync")
+    )
+
+    def recording_replace(source: Path, destination: Path) -> None:
+        events.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(CAPTURE.os, "replace", recording_replace)
+    CAPTURE._atomic_write_json(output, {"ok": True})
+
+    assert events[0:2] == ["directory-fsync", "replace"]
+    assert json.loads(output.read_text(encoding="utf-8")) == {"ok": True}
+
+
 def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(
     tmp_path: Path, monkeypatch
 ) -> None:

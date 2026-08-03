@@ -145,6 +145,7 @@ def _atomic_write_json(
                 rollback_handle.write(prior_bytes)
                 rollback_handle.flush()
                 os.fsync(rollback_handle.fileno())
+            _fsync_directory(output.parent)
         if before_replace is not None:
             before_replace()
         os.replace(temporary, output)

@@ -22,20 +22,29 @@ disposable fixtures during development:
 bash bin/sync-failure-modes.sh --apply --consumers /tmp/consumers.conf
 ```
 
-Each consumer receives a namespaced copy only when its resolved destination is
-exactly beneath that consumer's resolved root at
-`docs/vendor/hindsight/failure-modes.md`; a symlink in any ancestor that would
-escape that path is refused in both dry-run and apply modes. An existing target
-without the Hindsight ownership marker is refused rather than overwritten.
+Each consumer receives a namespaced copy only when the resolved destination is
+the *exact* expected path under that consumer's resolved root:
+`docs/vendor/hindsight/failure-modes.md`. This is intentionally stricter than
+ordinary containment: an ancestor symlink is refused even when it happens to
+resolve inside the consumer. An existing target without the Hindsight ownership
+marker is refused rather than overwritten.
+
+After that identity check, writes and restores use a descriptor-relative helper:
+it opens the verified consumer tree without following links, creates a temporary
+file relative to the verified parent directory descriptor, sets the recorded
+mode, fsyncs it, and renames it relative to that same descriptor. It therefore
+does not re-walk the target path by name after validation.
 
 Before its first write, an apply run creates an undo journal and prints its
-path on stderr. The journal records every target's prior state (`absent`,
-`untracked`, `tracked+hash`, `tracked+link`, `directory`, or `invalid`) and
-keeps a backup for every existing filesystem entry, including dangling symbolic
-links. `--undo` restores backed-up entries with an atomic replacement and
-leaves refused directory or invalid entries untouched. Apply refuses symbolic
-links, hardlinked files, directories, and any resolved target that escapes its
-consumer root; the journal still preserves a refused leaf link for undo.
+path on stderr. It records each consumer's resolved target, state (`absent`,
+`untracked`, `tracked+hash`, `tracked+link`, `directory`, or `invalid`), backup
+path where one is safe to create, and prior mode. Refused entries are recorded
+as such, not claimed to have a restorable prior state. `--undo` rechecks that
+each recorded target still has the exact expected identity under its recorded
+consumer root; it refuses non-zero if a later path swap makes that false.
+Regular-file restores preserve the recorded mode. Apply refuses symbolic links,
+hardlinked files, directories, FIFOs, devices, sockets, and any target that
+fails the strict identity check.
 
 Restore the recorded target entries with:
 

@@ -12,11 +12,20 @@ setup() {
   # Exercise a fresh copy of the checked-out tool.  This keeps the red run from
   # letting the old, unsafe implementation consult its real consumer config.
   cp "$ROOT/bin/sync-failure-modes.sh" "$STAGE/bin/sync-failure-modes.sh"
+  cp "$ROOT/bin/_sync_write.py" "$STAGE/bin/_sync_write.py" 2>/dev/null || true
   cp "$ROOT/bin/checkin-lint-core.sh" "$STAGE/bin/checkin-lint-core.sh"
   cp "$ROOT/catalog/failure-modes.md" "$STAGE/catalog/failure-modes.md"
   ln -s "$CONSUMERS" "$STAGE/bin/failure-modes-projects.conf"
   TOOL="$STAGE/bin/sync-failure-modes.sh"
   SOURCE="$STAGE/catalog/failure-modes.md"
+}
+
+make_owned_target() {
+  local repo="$1" target
+  target="$(target_for "$repo")"
+  mkdir -p "$(dirname "$target")"
+  write_owned_copy "$target"
+  printf '%s' "$target"
 }
 
 teardown() {
@@ -203,7 +212,7 @@ write_owned_copy() {
   [ -L "$target" ]
 }
 
-@test "dangling target symlink is journaled as present and preserved by undo" {
+@test "dangling target symlink records its resolved path and undo refuses it outside the consumer root" {
   local repo target destination journal
   repo="$(make_repo dangling-symlink)"
   target="$(target_for "$repo")"
@@ -216,12 +225,12 @@ write_owned_copy() {
   [ "$status" -ne 0 ]
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
   [ -f "$journal" ]
-  grep -Fq "$target" "$journal"
+  grep -Fq "$destination" "$journal"
   ! grep -Fq "$target"$'\tabsent\t' "$journal"
 
   run bash "$TOOL" --undo "$journal"
 
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [ -L "$target" ]
   [ "$(readlink "$target")" = "$destination" ]
 }
@@ -350,7 +359,7 @@ write_owned_copy() {
   [ "$(file_hash "$healthy_target")" = "$before" ]
 }
 
-@test "a tracked symlink target is journaled as tracked+link and restored exactly" {
+@test "a tracked symlink target is journaled as tracked+link but undo refuses its resolved outside path" {
   local repo target destination journal
   repo="$(make_repo tracked-leaf-link)"
   target="$(target_for "$repo")"
@@ -366,7 +375,7 @@ write_owned_copy() {
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
   grep -Fq $'tracked+link\t' "$journal"
   run bash "$TOOL" --undo "$journal"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [ -L "$target" ]
   [ "$(readlink "$target")" = "$destination" ]
 }
@@ -396,12 +405,154 @@ write_owned_copy() {
   current="$(file_hash "$target")"
   [ "$current" != "$before" ]
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$WORK/fakebin/cp"
-  chmod +x "$WORK/fakebin/cp"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$STAGE/bin/_sync_write.py"
+  chmod +x "$STAGE/bin/_sync_write.py"
 
-  run env PATH="$WORK/fakebin:$PATH" bash "$TOOL" --undo "$journal"
+  run bash "$TOOL" --undo "$journal"
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"cannot restore undo backup"* ]]
   [ "$(file_hash "$target")" = "$current" ]
+}
+
+@test "B2: undo refuses a journal target whose parent now escapes its recorded consumer root" {
+  local repo target journal outside before
+  repo="$(make_repo undo-escape)"
+  target="$(make_owned_target "$repo")"
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+  [ "$status" -eq 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  outside="$WORK/outside-undo"
+  mkdir -p "$outside"
+  printf '%s\n' outside >"$outside/failure-modes.md"
+  before="$(file_hash "$outside/failure-modes.md")"
+  rm -f -- "$target"
+  rmdir "$repo/docs/vendor/hindsight"
+  ln -s "$outside" "$repo/docs/vendor/hindsight"
+
+  run bash "$TOOL" --undo "$journal"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refuses undo target outside recorded consumer root"* ]]
+  [ "$(file_hash "$outside/failure-modes.md")" = "$before" ]
+}
+
+@test "B1: dirfd write remains inside a consumer during a fault-injected path flip" {
+  local repo target outside tool_copy pid
+  repo="$(make_repo write-race)"
+  target="$(target_for "$repo")"
+  outside="$WORK/outside-write"
+  mkdir -p "$(dirname "$target")" "$outside"
+  tool_copy="$STAGE/bin/sync-failure-modes-race.sh"
+  cp "$TOOL" "$tool_copy"
+  if grep -Fq '# DIRFD_WRITE_HOOK' "$tool_copy"; then
+    sed -i '/# DIRFD_WRITE_HOOK/a sleep 0.3' "$tool_copy"
+  else
+    # The vulnerable predecessor re-walks temp_target immediately after this
+    # point; this deterministic pause makes that old path-by-name window red.
+    sed -i '/if ! temp_target=.*mktemp/i sleep 0.3' "$tool_copy"
+  fi
+  bash "$tool_copy" --apply --consumers "$CONSUMERS" >"$WORK/race.out" 2>&1 &
+  pid=$!
+  sleep 0.1
+  rmdir "$repo/docs/vendor/hindsight" 2>/dev/null || true
+  ln -s "$outside" "$repo/docs/vendor/hindsight" 2>/dev/null || true
+  [ -L "$repo/docs/vendor/hindsight" ]
+  [ "$(readlink "$repo/docs/vendor/hindsight")" = "$outside" ]
+  wait "$pid" || true
+
+  [ ! -e "$outside/failure-modes.md" ]
+  [ -z "$(ls -A "$outside")" ]
+}
+
+@test "B3: unreadable middle target records a complete journal and later consumers still sync" {
+  local first middle last first_target middle_target last_target journal
+  first="$(make_repo readable-first)"
+  middle="$(make_repo unreadable-middle)"
+  last="$(make_repo readable-last)"
+  first_target="$(target_for "$first")"
+  middle_target="$(make_owned_target "$middle")"
+  last_target="$(target_for "$last")"
+  git -C "$middle" add docs/vendor/hindsight/failure-modes.md
+  git -C "$middle" commit -qm unreadable-seed
+  chmod 000 "$middle_target"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  chmod 644 "$middle_target"
+  [ "$status" -ne 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  [ -f "$journal" ]
+  [ "$(($(wc -l <"$journal") - 1))" -eq 3 ]
+  [ -f "$first_target" ]
+  [ -f "$last_target" ]
+}
+
+@test "B3: a journal backup-copy failure is recorded and later consumers still sync" {
+  local first middle last first_target middle_target last_target journal
+  first="$(make_repo copy-first)"
+  middle="$(make_repo copy-middle)"
+  last="$(make_repo copy-last)"
+  first_target="$(target_for "$first")"
+  middle_target="$(make_owned_target "$middle")"
+  last_target="$(target_for "$last")"
+  mkdir -p "$WORK/fakebin"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$WORK/fakebin/cp"
+  chmod +x "$WORK/fakebin/cp"
+
+  run env PATH="$WORK/fakebin:$PATH" bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  [ -f "$journal" ]
+  [ "$(($(wc -l <"$journal") - 1))" -eq 3 ]
+  [ -f "$first_target" ]
+  [ -f "$last_target" ]
+}
+
+@test "M1: a FIFO target is refused promptly and does not stop the batch" {
+  local fifo healthy fifo_target healthy_target
+  fifo="$(make_repo fifo-target)"
+  healthy="$(make_repo fifo-healthy)"
+  fifo_target="$(target_for "$fifo")"
+  healthy_target="$(target_for "$healthy")"
+  mkdir -p "$(dirname "$fifo_target")"
+  mkfifo "$fifo_target"
+
+  run timeout 3 bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"non-regular target"* ]]
+  [ -p "$fifo_target" ]
+  [ -f "$healthy_target" ]
+}
+
+@test "M2: apply and undo preserve an owned target mode" {
+  local repo target journal
+  repo="$(make_repo mode-preservation)"
+  target="$(make_owned_target "$repo")"
+  chmod 644 "$target"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$target")" = 644 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  run bash "$TOOL" --undo "$journal"
+  [ "$status" -eq 0 ]
+  [ "$(stat -c %a "$target")" = 644 ]
+}
+
+@test "M3: a journal-phase containment failure exits non-zero" {
+  local repo outside
+  repo="$(make_repo invalid-journal-row)"
+  outside="$WORK/outside-invalid"
+  mkdir -p "$repo/docs" "$outside"
+  ln -s "$outside" "$repo/docs/vendor"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"strict target identity check failed"* ]]
+  [[ "$output" == *"failed=1"* ]]
 }

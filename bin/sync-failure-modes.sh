@@ -9,6 +9,7 @@ readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 readonly CATALOG="$REPO_ROOT/catalog/failure-modes.md"
 readonly TARGET_REL="docs/vendor/hindsight/failure-modes.md"
 readonly OWNERSHIP_MARKER='<!-- hindsight: vendored failure-mode catalog -->'
+readonly WRITE_HELPER="$SCRIPT_DIR/_sync_write.py"
 
 usage() {
   cat >&2 <<'EOF'
@@ -39,7 +40,7 @@ contained_target() {
     return 1
   }
   if [ "$resolved" != "$root/$TARGET_REL" ]; then
-    printf 'ERROR: target escapes consumer root: intended=%s resolved=%s root=%s\n' \
+    printf 'ERROR: strict target identity check failed: intended=%s resolved=%s root=%s\n' \
       "$intended" "$resolved" "$root" >&2
     return 1
   fi
@@ -47,18 +48,11 @@ contained_target() {
 }
 
 restore_backup_atomically() {
-  local backup="$1" target="$2" parent temp
-  parent="$(dirname "$target")"
-  mkdir -p -- "$parent" || die "cannot create undo target directory: $parent"
-  temp="$(mktemp "$parent/.hindsight-sync-undo.XXXXXX")" || die "cannot create undo temp file: $parent"
-  if ! cp --no-dereference -- "$backup" "$temp"; then
-    rm -f -- "$temp"
-    die "cannot restore undo backup: $backup"
-  fi
-  if ! mv -T -- "$temp" "$target"; then
-    rm -f -- "$temp"
-    die "cannot install undo backup: $target"
-  fi
+  local backup="$1" root="$2" mode="$3"
+  "$WRITE_HELPER" restore --root "$root" --source "$backup" --mode "$mode" || {
+    printf 'ERROR: cannot restore undo backup: %s\n' "$backup" >&2
+    return 1
+  }
 }
 
 mode=dry-run
@@ -94,21 +88,25 @@ while [ "$#" -gt 0 ]; do
 done
 
 restore_journal() {
-  local journal="$1" header target state backup extra
+  local journal="$1" header root target state backup prior_mode extra
   [ -f "$journal" ] || die "undo journal not found: $journal"
   IFS= read -r header <"$journal" || die "undo journal is empty: $journal"
-  [ "$header" = '# hindsight-sync-undo-v1' ] || die "unrecognised undo journal: $journal"
+  [ "$header" = '# hindsight-sync-undo-v2' ] || die "unrecognised undo journal: $journal"
 
-  while IFS=$'\t' read -r target state backup extra; do
+  while IFS=$'\t' read -r root target state backup prior_mode extra; do
     [ -n "$target" ] || continue
     [ -z "${extra:-}" ] || die "malformed undo journal row: $journal"
+    if [ "$(contained_target "$root" 2>/dev/null || true)" != "$target" ]; then
+      printf 'ERROR: refuses undo target outside recorded consumer root: target=%s root=%s\n' "$target" "$root" >&2
+      return 1
+    fi
     case "$state" in
       absent)
-        rm -f -- "$target"
+        "$WRITE_HELPER" remove --root "$root" || return 1
         ;;
       untracked|tracked+hash:*|tracked+link)
         { [ -e "$backup" ] || [ -L "$backup" ]; } || die "undo backup missing for: $target"
-        restore_backup_atomically "$backup" "$target"
+        restore_backup_atomically "$backup" "$root" "$prior_mode" || return 1
         ;;
       invalid|directory)
         # These entries were refused before any write, so undo must not alter
@@ -129,6 +127,7 @@ fi
 [ -n "$consumers" ] || die '--consumers is required; no default consumer file is used'
 [ -f "$consumers" ] || die "consumer list not found: $consumers"
 [ -s "$CATALOG" ] || die "canonical catalog not found or empty: $CATALOG"
+[ -x "$WRITE_HELPER" ] || die "descriptor-relative write helper is missing or not executable: $WRITE_HELPER"
 [ "$mode" = dry-run ] || [ -n "$consumers" ] || die '--apply requires --consumers'
 expected="$(mktemp "${TMPDIR:-/tmp}/hindsight-sync-expected.XXXXXX")"
 trap 'rm -f -- "$expected"' EXIT
@@ -150,43 +149,84 @@ fi
 
 journal_dir=''
 journal=''
+journal_failed=0
+declare -A journal_invalid=()
+declare -A journal_failure_reason=()
 if [ "$mode" = apply ]; then
   journal_dir="$(mktemp -d "${TMPDIR:-/tmp}/hindsight-sync-undo.XXXXXX")"
   journal="$journal_dir/journal.tsv"
-  printf '%s\n' '# hindsight-sync-undo-v1' >"$journal"
+  printf '%s\n' '# hindsight-sync-undo-v2' >"$journal"
+  printf 'UNDO JOURNAL: %s\n' "$journal" >&2
+  printf 'undo journal written before writes\n' >&2
   index=0
   for project in "${projects[@]}"; do
     target="$project/$TARGET_REL"
     backup='-'
     resolved_target=''
-    if [ -L "$target" ]; then
+    prior_mode='644'
+    root="$(realpath -- "$project" 2>/dev/null || true)"
+    if [ -z "$root" ]; then
+      state=invalid
+      resolved_target="$target"
+      journal_invalid["$project"]=1
+      journal_failure_reason["$project"]='cannot resolve consumer root'
+      journal_failed=$((journal_failed + 1))
+    elif [ -L "$target" ]; then
+      resolved_target="$(realpath -m -- "$target" 2>/dev/null || printf '%s' "$target")"
       if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
         state=tracked+link
       else
         state=untracked
       fi
       backup="$journal_dir/$index.before"
-      cp --no-dereference -- "$target" "$backup"
+      if ! cp --no-dereference -- "$target" "$backup"; then
+        state=invalid
+        backup='-'
+        journal_invalid["$project"]=1
+        journal_failure_reason["$project"]='cannot back up symlink target'
+        journal_failed=$((journal_failed + 1))
+      fi
     elif ! resolved_target="$(contained_target "$project")"; then
       state=invalid
+      resolved_target="$root/$TARGET_REL"
+      journal_invalid["$project"]=1
+      journal_failure_reason["$project"]='strict target identity check failed'
+      journal_failed=$((journal_failed + 1))
     elif [ -d "$resolved_target" ]; then
       state=directory
+    elif [ -p "$resolved_target" ] || [ -b "$resolved_target" ] || [ -c "$resolved_target" ] || [ -S "$resolved_target" ]; then
+      state=invalid
+      journal_invalid["$project"]=1
+      journal_failure_reason["$project"]='non-regular target'
+      journal_failed=$((journal_failed + 1))
     elif [ -e "$resolved_target" ] || [ -L "$resolved_target" ]; then
       if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
-        state="tracked+hash:$(sha256sum "$resolved_target" | awk '{print $1}')"
+        if ! hash="$(sha256sum "$resolved_target" | awk '{print $1}')"; then
+          state=invalid
+          journal_invalid["$project"]=1
+          journal_failure_reason["$project"]='cannot hash target'
+          journal_failed=$((journal_failed + 1))
+        else
+          state="tracked+hash:$hash"
+        fi
       else
         state=untracked
       fi
       backup="$journal_dir/$index.before"
-      cp --no-dereference -- "$resolved_target" "$backup"
+      prior_mode="$(stat -c %a -- "$resolved_target" 2>/dev/null || printf '644')"
+      if [ "$state" != invalid ] && ! cp --no-dereference -- "$resolved_target" "$backup"; then
+        state=invalid
+        backup='-'
+        journal_invalid["$project"]=1
+        journal_failure_reason["$project"]='cannot back up target'
+        journal_failed=$((journal_failed + 1))
+      fi
     else
       state=absent
     fi
-    printf '%s\t%s\t%s\n' "${resolved_target:-$target}" "$state" "$backup" >>"$journal"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$root" "${resolved_target:-$target}" "$state" "$backup" "$prior_mode" >>"$journal"
     index=$((index + 1))
   done
-  printf 'UNDO JOURNAL: %s\n' "$journal" >&2
-  printf 'undo journal written before writes\n' >&2
 else
   printf 'DRY RUN: no files will be written\n' >&2
   printf 'UNDO JOURNAL: none (dry-run)\n' >&2
@@ -196,13 +236,17 @@ fi
 attempted=0
 succeeded=0
 unchanged=0
-failed=0
+failed="${journal_failed:-0}"
 for project in "${projects[@]}"; do
   attempted=$((attempted + 1))
   target="$project/$TARGET_REL"
   if [ ! -d "$project" ]; then
     printf 'FAIL: %s (consumer directory missing)\n' "$project" >&2
     failed=$((failed + 1))
+    continue
+  fi
+  if [ "${journal_invalid[$project]:-0}" = 1 ]; then
+    printf 'FAIL: %s (%s)\n' "$project" "${journal_failure_reason[$project]}" >&2
     continue
   fi
   if [ -L "$target" ]; then
@@ -216,6 +260,11 @@ for project in "${projects[@]}"; do
   fi
   if [ -d "$resolved_target" ]; then
     printf 'FAIL: %s (directory target: %s)\n' "$project" "$resolved_target" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if [ -p "$resolved_target" ] || [ -b "$resolved_target" ] || [ -c "$resolved_target" ] || [ -S "$resolved_target" ]; then
+    printf 'FAIL: %s (non-regular target: %s)\n' "$project" "$resolved_target" >&2
     failed=$((failed + 1))
     continue
   fi
@@ -246,24 +295,9 @@ for project in "${projects[@]}"; do
     succeeded=$((succeeded + 1))
     continue
   fi
-  target_dir="$(dirname "$resolved_target")"
-  if ! mkdir -p -- "$target_dir"; then
-    printf 'FAIL: %s (cannot create target directory)\n' "$project" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  if ! rechecked_target="$(contained_target "$project")" || [ "$rechecked_target" != "$resolved_target" ]; then
-    printf 'FAIL: %s (target changed before write)\n' "$project" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  if ! temp_target="$(mktemp "$target_dir/.hindsight-sync.XXXXXX")"; then
-    printf 'FAIL: %s (cannot create temporary target)\n' "$project" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  if ! cp -- "$expected" "$temp_target" || ! mv -T -- "$temp_target" "$resolved_target"; then
-    rm -f -- "$temp_target"
+  # DIRFD_WRITE_HOOK
+  target_mode="$(stat -c %a -- "$resolved_target" 2>/dev/null || printf '644')"
+  if ! "$WRITE_HELPER" write --root "$(realpath -- "$project")" --source "$expected" --mode "$target_mode"; then
     printf 'FAIL: %s (cannot atomically write target)\n' "$project" >&2
     failed=$((failed + 1))
     continue

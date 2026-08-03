@@ -210,8 +210,6 @@ The enforcement verifier checks only rows tagged `auto: machine`
 recorded path, and it appears in no ledger because judgment rows are structurally invisible to the
 check. The phantom ledger is a census of the machine-tagged subset only, and reads as a census of
 everything. Repairing the path is P1 work; widening the checker's scope is not yet scheduled.
-<<<<<<< HEAD
-
 ## Two orthogonal adversarial reviews rejected Plan 03 from opposite directions
 
 Commissioned 2026-08-03, each with a **different premise to reject** — one told to attack validity,
@@ -234,30 +232,3 @@ artifacts, same verdict). Also confirmed while the reviews were still running: G
 P0 date-repair defect count was structural was borne out by a ninth defect instance. The Arm A
 holdout (P2a) was never implemented — `plans/02` stayed fully enabled corpus-wide, so no 90-day
 prior-art suppression occurred. Full record: `docs/DECISIONS.md` rows 22–26, `plans/03` §12.
-||||||| parent of 578cf55 (fix: close B-1/B-2 fabricated-statistic defects in repair_first_seen (Issue #32))
-=======
-
-## Dating the corpus mostly recovered ingest time, not the original failure date
-
-Measured 2026-08-03 on `feat/32-repair-first-seen` by running `pipeline/repair_first_seen.py`
-against the real corpus (`pipeline/L1`). Of the 242 rows entering the run without a `first_seen`,
-only 24 recovered a true date from a git anchor; the other 218 (90.1%) fell back to the time the
-row was ingested into hindsight. Dating by git anchor was possible for only about 1 in 10 of the
-undated rows.
-
-**This weakens the denominator plan/03 relies on**: a fallback-dated row's `first_seen` marks when
-it entered hindsight, not when the failure occurred, so any month-to-month movement computed from
-`first_seen` is partly an artefact of corpus construction rather than a real recurrence signal.
-
-The per-arm provenance split shows the dating bias is not neutral with respect to the question
-plan/03 asks: Arm B (the 32 families under mechanized intervention) is 53.1% pre-dated (17
-pre-existing / 3 git-anchor / 12 fallback), while the comparator pool (102 families) is 64.7%
-pre-dated (66 pre-existing / 4 git-anchor / 32 fallback). Arm B rows are more fallback-dependent
-than the comparator pool — the dating bias runs along the same axis as the intervention being
-studied, not orthogonally to it.
-
-This is a measured split, **not causal**: it does not say intervention caused worse dating, only
-that the two are correlated in this corpus. `plans/03-recurrence-trend-instrument.md` D9 records
-this as a hard constraint: any analyzer built on `first_seen` must report the provenance mix
-alongside its rate, and any REDUCED/RELOCATED verdict must be read against that mix.
->>>>>>> 578cf55 (fix: close B-1/B-2 fabricated-statistic defects in repair_first_seen (Issue #32))

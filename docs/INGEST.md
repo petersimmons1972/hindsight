@@ -87,29 +87,11 @@ roots weren't previously checked out; it only touches rows still missing
 `first_seen`. On success it reports on stderr:
 
 - three `date-repair:` count lines (`DATED-BY-ANCHOR`, `DATED-BY-FALLBACK`,
-  `STILL-UNDATED`);
-- a two-line fairness DIFFERENTIAL between the Arm B intervention-family
-  clusters and the comparator-pool clusters, split by provenance
-  (`pre-existing` / `git-anchor` / `l1-ingest-fallback` / `undated`), each
-  with a `pre-dated` percentage -- report only, not a fix. This is measured
-  **only** when the run's target is the real corpus directory
-  (`pipeline/L1` under `--self-dir`); any other `--l1` target prints
-  `DIFFERENTIAL: NOT MEASURED (target is not the corpus)` rather than a
-  number computed from whatever happens to be in an unrelated directory;
-- a `WARNING:` line, naming the share, whenever more than half of the rows
-  dated *this run* used `l1-ingest-fallback` -- that share is an ingest-time
-  date, not a recovered logging date, and must not be silently averaged into
-  a "first_seen" that reads as one.
-
-On the real corpus, only ~10% of previously-undated rows recovered a true
-git-anchor date (24 of 242); the other ~90% (218) fall back to when the row
-entered *hindsight*, which clusters at corpus-construction time. The
-`first_seen` denominator is therefore mostly ingest-dated, not source-dated
--- an honest outcome of ruling R-c, not a defect, but state it loudly
-wherever these dates are consumed.
+  `STILL-UNDATED`). These work counts distinguish source-anchored dates,
+  hindsight-ingest fallback dates, and rows for which neither evidence path
+  resolved; they do not compare corpus groups or infer a recurrence trend.
 
 If any input file fails to read (missing, empty, or malformed JSON), the tool
-prints the `ERROR:` and a single `date-repair: NOT MEASURED` line in place of
-the three counts and the DIFFERENTIAL -- never a zero count, which would be
-indistinguishable from a genuine all-zero successful run -- and exits
-non-zero.
+prints the `ERROR:` and a single `date-repair: NOT MEASURED` line instead of
+the three counts -- never a zero count, which would be indistinguishable from
+a genuine all-zero successful run -- and exits non-zero.

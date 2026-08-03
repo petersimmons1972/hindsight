@@ -53,7 +53,7 @@ Tests cover *absent* roots but never a path that **exists and is not a directory
 +               for totals in report.sources.values())
 ```
 `test_total_enforcement_bearing_excludes_entries_that_enforce_nothing` pins the *unbacked* exclusion only. Nothing pins that `judgment` entries are excluded. This defeats the stated fleet#152 defense end-to-end: delete enforcement-bearing machine entries, add judgment entries (which require no enforcement at all), and the floor is still met.
-**Killer:** `test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor` — 1 enforced machine entry + 5 judgment entries against floor 3; assert rc==1 and `"below floor 3"` in stderr.
+**Killer:** `test_debt_floor_counts_every_enforcement_bearing_row_and_reports_old_total` — replaced `test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor` in issue #31, which widened the counted population. The S4 invariant is still pinned: the `+ totals.judgment` mutant is killed by the exact-count assertion.
 
 ### S5 — M02 · debt ledger no longer requires evidence/disposition · **SEVERITY: MEDIUM-HIGH**
 ```diff

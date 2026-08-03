@@ -1,6 +1,6 @@
 """Contract tests for the L1 enforcement-existence verifier.
 
-The verifier resolves each `auto: machine` entry's enforcement path against
+The verifier resolves every non-null enforcement path against
 the checkout root of the source it came from -- NOT against a single shared
 directory. A path is one of three things:
 
@@ -91,6 +91,10 @@ def machine_record(id_: str, enforcement: dict[str, str] | None) -> dict[str, ob
     return {"id": id_, "auto": "machine", "enforcement": enforcement}
 
 
+def judgment_record(id_: str, enforcement: dict[str, str] | None) -> dict[str, object]:
+    return {"id": id_, "auto": "judgment", "enforcement": enforcement}
+
+
 # ---------------------------------------------------------------------------
 # Baseline: root known and present.
 # ---------------------------------------------------------------------------
@@ -172,7 +176,7 @@ def test_root_unknown_is_unverifiable_not_enforced(
     # would leave this count at 0 and this line unprinted -- "unverifiable"
     # in err.lower() alone does NOT catch that, because the line is printed
     # unconditionally too (in the SCOPE footer, and per-source summary row).
-    assert "UNVERIFIABLE: 1 machine entries could not be checked" in err
+    assert "UNVERIFIABLE: 1 enforcement-bearing entries could not be checked" in err
     # The specific detail line, keyed to the entry that was actually
     # appended -- not just the source name, which also appears in the
     # always-printed summary table regardless of whether detection ran.
@@ -206,7 +210,7 @@ def test_root_known_but_directory_missing_is_unverifiable_not_phantom(
     assert exit_code == 0
     assert "phantom:" not in err
     # Discriminating, same rationale as test_root_unknown_is_unverifiable_not_enforced.
-    assert "UNVERIFIABLE: 1 machine entries could not be checked" in err
+    assert "UNVERIFIABLE: 1 enforcement-bearing entries could not be checked" in err
     assert "unverifiable: control.py (vanished:v-1," in err
 
 
@@ -751,8 +755,8 @@ def test_total_enforcement_bearing_excludes_entries_that_enforce_nothing() -> No
     """
     report = MODULE.EnforcementReport(
         sources={
-            "hollow": MODULE.SourceTotals(machine=3, unbacked=3),
-            "real": MODULE.SourceTotals(machine=2, unbacked=1, checked=1),
+            "hollow": MODULE.SourceTotals(machine=3, unbacked=3, enforcement_bearing=0),
+            "real": MODULE.SourceTotals(machine=2, unbacked=1, enforcement_bearing=1, checked=1),
         },
         phantoms=[],
         unverifiable=[],
@@ -791,7 +795,7 @@ def test_nulling_every_enforcement_value_breaches_the_debt_floor(
     )
     err = capsys.readouterr().err
     assert exit_code == 1
-    assert "DEBT-FLOOR: 1 total enforcement-bearing entries (floor 2)" in err
+    assert "DEBT-FLOOR: 1 total enforcement-bearing entries (was 1 machine-only; floor 2)" in err
 
 
 def test_malformed_enforcement_file_raises_and_is_not_relabelled_unbacked(
@@ -1025,14 +1029,73 @@ def test_M30_a_file_where_a_checkout_should_be_is_not_a_resolved_root(
     assert "SKIPPED" not in err
 
 
-def test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor(
+def test_judgment_entry_with_resolving_enforcement_is_checked_and_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """S4/M07: the floor counts machine-with-claim, never judgment.
+    """A judgment is a totals label, not an exemption from path resolution."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", judgment_record("judgment-ok", {"file": "control.py", "kind": "test"})
+    )
 
-    Judgment entries require no enforcement at all. Adding them must not
-    satisfy a floor that machine-only work no longer meets.
-    """
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=1) == 0
+    err = capsys.readouterr().err
+    assert "phantom:" not in err
+    assert "  sample: 0 1 0 0 0 1" in err
+
+
+def test_judgment_entry_with_missing_enforcement_is_a_phantom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A judgment-tagged path claim must reach the same phantom gate as a machine claim."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", judgment_record("judgment-missing", {"file": "missing.py", "kind": "test"})
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=1) == 1
+    assert "phantom: missing.py (sample:judgment-missing," in capsys.readouterr().err
+
+
+def test_machine_entry_remains_checked_when_a_judgment_entry_is_also_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Widening eligibility must not change the established machine path behavior."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("machine-ok", {"file": "control.py", "kind": "test"}),
+        judgment_record("judgment-ok", {"file": "control.py", "kind": "test"}),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=2) == 0
+    err = capsys.readouterr().err
+    assert "phantom:" not in err
+    assert "  sample: 1 1 0 0 0 2" in err
+
+
+def test_debt_floor_counts_every_enforcement_bearing_row_and_reports_old_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The floor includes both auto categories while exposing the old subset."""
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "projects"
@@ -1044,19 +1107,17 @@ def test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor(
         l1_dir,
         "sample",
         machine_record("kept", {"file": "control.py", "kind": "test"}),
-        {"id": "j1", "auto": "judgment", "enforcement": None},
-        {"id": "j2", "auto": "judgment", "enforcement": None},
-        {"id": "j3", "auto": "judgment", "enforcement": None},
-        {"id": "j4", "auto": "judgment", "enforcement": None},
-        {"id": "j5", "auto": "judgment", "enforcement": None},
+        machine_record("machine-unbacked", None),
+        judgment_record("judgment-claim", {"file": "control.py", "kind": "test"}),
+        judgment_record("judgment-unbacked", None),
     )
 
     exit_code = run_verifier(
-        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=3
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=2
     )
     err = capsys.readouterr().err
-    assert exit_code == 1
-    assert "below floor 3" in err
+    assert exit_code == 0
+    assert "DEBT-FLOOR: 2 total enforcement-bearing entries (was 1 machine-only; floor 2)" in err
 
 
 @pytest.mark.parametrize(
@@ -1232,7 +1293,7 @@ def test_P01_skip_discloses_debt_unbacked_and_not_measured(
     assert exit_code == 0
     assert "enforcement-verifier: PHANTOM-DEBT: 1 documented in conf/known-phantoms.conf" in err
     assert "enforcement-verifier: UNBACKED: 1 machine entries carry enforcement: null" in err
-    assert "enforcement-verifier: UNVERIFIABLE: 2 machine entries could not be checked" in err
+    assert "enforcement-verifier: UNVERIFIABLE: 2 enforcement-bearing entries could not be checked" in err
     assert (
         "enforcement-verifier: PHANTOMS-MEASURED: NOT MEASURED HERE "
         "(ROOTS 1/3, 0 entries checked)"
@@ -1387,3 +1448,38 @@ def test_P01_all_environment_shapes_load_known_phantoms_ledger(
     assert exit_code == 1
     assert str(ledger_path) in err
     assert "known-phantoms.conf" in err
+
+
+def test_committed_floor_has_no_slack_against_the_committed_corpus() -> None:
+    """The floor in conf/ must equal what the gate actually counts today.
+
+    Every other test in this file monkeypatches a synthetic floor, so none of
+    them can see the real one drift. That is precisely how issue #31 nearly
+    shipped a loosened ratchet: widening the counted population from 33 to 35
+    while leaving conf/enforcement-floor.conf at 33 left two rows of slack, so
+    nulling a real enforcement value would have passed green.
+
+    Slack is the whole failure: if floor < measured, an entry can be deleted or
+    its enforcement nulled and the fleet#152 gate stays silent. This asserts
+    equality rather than `>=` deliberately -- adding an enforcement-bearing row
+    must be accompanied by raising the floor, which is what the ratchet means.
+    """
+    source_roots = MODULE.load_source_roots(ROOT / "conf" / "source-roots.conf")
+    # A deliberately absent projects dir: enforcement_bearing is root-independent,
+    # so the count is identical here and on a CI runner with no repos checked out.
+    report = MODULE.verify_enforcement(
+        ROOT / "pipeline" / "L1", ROOT / "no-such-projects-dir", source_roots
+    )
+    measured = MODULE.total_enforcement_bearing(report)
+    committed = int(
+        [
+            line.strip()
+            for line in (ROOT / "conf" / "enforcement-floor.conf").read_text().splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ][0]
+    )
+    assert measured == committed, (
+        f"conf/enforcement-floor.conf says {committed} but the committed corpus carries "
+        f"{measured} enforcement-bearing rows. "
+        f"{'Slack of ' + str(measured - committed) + ' row(s): an entry could be deleted or nulled and the gate would stay green.' if measured > committed else 'The floor is above the corpus; the gate will fail every run.'}"
+    )

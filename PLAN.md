@@ -70,7 +70,7 @@ Each is self-contained and executable by a model with zero conversational contex
 |---|---|---|---|
 | 01 | `plans/01-enforcement-disclosure.md` | #18 | COMPLETE — PR #27 merged; main guard green |
 | 02 | `plans/02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green |
-| 03 | `plans/03-recurrence-trend-instrument.md` | #29 | RULED 2026-08-02 — three arms; serial split P0…P4, P0 next |
+| 03 | `plans/03-recurrence-trend-instrument.md` | #29 | **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok); `docs/DECISIONS.md` rows 22–26 |
 | 04 | `plans/04-sync-repair-and-distribute.md` | #22 (closes #24) | READY |
 | 05 | `plans/05-enforcement-locality.md` | #20 / PR #12 | BLOCKED — founder accepted the design; PR #12 closes only when this lands |
 | 06 | `plans/06-l3-invariant-ledger.md` | #21 | BLOCKED by 02 |
@@ -87,7 +87,7 @@ OPEN — #18 was lost for a day because "half-applied" had nowhere to live.
 08  #25  PARTIAL must not exit 0       <- COMPLETE: PR #26 merged, main guard green
 01  #18  enforcement disclosure        <- COMPLETE: PR #27 merged, main guard green
 02  #19  ingest consults the corpus    <- the dogfooding closure; prerequisite for 03
-03  ---  recurrence-trend instrument   <- pre-register BEFORE more mechanisms ship
+03  ---  recurrence-trend instrument   <- WITHDRAWN 2026-08-03; replaced by #38/#39 mechanization
 04  #22  sync repaired, becomes the distribution channel (closes #24)
 05  #20  enforcement locality; then close PR #12
 06  #21  L3 invariant ledger, reshaped from prose to a validated ledger
@@ -120,6 +120,18 @@ against those with a real one and those with none — which needs no counters an
 splits serially into P0 date repair, P1 mechanism ledger, P2 coordinator-authored PREREG and
 fixture, P2a the time-critical Arm A holdout, P3 cross-repo counters, P4 the analyzer.
 **RELOCATED stays unreachable until P3 lands and must not be approximated.**
+
+**Superseded 2026-08-03 — WITHDRAWN.** The paragraph above is kept as history of the ruled design;
+it did not ship past P0/P1. Two cross-vendor adversarial reviews, commissioned with orthogonal
+premises to reject, both returned REJECTED: Codex on validity (the time axis measures corpus
+assembly, not failures — ~90% of repaired rows are ingest-dated; Arm A randomises prior-art display,
+not mechanization; no power model; Arm C selected on the property it measures), Grok on worth (the
+census already shows 8 of 192 families mechanized and the two largest recurrent families never
+mechanized at all — non-treatment, not a causal gap). The Arm A holdout (P2a) was never
+implemented — `plans/02` stayed fully enabled corpus-wide. Full record: `docs/DECISIONS.md` rows
+22–26, `plans/03` §12. Replacement priority is mechanization over measurement: #38 (c-013, n=22),
+#39 (c-001, n=13) outrank #32 (land the dated corpus) and #33 (repair 5 stale paths, reclassify 9
+unreal claims). #34/#35/#36/#37 closed as not planned; #29 remains the parent tracker.
 
 **06 late, deliberately.** This departs from founder ruling 1, which named W1/W2/W3 as next, and the
 departure was surfaced and approved rather than slipped in. Ruling 1 chose "build the recurrence

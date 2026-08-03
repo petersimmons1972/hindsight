@@ -1,5 +1,12 @@
 # PLAN-03 — measure whether recurrence actually drops
-Issue: petersimmons1972/hindsight#29 · Status: RULED 2026-08-02 — splits serially into P0…P4 · Blocked-by: none · Blocks: X4, X6
+Issue: petersimmons1972/hindsight#29 · Status: **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok) by two orthogonal cross-vendor reviews; mechanize first, measure later · Blocked-by: none · Blocks: —
+
+> **WITHDRAWN — not being built.** This instrument is dead. Two cross-vendor adversarial reviews,
+> commissioned with orthogonal premises to reject, both returned REJECTED: Codex on validity (the
+> time axis measures corpus assembly, not failures), Grok on worth (the census already answers the
+> question the instrument was designed to measure). See `docs/DECISIONS.md` rows 22–26 and §12
+> below for the full record. The design content past this point is kept as history of what was
+> designed and why it was rejected — do not dispatch this plan.
 
 ## 1. CONTEXT YOU DO NOT HAVE
 
@@ -170,44 +177,76 @@ cd /home/psimmons/projects/hindsight && git checkout -- pipeline/ && \
   git checkout main && git branch -D feat/recurrence-trend-instrument
 ```
 
-## 12. ESCALATE INSTEAD OF GUESSING
+## 12. WITHDRAWAL RECORD (supersedes this plan's original §12)
+
+**Ruling, founder, 2026-08-03: Plan 03's three-arm recurrence-trend instrument is WITHDRAWN.
+Mechanize first, measure later.** `docs/DECISIONS.md` rows 22–26.
+
+Two cross-vendor adversarial reviews were commissioned with **orthogonal premises to reject**, and
+both returned REJECTED. Neither is neutral; each was commissioned to reject. They matter because
+they converged from opposite directions:
+
+- **Codex rejected on VALIDITY.** The outcome's time axis measures corpus assembly, not failures —
+  roughly 90% of repaired rows are ingest-dated rather than organically logged. Arm A randomises
+  whether *prior art is displayed*, not whether a family is mechanized. Family-level assignment is
+  incoherent with per-write delivery. There is no power model. Arm C is selected on the very
+  property it is meant to compare.
+- **Grok rejected on WORTH.** The census already answers the question: 8 of 192 families have a
+  resolving mechanism, and the two largest recurrent families were never mechanized at all. That is
+  non-treatment, not a causal gap — so a holdout would manufacture a control arm out of live
+  governance risk to measure something the census shows directly.
+
+**The Arm A holdout (P2a) was never implemented.** Prior art was never withheld from any family;
+`plans/02` stays fully enabled corpus-wide; no 90-day degradation occurred. Also on record: Grok's
+claim that the P0 date-repair defect count was structural was confirmed by a ninth defect instance
+while the reviews were still running.
+
+**What this withdraws:** the three-arm design in §3–§4 above (Arm A confirmatory holdout, Arm B
+retrospective, Arm C CLAIMED-ONLY), its decision rule, and packets P1–P4. None of it ships. The
+design content in §1–§11 is kept as history of what was designed and why it was rejected, not as a
+live spec.
+
+**What survives, and where it goes instead:**
+
+- **#32 — land the dated corpus**, dropping the instrument-specific reporting P0 was building
+  toward. The date repair itself (git-derived `first_seen`, ingest-date fallback flagged per row) is
+  still useful independent of the withdrawn instrument.
+- **#33 — repair the 5 stale enforcement paths and reclassify the 9 unreal claims** (P1's census
+  work, kept; its consumer — the withdrawn instrument's Arm C — is not).
+- **#38 — mechanize c-013** (n=22). **#39 — mechanize c-001** (n=13, this project's founding
+  example). These two outrank #32/#33: the census already shows what the instrument was going to
+  spend months measuring, so the leverage is building the mechanisms, not re-confirming their
+  absence.
+- **#22 (`plans/04`)** and **#20 (`plans/05`)** are unaffected by this withdrawal.
+- **#34, #35, #36, #37** (P2, P2a, P3, P4) are **closed as not planned**. **#29 remains the parent
+  tracker**, retitled to the mechanize-first direction.
+
+This plan file's original escalation notes (data-repair rationale, packet split) are preserved below
+verbatim as the historical record of what was designed:
 
 **The measurement-input ruling landed 2026-08-02** (`docs/DECISIONS.md` rows 10–17). Three of the
 plan's own premises did not survive the measurements taken during that interview, and the design
-below reflects the corrected facts, not the original ones:
+above reflected the corrected facts, not the original ones:
 
 - **There is no cross-repo history to backdate against.** No mechanism carries a ship date; the
   `enforcement` object is `{file, kind}` only. Surviving families span days, not months.
 - **The corpus's two largest recurrent families have no real mechanism.** c-013 (n=22) named two
   enforcement mechanisms and c-001 (n=13) named one — all three are verified genuine phantoms, files
-  that were never built — which is why Arm C exists.
-- **The instrument changes at the intervention boundary**, so the bias is declared rather than
+  that were never built — which is why Arm C existed.
+- **The instrument changes at the intervention boundary**, so the bias was declared rather than
   measured away (D8).
 
-**Serial packet split — no post-period data is interpreted and no decision rule re-cut between
-packets:**
+**Serial packet split, as originally designed (none of it now ships):**
 
 - **P0 — date repair.** Git-derive `first_seen` for the 242 undated rows; ingest-date fallback for
-  the remainder, flagged per row. Prerequisite for every denominator.
+  the remainder, flagged per row. Survives as #32.
 - **P1 — mechanism ledger.** Hand-author `mechanisms.jsonl` by git archaeology across the 3 owning
-  repos for the 8 real mechanisms today (13 once the 5 stale paths are repaired); classify the 9
-  claimed-only families into Arm C. Read-only against the other repos.
-- **P2 — PREREG + fixture, coordinator-authored (R3).** This resolves the R3/§7 contradiction that
-  blocked the packet: the synthetic ground-truth fixture is authored by the coordinator and
-  committed before any implementation dispatch, never by the executor.
-- **P2a — Arm A holdout, TIME-CRITICAL.** `bin/add-failure-mode.sh` must suppress prior-art
-  surfacing for held-out families before the post-period accumulates, or Arm A has no control.
-- **P3 — counter/bypass instrumentation.** The 6 distinct mechanism files across 3 repos, transported
-  by `plans/04`'s repaired sync channel. **Until it lands, RELOCATED is unreachable and must not be
-  approximated.**
-- **P4 — analyzer**, shrunk to consume the committed inputs from P0–P3.
-
-Still true, and still not inferable by an executor:
-
-- Back-filling `recurrence_of` for pre-existing entries would require judgment calls that cannot be
-  made from the record alone.
-- Any post-period number would change what you want the decision rule to say — **stop and report**;
-  that is the exact moment the measurement is at risk.
+  repos for the 8 real mechanisms then (13 once the 5 stale paths are repaired); classify the 9
+  claimed-only families. Survives as #33.
+- **P2 — PREREG + fixture, coordinator-authored (R3).** Closed as not planned (#34).
+- **P2a — Arm A holdout, TIME-CRITICAL.** Never implemented. Closed as not planned (#35).
+- **P3 — counter/bypass instrumentation.** Closed as not planned (#36).
+- **P4 — analyzer.** Closed as not planned (#37).
 
 ## 13. REPORT FORMAT
 

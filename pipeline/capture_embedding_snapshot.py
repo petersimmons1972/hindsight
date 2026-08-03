@@ -108,6 +108,14 @@ def _request_vectors(base_url: str, texts: Sequence[str], timeout: float) -> np.
     return np.vstack(vectors).astype(np.float32, copy=False)
 
 
+def _fsync_directory(directory: Path) -> None:
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _atomic_write_json(
     output: Path,
     payload: dict[str, object],
@@ -115,6 +123,7 @@ def _atomic_write_json(
     before_replace: Callable[[], None] | None = None,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
+    prior_bytes = output.read_bytes() if output.is_file() else None
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -130,11 +139,28 @@ def _atomic_write_json(
             before_replace()
         os.replace(temporary, output)
         temporary = None
-        directory_fd = os.open(output.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            if before_replace is not None:
+                before_replace()
+        except Exception:
+            if prior_bytes is None:
+                output.unlink(missing_ok=True)
+            else:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=output.parent,
+                    prefix=f".{output.name}.", suffix=".tmp", delete=False,
+                ) as rollback_handle:
+                    rollback = Path(rollback_handle.name)
+                    rollback_handle.write(prior_bytes)
+                    rollback_handle.flush()
+                    os.fsync(rollback_handle.fileno())
+                try:
+                    os.replace(rollback, output)
+                finally:
+                    rollback.unlink(missing_ok=True)
+            _fsync_directory(output.parent)
+            raise
+        _fsync_directory(output.parent)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

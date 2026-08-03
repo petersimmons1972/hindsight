@@ -322,6 +322,44 @@ def test_capture_rejects_provenance_drift_during_request_and_preserves_output(
     assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
 
 
+def test_capture_rolls_back_when_provenance_changes_inside_replace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+    monkeypatch.setattr(
+        CAPTURE,
+        "_request_vectors",
+        lambda base_url, texts, timeout: np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    real_replace = os.replace
+    first_replace = True
+
+    def mutate_then_replace(source: Path, destination: Path) -> None:
+        nonlocal first_replace
+        if first_replace:
+            first_replace = False
+            _write_l1(l1, instance="changed inside replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(CAPTURE.os, "replace", mutate_then_replace)
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    with pytest.raises(ValueError, match=r"provenance changed during capture"):
+        CAPTURE.capture(args)
+    assert output.read_bytes() == prior
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
 class _EmbeddingHandler(BaseHTTPRequestHandler):
     response: object = {"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]}
     status = 200

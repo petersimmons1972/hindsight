@@ -133,9 +133,18 @@ Pick by what the work actually demands, not by what is available:
 | `gpt-5.6-sol` | $5 / $30 | coordination, security-adjacent reasoning, anything adversarial, and any packet whose failure mode is subtle |
 
 Children are `luna` by default; promote a child to `terra` only when a `luna` child has actually
-failed the subtask, not pre-emptively. Every packet in the queue above is single-file and
-fully specified, so `--harness codex --effort low` is the right call for them; reach for
-`codex-workflow` on the plan-04 chain, on #21, and on anything requiring independent verification.
+failed the subtask, not pre-emptively.
+
+**The harness default is `gpt-5.6-sol` for every codex start, so a mechanical packet run without
+`--model` silently costs flagship rates.** Every packet in the queue above is single-file and fully
+specified, so name the cheap tier explicitly:
+
+```bash
+cli-dispatch start … --harness codex --model gpt-5.6-luna --effort low …
+```
+
+Reach for `codex-workflow` on the `plans/04` chain, on #21, and on anything requiring independent
+verification.
 
 ```bash
 cli-dispatch start --repo … --task <packet> --harness codex-workflow --base origin/main \

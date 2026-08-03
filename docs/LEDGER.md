@@ -19,7 +19,7 @@ re-derived by the coordinator rather than taken on report. States:
 | V3 | New tests discriminate | **CLAIM** | `PLAN-TDD.md:621` names `bin/verify-discriminating.sh`; **the file does not exist**. `plans/07` rebuilds it |
 | V4 | Catalog is sound | SATISFIED | `python3 guard/failure_mode_catalog_guard.py` → `OK (171 canonical IDs, next FM-172)` |
 | **V5** | Corpus coverage holds | **SILENTLY BROKEN** | **The sixth layer.** Row requires `COMPLETE`; `reconcile_l1.py` returns **0 for `PARTIAL` too** (`pipeline/reconcile_l1.py:176`). Reproduced by the coordinator in a fresh-checkout simulation: `PARTIAL: 0 enumerable entries unaccounted for (1/5 sources resolved)`, **EXIT=0**. `plans/08` closes it |
-| V6 | Recurrence is measured, not asserted | SATISFIED | `pytest pipeline/tests/test_recurrence_report.py -q` → passes within the 167; the committed report emits the 13-times/4-repos sentence from real data |
+| V6 | Recurrence is measured, not asserted | SATISFIED | `pytest pipeline/tests/test_recurrence_report.py -q` → passes within the 181; the committed report emits the 13-times/4-repos sentence from real data |
 | V7 | ~~The decisive test~~ | **VOID** | The capability was cancelled by measurement (`PLAN-TDD.md:625`). Both flags deleted; no implementation can satisfy it, so leaving it would assert a test that can never pass |
 | V7b | The lookup surfaces prior art and claims nothing more | SATISFIED | `bash bin/tests/test_similar_causes.sh` → 37/37 |
 | V8 | No phantom mechanisms | **SILENTLY BROKEN — admitted** | Advisory *and silent*, per a half-applied ruling. Worse than recorded: on the CI path the phantom ledger is never loaded and the summary prints `phantoms: 0` where 0 means *not measured*. `plans/01` closes it |

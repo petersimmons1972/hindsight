@@ -26,7 +26,7 @@ have produced the defect.
 |---|---|---|---|---|---|
 | 01 | `01-enforcement-disclosure.md` | #18 | COMPLETE — PR #27 merged; main guard green | — | — |
 | 02 | `02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green | — | 03, 06 |
-| 03 | `03-recurrence-trend-instrument.md` | #29 | BLOCKED — founder measurement-input ruling, then serial packet split | 02 | X4, X6 |
+| 03 | `03-recurrence-trend-instrument.md` | #29 | RULED 2026-08-02 — three arms; serial split P0…P4, P0 next | 02 | X4, X6 |
 | 04 | `04-sync-repair-and-distribute.md` | #22 (closes #24) | READY | — | 05 |
 | 05 | `05-enforcement-locality.md` | #20, PR #12 | BLOCKED | 04 | — |
 | 06 | `06-l3-invariant-ledger.md` | #21 | BLOCKED | 02 | — |

@@ -23,8 +23,8 @@ Do not trust these numbers — run them. Every count in the previous plan drifte
 |---|---|---|
 | catalog sound | `python3 guard/failure_mode_catalog_guard.py` | OK, 171 IDs |
 | corpus coverage | `python3 pipeline/reconcile_l1.py` | COMPLETE 5/5 |
-| python suites | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | 167 passed |
-| bash suites | `bats guard/tests/*.bats bin/tests/*.bats` | 92 ok |
+| python suites | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | 181 passed |
+| bash suites | `bats guard/tests/*.bats bin/tests/*.bats` | 109 ok |
 | CI on main | `gh run list --branch main --limit 1 --json status,conclusion` | completed/success |
 
 ## The finding that re-points this plan
@@ -70,7 +70,7 @@ Each is self-contained and executable by a model with zero conversational contex
 |---|---|---|---|
 | 01 | `plans/01-enforcement-disclosure.md` | #18 | COMPLETE — PR #27 merged; main guard green |
 | 02 | `plans/02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green |
-| 03 | `plans/03-recurrence-trend-instrument.md` | #29 | BLOCKED — founder must name measurement inputs; then split fixture, counter, analyzer packets |
+| 03 | `plans/03-recurrence-trend-instrument.md` | #29 | RULED 2026-08-02 — three arms; serial split P0…P4, P0 next |
 | 04 | `plans/04-sync-repair-and-distribute.md` | #22 (closes #24) | READY |
 | 05 | `plans/05-enforcement-locality.md` | #20 / PR #12 | BLOCKED — founder accepted the design; PR #12 closes only when this lands |
 | 06 | `plans/06-l3-invariant-ledger.md` | #21 | BLOCKED by 02 |
@@ -105,11 +105,21 @@ authorised* — and because if a Terra dispatch cannot execute it cleanly, the t
 we learn that at minimum cost.
 
 **03 third and not last**: it must be pre-registered before more mechanisms ship, or the analysis is
-retrofitted. Every week deferred is a week of post-period data that cannot be collected cleanly.
-It is currently blocked on founder-named families, comparator, exposure proxy, and actual
-mechanism/counter owners: the current packet cannot invent those inputs, create its absent
-firing/bypass ledger outside its fence, or let its executor author R3 ground truth. After the
-ruling it splits serially into preregistration/fixture, counter instrumentation, then analyzer.
+retrofitted. The measurement-input ruling landed 2026-08-02 (`docs/DECISIONS.md` rows 10–17) and
+three of this plan's premises did not survive it. There is no cross-repo history to backdate
+against — no mechanism carries a ship date — and the corpus's two largest recurrent families,
+c-013 (n=22) and c-001 (n=13, this project's founding example), turned out to have no real
+mechanism at all: c-013 named two enforcement mechanisms and c-001 named one — all three are verified
+phantoms. That finding became a third arm.
+The instrument now runs three arms, reported separately and never pooled: **Arm A** confirmatory
+(hindsight's own mechanism, rule-selected with a randomised holdout, the only arm that can support
+REDUCED, earliest verdict ~2026-11-01); **Arm B** retrospective and exploratory, floor n>=3 (six
+families: c-043, c-045, c-063, c-082, c-104, c-191), blocked on ship-date
+recovery; **Arm C** CLAIMED-ONLY, comparing families whose only enforcement claim is not real
+against those with a real one and those with none — which needs no counters and no ship dates. It
+splits serially into P0 date repair, P1 mechanism ledger, P2 coordinator-authored PREREG and
+fixture, P2a the time-critical Arm A holdout, P3 cross-repo counters, P4 the analyzer.
+**RELOCATED stays unreachable until P3 lands and must not be approximated.**
 
 **06 late, deliberately.** This departs from founder ruling 1, which named W1/W2/W3 as next, and the
 departure was surfaced and approved rather than slipped in. Ruling 1 chose "build the recurrence

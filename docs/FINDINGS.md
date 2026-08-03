@@ -172,3 +172,41 @@ neither similarity nor clusters · `bin/require-real-ci.sh` is called only by `b
 `similar-causes.py` — the second merged four hours after the first was catalogued as a trap). Any
 plan shipping a new mechanism must prove it is *called*, by removing the wiring and observing a
 failure.
+
+## The families that recur most are the ones nobody mechanized
+
+Measured 2026-08-02 at commit ecfcbe8, reproducible by filtering L1 enforcement claims against
+`conf/known-phantoms.conf`. A claim counts as real only if its recorded path resolves against the
+source root in `conf/source-roots.conf`. Of 192 cause families, 8 carry a mechanism that actually
+exists today, rising to 13 if the 5 stale-but-repairable paths are fixed. 449 of 484 L1 rows carry
+`enforcement:null`.
+
+The two largest recurrent families carry none. c-013 (n=22, live config diverges from manifest) named
+two enforcement mechanisms (ccx-FM-021 -> tests/test_fleet_canary.bats, ccx-FM-023 ->
+tests/test_codex_attach_reliability.bats) and c-001 (n=13, a terminal SUCCESS signal treated as proof
+the work succeeded — the founding example of this repo) named one — all three are verified genuine
+phantoms, files that were never built. c-002 (n=5) is the same. c-040 (n=9) is different: its only
+claim, the string "fixed-scorer-2026-05-19", was never a file path at all — a malformed enforcement
+value, not a phantom.
+
+Those four are the largest of Arm C (families whose only enforcement claim is not real — genuine
+phantoms and malformed values both qualify, since neither claim is real), which holds 9 families in
+total: 7 genuine phantoms plus 2 malformed enforcement values. For the four biggest recurrent
+families in the corpus, the registry's record of enforcement is a claim about a file that does not
+exist.
+
+**Consequence recorded, not resolved:** this is why `plans/03` gained a third arm, CLAIMED-ONLY. If
+families whose only enforcement claim is not real recur no less than families with no claim at all, the registry's
+effect is documentary. If they recur as little as families with a real mechanism, the effect was
+attention rather than mechanization. That arm needs no counters and no ship dates, which makes it the
+cheapest evidence available and the sharpest RELOCATED-adjacent evidence the project has.
+
+This is a cross-sectional observation, **not causal.**
+
+The enforcement verifier checks only rows tagged `auto: machine`
+(`guard/failure_mode_catalog_guard.py`, the `if auto == "machine"` branch). A row tagged
+`auto: judgment` that claims an enforcement path is therefore never checked and can never enter
+`conf/known-phantoms.conf`. `eng-patternB` claims `score.go`, which does not resolve at the
+recorded path, and it appears in no ledger because judgment rows are structurally invisible to the
+check. The phantom ledger is a census of the machine-tagged subset only, and reads as a census of
+everything. Repairing the path is P1 work; widening the checker's scope is not yet scheduled.

@@ -31,7 +31,7 @@ Repo:        /home/psimmons/projects/hindsight
 Branch from: main    Work on: feat/23-verify-discriminating
 Prior art:   PR #10 (to be closed with evidence, not merged) -- read it, reuse nothing uncritically;
              its 671 lines predate this repo's hardening and were never mutation-tested.
-Green baseline: pytest 167, bats 92, guard OK (171 IDs), reconcile COMPLETE 5/5.
+Green baseline: pytest 181, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
 ```
 
 **Run this as a three-stage cross-vendor triangle, and record each stage in
@@ -117,7 +117,7 @@ the behaviour — and assert the tool separates them.
 | A6 | a symlinked test file | not certified without running (D6) |
 | A7 | `rg -n verify-discriminating bin/land.sh .github/` | ≥1 hit (D8) |
 | A8 | remove the wiring → run the landing gate | fails, proving D8 is load-bearing |
-| A9 | `bats bin/tests/*.bats` | ≥92 ok overall |
+| A9 | `bats guard/tests/*.bats bin/tests/*.bats` | ≥109 ok overall |
 | A10 | `git diff --numstat origin/main...HEAD -- pipeline/L1 catalog conf` | **empty** |
 
 ## 10. MUTATION REQUIREMENT

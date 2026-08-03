@@ -1,5 +1,5 @@
 # PLAN-03 — measure whether recurrence actually drops
-Issue: petersimmons1972/hindsight#29 · Status: BLOCKED — founder measurement-input ruling, then serial split · Blocked-by: R3/D2/D4 scope contradiction · Blocks: X4, X6
+Issue: petersimmons1972/hindsight#29 · Status: RULED 2026-08-02 — splits serially into P0…P4 · Blocked-by: none · Blocks: X4, X6
 
 ## 1. CONTEXT YOU DO NOT HAVE
 
@@ -17,7 +17,7 @@ Repo:        /home/psimmons/projects/hindsight
 Branch from: main    Work on: feat/recurrence-trend-instrument
 Existing artifacts: pipeline/L2/clusters.jsonl (pinned) · pipeline/L2/recurrence-report.md
                     qa-ledger/actor-results.jsonl · catalog/failure-modes.md
-Green baseline: pytest 167, bats 92, guard OK (171 IDs), reconcile COMPLETE 5/5.
+Green baseline: pytest 181, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
 ```
 
 ## 3. GOAL
@@ -26,21 +26,55 @@ Ship `pipeline/recurrence_trend.py` plus a **pre-registration committed before a
 exists**, such that the terminal question gets an answer in one of three named directions —
 including the negative one.
 
+Three arms, reported separately and **never pooled** (founder ruling R-a, 2026-08-02):
+
+- **Arm A — confirmatory.** Hindsight's own ingest mechanism (`plans/02`, shipped 2026-08-02).
+  Families under test are chosen by RULE, never hand-picked: every family at n≥5 as of the freeze
+  commit (22 families), randomly split by a seed committed in PREREG — prior art surfaced for one
+  half, suppressed for the held-out half. The only arm with a pre-registered control and an empty
+  post-period, and **the only arm that can support REDUCED**. Earliest verdict ~2026-11-01.
+- **Arm B — retrospective, EXPLORATORY.** 8 families have a working mechanism today, rising to 13
+  if the 5 stale paths are repaired. Blocked until `mechanisms.jsonl` carries real ship dates
+  recovered by git archaeology — no mechanism records one today. Recorded in advance: most of the
+  13 are expected to have too little post-period span to support a trend. Arm B's floor is n≥3
+  (ruling R-l), giving six families — c-043 (n=10), c-045 (n=7), c-063 (n=6), c-082 (n=3), c-104
+  (n=3), c-191 (n=3) — across fleet, fleet-dispatch and substack.
+- **Arm C — CLAIMED-ONLY.** 9 families whose only enforcement claim is not real: 7 genuine phantoms
+  (c-013, c-001, c-002, c-006, c-015, c-177, c-169) plus 2 malformed values that were never a file
+  path at all (c-040, c-072). The largest are c-013 (n=22), c-001 (n=13), c-040 (n=9) and c-002
+  (n=5). Compared against Arm B (real mechanism)
+  and the comparator pool (no claim). If claimed-only recurs like no-claim, the effect is
+  mechanical; if it recurs like real-mechanism, the effect was attention, not mechanization.
+  **Needs no counters and no ship dates.**
+
 - **Unit:** a cause family (`c-NNN`, or hand-declared where the clusterer under-reports).
 - **Intervention:** a mechanism ship event in `pipeline/recurrence/mechanisms.jsonl` —
   `{family, mechanism_path, ship_commit, ship_date, fire_counter_path}`.
 - **Outcome:** new instances per 30 days **per 100 entries logged corpus-wide**, pre vs post.
+- **Comparator:** a size-matched POOL, not one family — all 15 families at n≥5 carrying zero
+  enforcement claims of any kind (real, phantom or malformed): c-003 c-004 c-007 c-008 c-038 c-044
+  c-049 c-051 c-055 c-058 c-070 c-085 c-101 c-117 c-178. This rule regenerates that exact
+  enumeration deterministically from the frozen L2, which is what makes the pool rule-selected
+  rather than hand-picked. Matching gap on record: the largest pool family is n=11 against a test
+  family at n=22.
 
 ## 4. DEFINITION OF DONE
 
 - **D1** `pipeline/recurrence/PREREG.md` is committed **before** any post-period data is collected,
-  naming: the families under test, one matched comparator family of similar size with no mechanism,
-  the exposure proxy, and the decision rule below verbatim.
-- **D2** Every mechanism counts its own firings, appended to `pipeline/enforcement/fired.jsonl`.
-  **Without this a post-period zero is unfalsifiable** — "prevented it" and "never ran" are
-  indistinguishable.
-- **D3** A family whose mechanism never fired is **excluded from the numerator and reported as
-  UNEXERCISED**, never as a success. Exit 1 if any family under test lacks a fire count.
+  naming: the three arms; Arm A's randomisation seed and the rule generating its family list; the
+  15-family comparator pool; the declared detection-bias direction and its disqualification
+  threshold (D8); the denominator definition; and the decision rule below verbatim. PREREG must
+  also declare each family's arm memberships and state that the arm axes are independent (R-k) —
+  Arm A varies whether hindsight surfaces prior art, Arms B and C vary whether a cross-repo
+  mechanism exists, and a family may legitimately appear in more than one arm.
+- **D2** The fire-count requirement is scoped per arm (ruling R-i): **Arm B** mechanisms count their
+  own firings, appended to `pipeline/enforcement/fired.jsonl`; **Arm A**'s counter is hindsight's own
+  ingest log; **Arm C** is exempt by construction — a family whose only enforcement claim is not
+  real has nothing that could fire. **Without a fire count a post-period zero is unfalsifiable** —
+  "prevented it" and "never ran" are indistinguishable.
+- **D3** An Arm B family whose mechanism never fired is **excluded from the numerator and reported
+  as UNEXERCISED**, never as a success. Exit 1 if any Arm B family under test lacks a fire count.
+  Arm A is checked against the ingest log instead; Arm C carries no fire-count obligation (R-i).
 - **D4** Bypasses are counted too — `--force-*` overrides, disabled steps, `continue-on-error`,
   skips. *A mechanism whose override rate rises while its violation rate falls is relocating
   failure into the override.* This is the only direct evidence the RELOCATED arm will ever have.
@@ -51,11 +85,18 @@ including the negative one.
   that only detects drops will detect one in noise.
 - **D7** The report prints its own limitations, as the recurrence report already prints its recall
   limit.
+- **D8** The detection-bias direction is declared in PREREG and applied as a rule. Pre-period
+  recurrence is visible only through the L2 clusterer (**1/77** blind-paraphrase recall);
+  post-period recurrence comes from write-time `recurrence_of`, whose recall is strictly higher.
+  Post-period counts are therefore biased **upward** — conservative against REDUCED, uninformative
+  for a null. **A drop smaller than the declared bias reads UNDERPOWERED by rule**, never REDUCED.
 
 **Decision rule, pre-registered:**
 - **REDUCED** — post-period share ≤50% of pre-period for ≥2 test families, over ≥90 days post with
-  ≥50 post-period entries, **and** each mechanism fired ≥1 time, **and** the comparator did not drop
-  as much.
+  ≥50 post-period entries, **and** each mechanism fired ≥1 time, **and** Arm A's randomised holdout
+  did not drop as much (ruling R-j). The 15-family size-matched pool is a descriptive reference for
+  Arms B and C only and can never change a verdict — it is not randomised, so a failure against it
+  would be uninformative.
 - **RELOCATED** — the targeted family's share drops while corpus-wide share is flat or rising,
   **and** ≥1 new family appears caused by a mechanism being bypassed or misconfigured.
 - **UNDERPOWERED** — neither threshold met, or mechanisms did not fire. **Report the negative with
@@ -110,8 +151,9 @@ test fail on absence. Paste that run. Only then implement.
 | A3 | `python3 -m pytest pipeline/tests/test_recurrence_trend.py -q` | all pass; both synthetic families recovered (D6) |
 | A4 | `python3 pipeline/recurrence_trend.py --input /dev/null; echo "exit=$?"` | non-zero, names the empty input (R4) |
 | A5 | `grep -ci 'limitation\|not causal\|directional' <report>` | ≥1 (D7) |
-| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥167 passed |
+| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥181 passed |
 | A7 | `git diff --numstat origin/main...HEAD -- pipeline/L1 catalog conf` | **empty** |
+| A8 | `bats guard/tests/*.bats bin/tests/*.bats` | ≥109 ok, 0 failures |
 
 ## 10. MUTATION REQUIREMENT
 
@@ -130,28 +172,40 @@ cd /home/psimmons/projects/hindsight && git checkout -- pipeline/ && \
 
 ## 12. ESCALATE INSTEAD OF GUESSING
 
-- **This packet is BLOCKED pending a founder measurement-input ruling.** Name all four inputs
-  before any implementation dispatch: (1) the families under intervention, (2) one
-  similar-sized no-mechanism comparator, (3) the authoritative corpus-wide exposure proxy, and
-  (4) the real mechanism owners and counter paths permitted to record firings and bypasses.
-  `qa-ledger/actor-results.jsonl`, GitHub run counts, and dispatch counts are not authoritative
-  exposure evidence merely because they are available.
-- **Why this cannot be inferred:** selecting the families, comparator, windows, or denominator
-  after observing outcomes retrofits the analysis; `enforcement: null` is an honest result; and
-  inventing a counter path would fabricate the direct evidence required for `RELOCATED`. The
-  absent `pipeline/enforcement/fired.jsonl` is outside §7, so creating it in this packet violates
-  §6 rather than resolving D2/D4.
-- **Fixture ownership conflict:** R3 requires the synthetic acceptance fixture to be
-  coordinator-authored and committed before implementation dispatch, but §7/§8 currently assign
-  that sole fixture to the executor. Do not dispatch this packet under that contradiction.
-- **Required serial resolution after the ruling:** first a coordinator-owned preregistration and
-  ground-truth-fixture packet; second a counter/bypass-instrumentation packet touching the real
-  mechanism owners and ledger; third this analyzer, reduced to consume those committed inputs.
-  No post-period data is to be interpreted, and no decision rule re-cut, between those packets.
-- The exposure proxy you need is not among `qa-ledger/actor-results.jsonl`, `gh run list` counts, or
-  dispatch counts.
-- Back-filling `recurrence_of` for pre-existing entries would require judgment calls you cannot
-  make from the record alone.
+**The measurement-input ruling landed 2026-08-02** (`docs/DECISIONS.md` rows 10–17). Three of the
+plan's own premises did not survive the measurements taken during that interview, and the design
+below reflects the corrected facts, not the original ones:
+
+- **There is no cross-repo history to backdate against.** No mechanism carries a ship date; the
+  `enforcement` object is `{file, kind}` only. Surviving families span days, not months.
+- **The corpus's two largest recurrent families have no real mechanism.** c-013 (n=22) named two
+  enforcement mechanisms and c-001 (n=13) named one — all three are verified genuine phantoms, files
+  that were never built — which is why Arm C exists.
+- **The instrument changes at the intervention boundary**, so the bias is declared rather than
+  measured away (D8).
+
+**Serial packet split — no post-period data is interpreted and no decision rule re-cut between
+packets:**
+
+- **P0 — date repair.** Git-derive `first_seen` for the 242 undated rows; ingest-date fallback for
+  the remainder, flagged per row. Prerequisite for every denominator.
+- **P1 — mechanism ledger.** Hand-author `mechanisms.jsonl` by git archaeology across the 3 owning
+  repos for the 8 real mechanisms today (13 once the 5 stale paths are repaired); classify the 9
+  claimed-only families into Arm C. Read-only against the other repos.
+- **P2 — PREREG + fixture, coordinator-authored (R3).** This resolves the R3/§7 contradiction that
+  blocked the packet: the synthetic ground-truth fixture is authored by the coordinator and
+  committed before any implementation dispatch, never by the executor.
+- **P2a — Arm A holdout, TIME-CRITICAL.** `bin/add-failure-mode.sh` must suppress prior-art
+  surfacing for held-out families before the post-period accumulates, or Arm A has no control.
+- **P3 — counter/bypass instrumentation.** The 6 distinct mechanism files across 3 repos, transported
+  by `plans/04`'s repaired sync channel. **Until it lands, RELOCATED is unreachable and must not be
+  approximated.**
+- **P4 — analyzer**, shrunk to consume the committed inputs from P0–P3.
+
+Still true, and still not inferable by an executor:
+
+- Back-filling `recurrence_of` for pre-existing entries would require judgment calls that cannot be
+  made from the record alone.
 - Any post-period number would change what you want the decision rule to say — **stop and report**;
   that is the exact moment the measurement is at risk.
 

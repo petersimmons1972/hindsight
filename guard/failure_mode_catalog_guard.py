@@ -14,6 +14,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 from dataclasses import dataclass
 from itertools import pairwise
@@ -25,29 +26,71 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 # appear legitimately as provenance annotations inside the bug-class column
 # (e.g. "Container Runtime - Design (FM-RC-01)") and must not be flagged.
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
-OPENING_DELIMITERS = {"(": ")", "{": "}", "[": "]"}
-CLOSING_DELIMITERS = {closing: opening for opening, closing in OPENING_DELIMITERS.items()}
+RUNNER_PARSE_TIMEOUT_SECONDS = 5
+FileFingerprint = tuple[int, int, int, int, int]
+
+
+def _read_regular_utf8_snapshot(path: Path) -> tuple[str, FileFingerprint] | None:
+    """Read and fingerprint one regular UTF-8 descriptor without blocking on a FIFO."""
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        fingerprint: FileFingerprint = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+        with os.fdopen(descriptor, "r", encoding="utf-8") as source_file:
+            descriptor = None
+            source = source_file.read()
+    except (OSError, UnicodeError):
+        return None
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    return source, fingerprint
 
 
 def _read_regular_utf8(path: Path) -> str | None:
     """Read one regular UTF-8 file, failing closed at the narrow I/O boundary."""
+    snapshot = _read_regular_utf8_snapshot(path)
+    return None if snapshot is None else snapshot[0]
+
+
+def _run_runner_parser(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run an existing non-executing parser dependency, failing closed."""
     try:
-        with path.open("r", encoding="utf-8") as source_file:
-            source = source_file.read()
-            if not stat.S_ISREG(os.fstat(source_file.fileno()).st_mode):
-                return None
-    except (OSError, UnicodeError):
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=RUNNER_PARSE_TIMEOUT_SECONDS,
+        )
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None
-    return source
+    return completed if completed.returncode == 0 else None
 
 
 def _is_runner_managed_test_source(path: Path) -> bool:
-    """Recognize bounded, structurally plausible non-executable runner sources.
+    """Recognize structurally plausible non-executable runner sources.
 
     A runner may execute its source input without an execute bit. Accepted
     shapes are Pytest ``.py`` modules, Bats ``.bats`` files, and JavaScript
-    ``*.test.js`` files. Each format uses a structural probe, never a suffix
-    or substring alone.
+    ``*.test.js`` files. Python uses its AST; Bats and JavaScript use the
+    repository's existing runner dependencies as authoritative syntax parsers.
+    No format is accepted from a suffix or substring alone.
     """
     if path.suffix == ".py":
         return _is_pytest_source(path)
@@ -83,176 +126,120 @@ def _is_pytest_source(path: Path) -> bool:
 
 
 def _is_bats_source(path: Path) -> bool:
-    """Recognize bounded whole-file Bats structural plausibility.
+    """Accept regular UTF-8 Bats sources that parse and declare a test.
 
-    This intentionally small lexer skips shell comments and quoted strings so
-    decorative ``@test`` text cannot become enforcement evidence. It validates
-    exactly nested ``()``, ``{}``, and ``[]`` delimiters through EOF and
-    requires at least one complete, non-empty ``@test \"name\" { ... }`` block.
-    This is not a complete shell or Bats parser.
+    ``bats`` is already a repository runtime dependency. Its ``--count`` mode
+    parses without executing test bodies and is authoritative for Bats syntax.
     """
-    source = _read_regular_utf8(path)
-    if source is None:
+    snapshot = _read_regular_utf8_snapshot(path)
+    if snapshot is None:
         return False
-
-    def skip_quoted(index: int) -> int | None:
-        quote = source[index]
-        index += 1
-        while index < len(source):
-            if source[index] == "\\":
-                index += 2
-            elif source[index] == quote:
-                return index + 1
-            else:
-                index += 1
-        return None
-
-    delimiters: list[str] = []
-    candidate_depth: int | None = None
-    candidate_has_command = False
-    candidate_found = False
-    index = 0
-    line_start = True
-    while index < len(source):
-        char = source[index]
-        if char == "#":
-            newline = source.find("\n", index + 1)
-            if newline == -1:
-                index = len(source)
-                continue
-            index = newline + 1
-            line_start = True
-            continue
-        if char in "'\"":
-            end = skip_quoted(index)
-            if end is None:
-                return False
-            line_start = False
-            index = end
-            continue
-        if char == "\\":
-            if index + 1 == len(source):
-                return False
-            if candidate_depth is not None:
-                candidate_has_command = True
-            line_start = source[index + 1] == "\n"
-            index += 2
-            continue
-        if char == "\n":
-            line_start = True
-            index += 1
-            continue
-        if char.isspace():
-            index += 1
-            continue
-        if not (line_start and source.startswith("@test", index)):
-            if char in OPENING_DELIMITERS:
-                delimiters.append(char)
-                if candidate_depth is not None and char != "{":
-                    candidate_has_command = True
-            elif char in CLOSING_DELIMITERS:
-                if not delimiters or delimiters[-1] != CLOSING_DELIMITERS[char]:
-                    return False
-                closes_candidate = candidate_depth == len(delimiters) and char == "}"
-                delimiters.pop()
-                if closes_candidate:
-                    if not candidate_has_command:
-                        return False
-                    candidate_found = True
-                    candidate_depth = None
-                    candidate_has_command = False
-            elif candidate_depth is not None and char != ";":
-                candidate_has_command = True
-            line_start = False
-            index += 1
-            continue
-
-        after_marker = index + len("@test")
-        if after_marker == len(source) or not source[after_marker].isspace():
-            line_start = False
-            index += 1
-            continue
-        if candidate_depth is not None:
-            return False
-        index = after_marker
-        while index < len(source) and source[index].isspace():
-            index += 1
-        if index == len(source) or source[index] not in "'\"":
-            return False
-        quoted_end = skip_quoted(index)
-        if quoted_end is None:
-            return False
-        index = quoted_end
-        while index < len(source) and source[index].isspace():
-            index += 1
-        if index == len(source) or source[index] != "{":
-            return False
-        delimiters.append("{")
-        candidate_depth = len(delimiters)
-        candidate_has_command = False
-        line_start = False
-        index += 1
-
-    return candidate_found and candidate_depth is None and not delimiters
+    parsed = _run_runner_parser(["bats", "--count", str(path)])
+    if parsed is None or not isinstance(parsed.stdout, str):
+        return False
+    if _read_regular_utf8_snapshot(path) != snapshot:
+        return False
+    count = parsed.stdout.strip()
+    return re.fullmatch(r"[0-9]+", count) is not None and any(
+        digit != "0" for digit in count
+    )
 
 
 def _is_javascript_test_source(path: Path) -> bool:
-    """Recognize bounded whole-file JavaScript structural plausibility.
+    """Accept Node-parseable JavaScript with a bounded test candidate.
 
     The fleet runner imports ``*.test.js`` files, so they need not be
-    executable. This lexer validates exactly nested ``()``, ``{}``, and ``[]``
-    delimiters through EOF, skips complete comments and literals, and requires
-    at least one ``test(<quoted name>, [async] (...) => {...})`` candidate.
-    Every encountered bare ``test(`` must have that bounded form; property
-    calls such as a regular expression's ``.test(...)`` are ordinary source.
-    This is structural plausibility, not a complete JavaScript parser.
+    executable. ``node --check`` is the authoritative whole-file syntax layer;
+    only then does this bounded token scan require a
+    ``test(<quoted name>, [async] (...) => {...})`` candidate. Property calls
+    such as a regular expression's ``.test(...)`` are ordinary source.
     """
-    source = _read_regular_utf8(path)
-    if source is None:
+    snapshot = _read_regular_utf8_snapshot(path)
+    if snapshot is None:
+        return False
+    source = snapshot[0]
+    if _run_runner_parser(["node", "--check", str(path)]) is None:
+        return False
+    if _read_regular_utf8_snapshot(path) != snapshot:
         return False
 
     tokens: list[tuple[str, str]] = []
-    delimiter_stack: list[tuple[str, int]] = []
-    matching_delimiters: dict[int, int] = {}
-
-    def append_punctuation(char: str) -> bool:
-        token_index = len(tokens)
-        tokens.append(("punctuation", char))
-        if char in OPENING_DELIMITERS:
-            delimiter_stack.append((char, token_index))
-        elif char in CLOSING_DELIMITERS:
-            if not delimiter_stack or delimiter_stack[-1][0] != CLOSING_DELIMITERS[char]:
-                return False
-            _, opening_index = delimiter_stack.pop()
-            matching_delimiters[opening_index] = token_index
-            matching_delimiters[token_index] = opening_index
-        return True
 
     index = 0
     while index < len(source):
         char = source[index]
         if char.isspace():
             index += 1
+        elif (
+            (index == 0 and source.startswith("#!", index))
+            or source.startswith("<!--", index)
+            or source.startswith("-->", index)
+        ):
+            newline = source.find("\n", index + 2)
+            index = len(source) if newline == -1 else newline + 1
         elif source.startswith("//", index):
             newline = source.find("\n", index + 2)
             index = len(source) if newline == -1 else newline + 1
         elif source.startswith("/*", index):
             end = source.find("*/", index + 2)
             if end == -1:
-                return False
+                break
             index = end + 2
-        elif char in "'\"`":
+        elif char == "/":
+            # Node already proved the whole file parses. Conservatively mask a
+            # slash-delimited region (or the rest of this line when division
+            # is lexically ambiguous) so regex/comment data can never become a
+            # test-call candidate. Ambiguity therefore fails closed.
+            index += 1
+            in_character_class = False
+            while index < len(source):
+                if source[index] == "\\":
+                    index += 2
+                elif source[index] in "\r\n":
+                    break
+                elif source[index] == "[":
+                    in_character_class = True
+                    index += 1
+                elif source[index] == "]":
+                    in_character_class = False
+                    index += 1
+                elif source[index] == "/" and not in_character_class:
+                    index += 1
+                    while index < len(source) and source[index].isalpha():
+                        index += 1
+                    tokens.append(("regex", ""))
+                    break
+                else:
+                    index += 1
+        elif char == "`":
+            # Template interpolation is a full JavaScript subgrammar. Node has
+            # already validated it; mask conservatively through the final
+            # unescaped backtick so nested template data cannot forge a call.
+            end = len(source) - 1
+            while end > index:
+                if source[end] == "`":
+                    backslashes = 0
+                    before = end - 1
+                    while before > index and source[before] == "\\":
+                        backslashes += 1
+                        before -= 1
+                    if backslashes % 2 == 0:
+                        break
+                end -= 1
+            if end == index:
+                break
+            tokens.append(("string", ""))
+            index = end + 1
+        elif char in "'\"":
             quote = char
             index += 1
             while index < len(source) and source[index] != quote:
                 if source[index] == "\\":
                     index += 2
-                elif quote != "`" and source[index] in "\r\n":
-                    return False
                 else:
                     index += 1
             if index >= len(source):
-                return False
+                break
             tokens.append(("string", ""))
             index += 1
         elif char.isidentifier() or char in "$_":
@@ -261,49 +248,60 @@ def _is_javascript_test_source(path: Path) -> bool:
                 end += 1
             tokens.append(("identifier", source[index:end]))
             index = end
+        elif char.isdigit():
+            end = index + 1
+            while end < len(source) and (source[end].isalnum() or source[end] in "._"):
+                end += 1
+            tokens.append(("number", ""))
+            index = end
         else:
-            if not append_punctuation(char):
-                return False
+            tokens.append(("punctuation", char))
             index += 1
 
-    if delimiter_stack:
-        return False
-
-    candidate_found = False
     for token_index, token in enumerate(tokens[:-1]):
-        if token != ("identifier", "test") or tokens[token_index + 1] != ("punctuation", "("):
+        if token != ("identifier", "test") or tokens[token_index + 1] != (
+            "punctuation",
+            "(",
+        ):
             continue
-        if token_index and tokens[token_index - 1] == ("punctuation", "."):
-            continue
-        call_open = token_index + 1
-        call_close = matching_delimiters[call_open]
+        if token_index:
+            previous = tokens[token_index - 1]
+            if previous in {("punctuation", "."), ("punctuation", "#")}:
+                continue
+            if previous == ("identifier", "new"):
+                continue
         cursor = token_index + 2
-        if cursor >= call_close or tokens[cursor][0] != "string":
-            return False
+        if cursor >= len(tokens) or tokens[cursor][0] != "string":
+            continue
         cursor += 1
-        if cursor >= call_close or tokens[cursor] != ("punctuation", ","):
-            return False
+        if cursor >= len(tokens) or tokens[cursor] != ("punctuation", ","):
+            continue
         cursor += 1
-        if cursor < call_close and tokens[cursor] == ("identifier", "async"):
+        if cursor < len(tokens) and tokens[cursor] == ("identifier", "async"):
             cursor += 1
-        if cursor >= call_close or tokens[cursor] != ("punctuation", "("):
-            return False
-        parameters_close = matching_delimiters[cursor]
-        cursor = parameters_close + 1
-        if cursor + 2 >= call_close or tokens[cursor : cursor + 2] != [
+        if cursor >= len(tokens) or tokens[cursor] != ("punctuation", "("):
+            continue
+        parameter_depth = 1
+        cursor += 1
+        while cursor < len(tokens) and parameter_depth:
+            if tokens[cursor] == ("punctuation", "("):
+                parameter_depth += 1
+            elif tokens[cursor] == ("punctuation", ")"):
+                parameter_depth -= 1
+            cursor += 1
+        if parameter_depth or cursor + 2 >= len(tokens):
+            continue
+        if tokens[cursor : cursor + 2] != [
             ("punctuation", "="),
             ("punctuation", ">"),
         ]:
-            return False
+            continue
         cursor += 2
         if tokens[cursor] != ("punctuation", "{"):
-            return False
-        body_close = matching_delimiters[cursor]
-        if body_close + 1 != call_close:
-            return False
-        candidate_found = True
+            continue
+        return True
 
-    return candidate_found
+    return False
 
 
 @dataclass(frozen=True)
@@ -687,10 +685,11 @@ def verify_enforcement(
     A resolved path establishes only that a claimed mechanism still exists.
     A ``hook`` must be a regular executable file. A ``test`` must be regular
     and executable, except for runner-managed Pytest sources with a valid test
-    AST or Bats/``*.test.js`` sources with bounded whole-file structural
-    plausibility. A present, non-executable stub is a phantom. The verifier
-    intentionally makes no broader claim that a plausible file enforces its
-    recorded lesson, and the Bats/JavaScript recognizers are not full parsers.
+    AST or Bats/``*.test.js`` sources accepted by their existing repository
+    runtime dependencies. Ordinary executable ``kind:test`` and ``kind:hook``
+    files short-circuit before runner inspection and do not invoke Node or
+    Bats. A present, non-executable stub is a phantom. The verifier intentionally
+    makes no broader claim that a plausible file enforces its recorded lesson.
     """
     if not l1_dir.is_dir():
         raise ValueError(f"L1 directory not found: {l1_dir}")
@@ -860,12 +859,13 @@ def print_enforcement_report(report: EnforcementReport) -> None:
         print(f"  {source}: {report.roots_unresolved[source]}", file=sys.stderr)
 
     print(
-        "enforcement-verifier: SCOPE: checks containment and existence; hooks and tests must be "
-        "regular executable files, except runner-managed Pytest (.py) sources with a test AST, or "
-        "bounded whole-file structurally plausible Bats (.bats) and *.test.js sources. These are "
-        "not full Bats/JavaScript parsers. A plausible path is necessary, not sufficient evidence "
-        "that it enforces the claimed lesson. "
-        "UNVERIFIABLE entries were not checked at all -- they are neither enforced nor phantom.",
+        "enforcement-verifier: SCOPE: checks containment and existence; hooks and "
+        "tests must be regular executable files, except runner-managed Pytest (.py) "
+        "sources with a test AST, or Bats (.bats) and *.test.js sources parsed by the "
+        "repository's existing Bats and Node runtime dependencies. Ordinary executable "
+        "test/hook files do not invoke those runners. A plausible path is necessary, "
+        "not sufficient evidence that it enforces the claimed lesson. UNVERIFIABLE "
+        "entries were not checked at all -- they are neither enforced nor phantom.",
         file=sys.stderr,
     )
 

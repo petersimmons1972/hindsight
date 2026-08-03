@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -269,14 +271,387 @@ def test_runner_source_predicate_rejects_suffix_and_substring_only_mutants(tmp_p
     assert not MODULE._is_runner_managed_test_source(substring_only)
 
 
+def test_javascript_invalid_template_interpolation_is_rejected(tmp_path: Path) -> None:
+    """Node syntax, not a template-oblivious lexer, decides whole-file validity."""
+    source = tmp_path / "invalid-template.test.js"
+    write_runner_source(source, 'test("ok", () => { const x = `${foo(}`; });')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_regex_literal_cannot_impersonate_test_call(tmp_path: Path) -> None:
+    """Syntactically valid regex data is not a JavaScript call expression."""
+    source = tmp_path / "regex-decoy.test.js"
+    write_runner_source(source, 'const re = /test("x", () => {})/;\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_for_of_regex_cannot_impersonate_test_call(tmp_path: Path) -> None:
+    """Contextual keywords cannot expose regex contents to candidate scanning."""
+    source = tmp_path / "for-of-regex-decoy.test.js"
+    write_runner_source(source, 'for (const x of /test("x", () => {})/) {}\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '<!-- test("x", () => {})\n',
+        '--> test("x", () => {})\n',
+        '#! test("x", () => {})\n',
+    ],
+    ids=["html-open-comment", "html-close-comment", "hashbang"],
+)
+def test_javascript_line_comment_forms_cannot_impersonate_test_call(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "line-comment-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_nested_template_data_cannot_impersonate_test_call(tmp_path: Path) -> None:
+    """Nested template literal text must stay outside candidate scanning."""
+    source = tmp_path / "nested-template-decoy.test.js"
+    write_runner_source(source, 'const value = `${`test("x", () => {})`}`;\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        (
+            "class C { #test(name, body) {} "
+            'run() { this.#test("x", () => {}); } }\n'
+        ),
+        'class test {}\nnew test("x", () => {});\n',
+    ],
+    ids=["private-method", "constructor"],
+)
+def test_javascript_non_bare_test_invocations_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "non-bare.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_heredoc_data_is_counted_without_executing_test_body(tmp_path: Path) -> None:
+    """A literal closing brace in heredoc data is valid and count mode is non-executing."""
+    sentinel = tmp_path / "body-executed"
+    source = tmp_path / "heredoc.bats"
+    write_runner_source(
+        source,
+        (
+            '@test "heredoc data" {\n'
+            "  cat <<'HEREDOC'\n"
+            "}\n"
+            "HEREDOC\n"
+            f'  touch "{sentinel}"\n'
+            "}\n"
+        ),
+    )
+
+    counted = subprocess.run(
+        ["bats", "--count", str(source)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert counted.returncode == 0
+    assert counted.stdout.strip() == "1"
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("missing.test.js", 'test("ok", () => {});\n'),
+        ("missing.bats", '@test "ok" { true; }\n'),
+    ],
+)
+@pytest.mark.parametrize(
+    "runner_error",
+    [
+        FileNotFoundError("runner missing"),
+        PermissionError("runner not executable"),
+        subprocess.TimeoutExpired(cmd=["runner"], timeout=5),
+    ],
+    ids=["missing-executable", "os-error", "timeout"],
+)
+def test_runner_invocation_error_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    runner_error: OSError | subprocess.TimeoutExpired,
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    def fail_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise runner_error
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "stdout"),
+    [
+        ("failed.test.js", 'test("ok", () => {});\n', ""),
+        ("failed.bats", '@test "ok" { true; }\n', "1\n"),
+    ],
+)
+def test_runner_nonzero_exit_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    stdout: str,
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout, "parse failed"),
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "stdout", ["", "not a count\n", "1\nnoise\n", "-1\n", "0\n", None]
+)
+def test_bats_invalid_or_zero_count_output_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stdout: str | None,
+) -> None:
+    source = tmp_path / "malformed-count.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout, ""),
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "expected_prefix", "stdout"),
+    [
+        (
+            "runner; touch PWNED $(echo x).test.js",
+            'test("ok", () => {});\n',
+            ["node", "--check"],
+            "",
+        ),
+        (
+            "runner; touch PWNED $(echo x).bats",
+            '@test "ok" { true; }\n',
+            ["bats", "--count"],
+            "1\n",
+        ),
+    ],
+)
+def test_runner_source_path_is_one_argv_element_without_a_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    expected_prefix: list[str],
+    stdout: str,
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def record_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", record_run)
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert len(calls) == 1
+    argv, kwargs = calls[0]
+    assert argv == [*expected_prefix, str(source)]
+    assert argv[-1] == str(source)
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert 0 < kwargs["timeout"] <= 10
+    assert kwargs.get("shell", False) is False
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "replacement", "stdout"),
+    [
+        (
+            "changed.test.js",
+            'test("ok", () => {});\n',
+            'test("broken", () =>',
+            "",
+        ),
+        (
+            "changed.bats",
+            '@test "ok" { true; }\n',
+            "echo no-tests-remain\n",
+            "1\n",
+        ),
+    ],
+)
+def test_source_change_during_runner_parse_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    replacement: str,
+    stdout: str,
+) -> None:
+    """A runner result must not certify different bytes at the same path."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    def replace_during_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        write_runner_source(source, replacement)
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", replace_during_run)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "replacement", "stdout"),
+    [
+        (
+            "aba.test.js",
+            'test("ok", () => {});\n',
+            'test("broken", () =>',
+            "",
+        ),
+        (
+            "aba.bats",
+            '@test "ok" { true; }\n',
+            "echo no-tests-remain\n",
+            "1\n",
+        ),
+    ],
+)
+def test_source_aba_change_during_runner_parse_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    replacement: str,
+    stdout: str,
+) -> None:
+    """Restoring the original bytes cannot hide an intervening source change."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    def replace_and_restore(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        write_runner_source(source, replacement)
+        write_runner_source(source, contents)
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(subprocess, "run", replace_and_restore)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "success_stdout"),
+    [
+        ("repeat.test.js", 'test("ok", () => {});\n', ""),
+        ("repeat.bats", '@test "ok" { true; }\n', "1\n"),
+    ],
+)
+def test_runner_validation_is_fresh_on_repeat_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+    success_stdout: str,
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+    results = iter(
+        [
+            subprocess.CompletedProcess(["runner"], 1, "", "parse failed"),
+            subprocess.CompletedProcess(["runner"], 0, success_stdout, ""),
+        ]
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(results))
+
+    assert not MODULE._is_runner_managed_test_source(source)
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("ordinary.test.js", "#!/bin/sh\nexit 0\n"),
+        ("ordinary.bats", "#!/bin/sh\nexit 0\n"),
+    ],
+)
+def test_executable_test_file_does_not_invoke_runner_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    contents: str,
+) -> None:
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / filename
+    source.write_text(contents, encoding="utf-8")
+    source.chmod(0o755)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("ordinary", {"file": filename, "kind": "test"}),
+    )
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("ordinary executable tests must not invoke a language runner")
+        ),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+
+
 @pytest.mark.parametrize(
     ("filename", "contents"),
     [
         ("extra-paren.bats", '@test "ok" { true; }\n)\n'),
         ("extra-bracket.bats", '@test "ok" { true; }\n]\n'),
         ("unclosed-paren.bats", '@test "ok" { true; }\necho (\n'),
-        ("unclosed-brace.bats", '@test "ok" { true; }\necho {\n'),
-        ("unclosed-bracket.bats", '@test "ok" { true; }\necho [\n'),
         ("unclosed-quote.bats", '@test "ok" { true; }\necho "unterminated\n'),
         ("malformed-second.bats", '@test "ok" { true; }\n@test "broken" nope\n'),
         ("extra-paren.test.js", 'test("ok", () => {}); )'),
@@ -314,6 +689,17 @@ def test_javascript_valid_prefix_does_not_hide_invalid_suffix(tmp_path: Path) ->
     assert not MODULE._is_runner_managed_test_source(source)
 
 
+@pytest.mark.parametrize("shell_word", ["{", "["])
+def test_bats_authoritative_parser_accepts_delimiter_like_shell_words(
+    tmp_path: Path, shell_word: str
+) -> None:
+    """The removed delimiter lexer rejected these valid ordinary arguments."""
+    source = tmp_path / "shell-word.bats"
+    write_runner_source(source, f'@test "ok" {{ true; }}\necho {shell_word}\n')
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
 @pytest.mark.parametrize(
     ("filename", "contents"),
     [
@@ -332,6 +718,7 @@ def test_javascript_valid_prefix_does_not_hide_invalid_suffix(tmp_path: Path) ->
             "multiple.test.js",
             (
                 "const before = [1];\n"
+                r"const delimiters = /[)}\]]/;" "\n"
                 'test("first", () => {});\n'
                 'test("second", async () => { const nested = {}; });\n'
                 'const text = "}])"; /* harmless unmatched-looking ({[ */\n'
@@ -367,16 +754,44 @@ def test_javascript_runner_source_read_error_fails_closed(
 ) -> None:
     source = tmp_path / "read-error.test.js"
     write_runner_source(source, 'test("ok", () => {});\n')
-    real_open = Path.open
+    real_open = MODULE.os.open
 
-    def fail_target_open(path: Path, *args: object, **kwargs: object) -> object:
-        if path == source:
+    def fail_target_open(path: Path, *args: object, **kwargs: object) -> int:
+        if Path(path) == source:
             raise read_error
         return real_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "open", fail_target_open)
+    monkeypatch.setattr(MODULE.os, "open", fail_target_open)
 
     assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize("suffix", [".test.js", ".bats"])
+def test_non_regular_fifo_runner_source_fails_closed_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+) -> None:
+    source = tmp_path / f"blocking{suffix}"
+    MODULE.os.mkfifo(source)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("non-regular source must not invoke a language runner")
+        ),
+    )
+    results: list[bool] = []
+    worker = threading.Thread(
+        target=lambda: results.append(MODULE._is_runner_managed_test_source(source)),
+        daemon=True,
+    )
+
+    worker.start()
+    worker.join(timeout=0.5)
+
+    assert not worker.is_alive(), "regular-file check blocked while opening a FIFO"
+    assert results == [False]
 
 
 def test_runner_plausibility_uses_stat_not_a_separate_exists_probe(

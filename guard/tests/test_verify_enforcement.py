@@ -495,6 +495,82 @@ def test_javascript_trusted_global_ff_binding_is_runner_managed(
 
 
 @pytest.mark.parametrize(
+    "prologue",
+    [
+        "",
+        "  /* runner prelude */\n// binding follows\n",
+        "'use strict'\n",
+        '"use strict"; /* runner prelude */\n',
+    ],
+    ids=["empty", "comments", "single-quoted-strict", "double-quoted-strict"],
+)
+def test_javascript_global_ff_binding_allows_only_the_runner_prologue(
+    tmp_path: Path, prologue: str
+) -> None:
+    source = tmp_path / "global-ff-prologue.test.js"
+    write_runner_source(
+        source,
+        f"{prologue}const {{ test, assert, eq }} = global.__ff; "
+        'test("trusted",()=>{});\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "global.__ff = {test:(name,body)=>0,assert:0,eq:0}; ",
+        (
+            'Object.defineProperty(global,"__ff",'
+            "{value:{test:(name,body)=>0,assert:0,eq:0}}); "
+        ),
+        "const alias = global; alias.__ff = {test:(name,body)=>0,assert:0,eq:0}; ",
+        (
+            'const key = "__" + "ff"; global[key] = '
+            "{test:(name,body)=>0,assert:0,eq:0}; "
+        ),
+    ],
+    ids=["direct-assignment", "define-property", "alias", "computed-built-key"],
+)
+def test_javascript_global_ff_prebinding_mutations_are_rejected(
+    tmp_path: Path, mutation: str
+) -> None:
+    """Candidate code cannot replace the runner object before it is read."""
+    source = tmp_path / "global-ff-prebinding-mutation.test.js"
+    write_runner_source(
+        source,
+        f"{mutation}const {{ test, assert, eq }} = global.__ff; "
+        'test("fake",()=>{});\n',
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "prologue",
+    [
+        "0; ",
+        "const harmless = 0; ",
+        '"another directive"; ',
+        'import "runner-setup"; ',
+    ],
+    ids=["expression", "declaration", "other-directive", "import"],
+)
+def test_javascript_global_ff_binding_rejects_other_executable_prologues(
+    tmp_path: Path, prologue: str
+) -> None:
+    source = tmp_path / "global-ff-executable-prologue.test.js"
+    write_runner_source(
+        source,
+        f"{prologue}const {{ test, assert, eq }} = global.__ff; "
+        'test("fake",()=>{});\n',
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
     "contents",
     [
         'const { test, assert, eq } = local.__ff; test("fake",()=>{});\n',

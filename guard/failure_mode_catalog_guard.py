@@ -64,6 +64,13 @@ JAVASCRIPT_TRUSTED_GLOBAL_FF_BINDING_RE = re.compile(
     r"global[ \t\r\n]*\.[ \t\r\n]*__ff"
     r"(?=[ \t]*(?:;|,|\r?\n|$))"
 )
+JAVASCRIPT_TRUSTED_GLOBAL_FF_PROLOGUE_RE = re.compile(
+    r"\A" + JAVASCRIPT_TRIVIA
+    + r"(?:(?:'use strict'|\"use strict\")[ \t]*;?"
+    + JAVASCRIPT_TRIVIA
+    + r")?\Z",
+    re.DOTALL,
+)
 JAVASCRIPT_CALLBACK_PREFIX_RE = re.compile(
     r"(?:async" + JAVASCRIPT_TRIVIA + r"function\b|function\b|async"
     + JAVASCRIPT_TRIVIA
@@ -427,11 +434,13 @@ def _is_javascript_test_source(path: Path) -> bool:
     other data. Further bounded whole-source mutations prove the closing edge
     of each literal-name, inline-callback call. Every other code-level bare
     ``test`` occurrence is rejected, except the exact immutable, top-level
-    Fleet binding ``const { test, assert, eq } = global.__ff``. That exception
-    is limited to the declaration's matched token after syntax mutations prove
-    it is both code and top-level; aliases, other sources, nested bindings, and
-    later mutations remain ordinary bare candidates and fail closed. Neither
-    original nor mutated source executes.
+    Fleet binding ``const { test, assert, eq } = global.__ff`` when it is the
+    first executable statement (after trivia and an optional exact strict-mode
+    directive). That exception is limited to the declaration's matched token
+    after syntax mutations prove it is both code and top-level; aliases, other
+    sources, nested bindings, pre-binding code, and later mutations remain
+    ordinary bare candidates and fail closed. Neither original nor mutated
+    source executes.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
@@ -464,6 +473,10 @@ def _is_javascript_test_source(path: Path) -> bool:
         return False
     trusted_binding_spans: set[tuple[int, int]] = set()
     for binding in trusted_binding_candidates:
+        if JAVASCRIPT_TRUSTED_GLOBAL_FF_PROLOGUE_RE.fullmatch(
+            source[: binding.start()]
+        ) is None:
+            continue
         start, end = binding.span("test")
         localized = _run_runner_parser(
             syntax_argv, input_text=f"{source[:start]}@{source[end:]}"

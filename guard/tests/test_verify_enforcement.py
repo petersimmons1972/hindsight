@@ -473,6 +473,114 @@ def test_javascript_all_bare_test_bindings_are_rejected(
 @pytest.mark.parametrize(
     "contents",
     [
+        (
+            "const { test, assert, eq } = global.__ff\n"
+            'test("trusted", () => {});\n'
+        ),
+        (
+            "const{test,assert,eq}=global.__ff;\n"
+            'test("trusted", async function () {});\n'
+        ),
+    ],
+    ids=["live-spacing", "compact-spacing"],
+)
+def test_javascript_trusted_global_ff_binding_is_runner_managed(
+    tmp_path: Path, contents: str
+) -> None:
+    """Fleet's exact immutable runner binding may supply genuine test calls."""
+    source = tmp_path / "global-ff.test.js"
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const { test, assert, eq } = local.__ff; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.fake; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global["__ff"]; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.__ff.fake; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.__ff || local; test("fake",()=>{});\n',
+        'const { assert, test, eq } = global.__ff; test("fake",()=>{});\n',
+        'const { test, assert, eq, extra } = global.__ff; test("fake",()=>{});\n',
+        'const { test: alias, assert, eq } = global.__ff; alias("fake",()=>{});\n',
+        'const { test: test, assert, eq } = global.__ff; test("fake",()=>{});\n',
+        'const { test, assert, eq } = global.__ff;\n',
+        'const { test, assert, eq } = global.__ff; test("inert");\n',
+        (
+            'if (false) { const { test, assert, eq } = global.__ff; '
+            'test("inert",()=>{}); }\n'
+        ),
+        (
+            'function inert() { const { test, assert, eq } = global.__ff; '
+            'test("inert",()=>{}); }\n'
+        ),
+        (
+            'for (; false;) { const { test, assert, eq } = global.__ff; '
+            'test("inert",()=>{}); }\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            'if (false) test("inert",()=>{});\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            'function inert() { test("inert",()=>{}); }\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            'false && test("inert",()=>{});\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; test = local; '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'let { test, assert, eq } = global.__ff; test = local; '
+            'test("fake",()=>{});\n'
+        ),
+        (
+            'const { test, assert, eq } = global.__ff; '
+            '({test} = local); test("fake",()=>{});\n'
+        ),
+    ],
+    ids=[
+        "local-object",
+        "wrong-global-property",
+        "computed-source",
+        "chained-source",
+        "fallback-source",
+        "member-order",
+        "extra-member",
+        "different-local-alias",
+        "explicit-test-alias",
+        "missing-call",
+        "malformed-call",
+        "unreachable-branch-binding",
+        "uncalled-function-binding",
+        "zero-iteration-binding",
+        "top-level-binding-unreachable-call",
+        "top-level-binding-uncalled-function",
+        "top-level-binding-short-circuit-call",
+        "later-reassignment",
+        "mutable-declaration",
+        "later-destructuring-mutation",
+    ],
+)
+def test_javascript_global_ff_near_neighbors_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """Only the exact immutable Fleet binding is trusted; close decoys fail."""
+    source = tmp_path / "global-ff-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
         'const \\u0074est = (name, body) => 0; test("fake",()=>{});\n',
         'const {...test} = obj; test("fake",()=>{});\n',
         'new test("fake",()=>{});\n',

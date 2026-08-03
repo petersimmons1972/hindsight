@@ -29,6 +29,7 @@ HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
 RUNNER_PARSE_TIMEOUT_SECONDS = 5
 MAX_RUNNER_CANDIDATES = 256
 MAX_JAVASCRIPT_MUTATION_PROBES = 2048
+MAX_TRUSTED_GLOBAL_FF_MUTATION_PROBES = 4096
 FileFingerprint = tuple[int, int, int, int, int]
 BATS_GENERATED_TEST_RE = re.compile(
     r"(?m)^bats_test_function --description [^\n]* -- "
@@ -56,6 +57,13 @@ JAVASCRIPT_GLOBAL_MEMBER_PREFIX_RE = re.compile(
     re.DOTALL,
 )
 JAVASCRIPT_DELETE_CANDIDATE_RE = re.compile(r"(?<![\w$])delete(?![\w$])")
+JAVASCRIPT_TRUSTED_GLOBAL_FF_BINDING_RE = re.compile(
+    r"(?<![\w$])const[ \t\r\n]*\{[ \t\r\n]*"
+    r"(?P<test>test)[ \t\r\n]*,[ \t\r\n]*assert[ \t\r\n]*,"
+    r"[ \t\r\n]*eq[ \t\r\n]*\}[ \t\r\n]*=[ \t\r\n]*"
+    r"global[ \t\r\n]*\.[ \t\r\n]*__ff"
+    r"(?=[ \t]*(?:;|,|\r?\n|$))"
+)
 JAVASCRIPT_CALLBACK_PREFIX_RE = re.compile(
     r"(?:async" + JAVASCRIPT_TRIVIA + r"function\b|function\b|async"
     + JAVASCRIPT_TRIVIA
@@ -195,14 +203,16 @@ def _javascript_call_has_runner_shape(
     candidate_end: int,
     syntax_argv: list[str],
     probe_budget: list[int],
-) -> bool | None:
+    *,
+    prove_top_level: bool = False,
+) -> tuple[bool, bool] | None:
     """Prove one call using bounded whole-source syntax-oracle mutations."""
     index = _javascript_skip_trivia(source, candidate_end)
     if index >= len(source) or source[index] != "(":
-        return False
+        return False, False
     name_start = _javascript_skip_trivia(source, index + 1)
     if name_start >= len(source) or source[name_start] not in "'\"`":
-        return False
+        return False, False
     comma_count = 0
     for comma in (
         position
@@ -211,7 +221,7 @@ def _javascript_call_has_runner_shape(
     ):
         comma_count += 1
         if comma_count > MAX_RUNNER_CANDIDATES:
-            return False
+            return False, False
         name = source[name_start:comma].strip()
         name_syntax = _javascript_mutation_probe(
             syntax_argv, f"const __runner_name = () => {name};\n", probe_budget
@@ -231,7 +241,7 @@ def _javascript_call_has_runner_shape(
         ):
             closing_count += 1
             if closing_count > MAX_RUNNER_CANDIDATES:
-                return False
+                return False, False
             callback = source[callback_start:close].strip()
             if not callback:
                 continue
@@ -275,8 +285,20 @@ def _javascript_call_has_runner_shape(
             if localized is None:
                 return None
             if localized.returncode == 0:
-                return True
-    return False
+                if not prove_top_level:
+                    return True, True
+                top_level = _javascript_mutation_probe(
+                    ["node", "--check", "--input-type=module", "-"],
+                    (
+                        f'{source[:candidate_start]}import "__runner_call_oracle__"'
+                        f"{source[close + 1:]}"
+                    ),
+                    probe_budget,
+                )
+                if top_level is None:
+                    return None
+                return True, top_level.returncode == 0
+    return False, False
 
 
 def _javascript_mutation_probe(
@@ -396,7 +418,7 @@ def _is_bats_source(path: Path) -> bool:
 
 
 def _is_javascript_test_source(path: Path) -> bool:
-    """Accept Node-parseable JavaScript with a global runner-shaped test call.
+    """Accept Node-parseable JavaScript with a trusted runner-shaped test call.
 
     The fleet runner imports ``*.test.js`` files, so they need not be
     executable. ``node --check`` is the authoritative whole-file syntax layer;
@@ -404,9 +426,12 @@ def _is_javascript_test_source(path: Path) -> bool:
     text in strings, comments, template raw segments, regular expressions, and
     other data. Further bounded whole-source mutations prove the closing edge
     of each literal-name, inline-callback call. Every other code-level bare
-    ``test`` occurrence is rejected, conservatively covering lexical shadows
-    without trying to implement JavaScript scope rules. Neither the original
-    nor mutated source is executed.
+    ``test`` occurrence is rejected, except the exact immutable, top-level
+    Fleet binding ``const { test, assert, eq } = global.__ff``. That exception
+    is limited to the declaration's matched token after syntax mutations prove
+    it is both code and top-level; aliases, other sources, nested bindings, and
+    later mutations remain ordinary bare candidates and fail closed. Neither
+    original nor mutated source executes.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
@@ -429,12 +454,40 @@ def _is_javascript_test_source(path: Path) -> bool:
     candidates = list(JAVASCRIPT_TEST_CANDIDATE_RE.finditer(source))
     with_candidates = list(JAVASCRIPT_WITH_CANDIDATE_RE.finditer(source))
     delete_candidates = list(JAVASCRIPT_DELETE_CANDIDATE_RE.finditer(source))
+    trusted_binding_candidates = list(
+        JAVASCRIPT_TRUSTED_GLOBAL_FF_BINDING_RE.finditer(source)
+    )
     if (
         len(candidates) + len(with_candidates) + len(delete_candidates)
         > MAX_RUNNER_CANDIDATES
     ):
         return False
-    probe_budget = [MAX_JAVASCRIPT_MUTATION_PROBES]
+    trusted_binding_spans: set[tuple[int, int]] = set()
+    for binding in trusted_binding_candidates:
+        start, end = binding.span("test")
+        localized = _run_runner_parser(
+            syntax_argv, input_text=f"{source[:start]}@{source[end:]}"
+        )
+        if localized is None:
+            return False
+        if localized.returncode == 0:
+            continue
+        top_level = _run_runner_parser(
+            ["node", "--check", "--input-type=module", "-"],
+            input_text=(
+                f'{source[:binding.start()]}import "__global_ff_oracle__"'
+                f"{source[binding.end():]}"
+            ),
+        )
+        if top_level is None:
+            return False
+        if top_level.returncode == 0:
+            trusted_binding_spans.add((start, end))
+    probe_budget = [
+        MAX_TRUSTED_GLOBAL_FF_MUTATION_PROBES
+        if trusted_binding_spans
+        else MAX_JAVASCRIPT_MUTATION_PROBES
+    ]
     for candidate in with_candidates:
         prefix = source[: candidate.start()]
         suffix = source[candidate.end() :]
@@ -450,6 +503,8 @@ def _is_javascript_test_source(path: Path) -> bool:
             return False
     runner_calls = 0
     for candidate in candidates:
+        if candidate.span() in trusted_binding_spans:
+            continue
         mutated = f"{source[: candidate.start()]}@{source[candidate.end() :]}"
         localized = _javascript_mutation_probe(
             syntax_argv, mutated, probe_budget
@@ -491,16 +546,18 @@ def _is_javascript_test_source(path: Path) -> bool:
         suffix = source[candidate.end() :]
         if re.match(JAVASCRIPT_TRIVIA + r":", suffix, re.DOTALL):
             continue
-        call_shaped = _javascript_call_has_runner_shape(
+        call_result = _javascript_call_has_runner_shape(
             source,
             candidate.start(),
             candidate.end(),
             syntax_argv,
             probe_budget,
+            prove_top_level=bool(trusted_binding_spans),
         )
-        if call_shaped is None or not call_shaped:
+        if call_result is None or not call_result[0]:
             return False
-        runner_calls += 1
+        if call_result[1]:
+            runner_calls += 1
     return runner_calls > 0 and _read_regular_utf8_snapshot(path) == snapshot
 
 

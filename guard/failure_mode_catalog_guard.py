@@ -13,6 +13,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -27,7 +28,26 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 # (e.g. "Container Runtime - Design (FM-RC-01)") and must not be flagged.
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
 RUNNER_PARSE_TIMEOUT_SECONDS = 5
+MAX_RUNNER_CANDIDATES = 256
 FileFingerprint = tuple[int, int, int, int, int]
+BATS_GENERATED_TEST_RE = re.compile(
+    r"(?m)^bats_test_function --description [^\n]* -- "
+    r"(?P<name>test_[A-Za-z0-9_-]+);(?P=name)\(\) \{"
+)
+BATS_UNTRANSFORMED_TEST_RE = re.compile(r"(?m)^[ \t]*@test\b")
+JAVASCRIPT_TRIVIA = r"(?:\s|/\*.*?\*/|//[^\r\n]*(?:\r?\n|$))*"
+JAVASCRIPT_TEST_CANDIDATE_RE = re.compile(
+    r"(?<![\w$])test(?![\w$])(?=" + JAVASCRIPT_TRIVIA + r"\()",
+    re.DOTALL,
+)
+JAVASCRIPT_PROPERTY_PREFIX_RE = re.compile(
+    r"(?:\.|#)" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL
+)
+JAVASCRIPT_NEW_PREFIX_RE = re.compile(r"\bnew" + JAVASCRIPT_TRIVIA + r"$", re.DOTALL)
+JAVASCRIPT_FUNCTION_PREFIX_RE = re.compile(
+    r"\bfunction" + JAVASCRIPT_TRIVIA + r"\*?" + JAVASCRIPT_TRIVIA + r"$",
+    re.DOTALL,
+)
 
 
 def _read_regular_utf8_snapshot(path: Path) -> tuple[str, FileFingerprint] | None:
@@ -68,8 +88,13 @@ def _read_regular_utf8(path: Path) -> str | None:
     return None if snapshot is None else snapshot[0]
 
 
-def _run_runner_parser(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
-    """Run an existing non-executing parser dependency, failing closed."""
+def _run_runner_parser(
+    argv: list[str],
+    *,
+    input_text: str | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run one fixed-argv parser probe, preserving its status and failing closed."""
     try:
         completed = subprocess.run(
             argv,
@@ -77,10 +102,57 @@ def _run_runner_parser(argv: list[str]) -> subprocess.CompletedProcess[str] | No
             capture_output=True,
             text=True,
             timeout=RUNNER_PARSE_TIMEOUT_SECONDS,
+            input=input_text,
+            env=env,
         )
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         return None
-    return completed if completed.returncode == 0 else None
+    return completed
+
+
+def _resolve_bats_preprocessor() -> tuple[Path, dict[str, str]] | None:
+    """Resolve Bats' shipped preprocessor and its deterministic library environment."""
+    bats_executable = shutil.which("bats")
+    if bats_executable is None:
+        return None
+    try:
+        real_bats = Path(bats_executable).resolve(strict=True)
+        bats_root = real_bats.parent.parent
+        preprocessor = (
+            bats_root / "libexec" / "bats-core" / "bats-preprocess"
+        ).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+
+    bats_libdir: str | None = None
+    for candidate in ("lib", "lib64"):
+        try:
+            common = (bats_root / candidate / "bats-core" / "common.bash").stat()
+        except OSError:
+            continue
+        if stat.S_ISREG(common.st_mode):
+            bats_libdir = candidate
+            break
+    if bats_libdir is None:
+        return None
+
+    return preprocessor, {
+        "BATS_ROOT": str(bats_root),
+        "BATS_LIBDIR": bats_libdir,
+        "PATH": os.defpath,
+    }
+
+
+def _bash_syntax(source: str) -> subprocess.CompletedProcess[str] | None:
+    """Parse shell source from stdin without sourcing or executing it."""
+    return _run_runner_parser(["bash", "-n"], input_text=source)
+
+
+def _mutation_is_shell_code(source: str, start: int, end: int) -> bool | None:
+    """Use Bash's parser to distinguish a raw candidate from inert shell data."""
+    mutated = f"{source[:start]}){source[end:]}"
+    parsed = _bash_syntax(mutated)
+    return None if parsed is None else parsed.returncode != 0
 
 
 def _is_runner_managed_test_source(path: Path) -> bool:
@@ -128,179 +200,115 @@ def _is_pytest_source(path: Path) -> bool:
 def _is_bats_source(path: Path) -> bool:
     """Accept regular UTF-8 Bats sources that parse and declare a test.
 
-    ``bats`` is already a repository runtime dependency. Its ``--count`` mode
-    parses without executing test bodies and is authoritative for Bats syntax.
-    """
-    snapshot = _read_regular_utf8_snapshot(path)
-    if snapshot is None:
-        return False
-    parsed = _run_runner_parser(["bats", "--count", str(path)])
-    if parsed is None or not isinstance(parsed.stdout, str):
-        return False
-    if _read_regular_utf8_snapshot(path) != snapshot:
-        return False
-    count = parsed.stdout.strip()
-    return re.fullmatch(r"[0-9]+", count) is not None and any(
-        digit != "0" for digit in count
-    )
-
-
-def _is_javascript_test_source(path: Path) -> bool:
-    """Accept Node-parseable JavaScript with a bounded test candidate.
-
-    The fleet runner imports ``*.test.js`` files, so they need not be
-    executable. ``node --check`` is the authoritative whole-file syntax layer;
-    only then does this bounded token scan require a
-    ``test(<quoted name>, [async] (...) => {...})`` candidate. Property calls
-    such as a regular expression's ``.test(...)`` are ordinary source.
+    Bats itself is never invoked because even collection executes top-level
+    source. Its shipped preprocessor performs a source-to-source declaration
+    transform; Bash then validates the transformed bytes from stdin without
+    sourcing them. Parser-oracle mutations distinguish generated declarations
+    in shell code from lookalikes inside heredoc data.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
         return False
     source = snapshot[0]
-    if _run_runner_parser(["node", "--check", str(path)]) is None:
+    resolved = _resolve_bats_preprocessor()
+    if resolved is None:
+        return False
+    preprocessor, env = resolved
+    preprocessed = _run_runner_parser(
+        [str(preprocessor), str(path)],
+        env=env,
+    )
+    if (
+        preprocessed is None
+        or preprocessed.returncode != 0
+        or not isinstance(preprocessed.stdout, str)
+        or not preprocessed.stdout.strip()
+    ):
+        return False
+    transformed = preprocessed.stdout
+    source_lines = source.splitlines()
+    transformed_lines = transformed.splitlines()
+    if len(transformed_lines) < len(source_lines) or any(
+        transformed_lines[len(source_lines) :]
+    ):
+        return False
+    syntax = _bash_syntax(transformed)
+    if syntax is None or syntax.returncode != 0:
+        return False
+
+    malformed_candidates = list(BATS_UNTRANSFORMED_TEST_RE.finditer(transformed))
+    declarations = list(BATS_GENERATED_TEST_RE.finditer(transformed))
+    if len(malformed_candidates) + len(declarations) > MAX_RUNNER_CANDIDATES:
+        return False
+    for candidate in malformed_candidates:
+        localized = _mutation_is_shell_code(
+            transformed, candidate.start(), candidate.end()
+        )
+        if localized is None or localized:
+            return False
+
+    for declaration in declarations:
+        line_number = transformed.count("\n", 0, declaration.start())
+        if source_lines[line_number] == transformed_lines[line_number]:
+            continue
+        function_start = declaration.end("name") + 1
+        function_end = function_start + len(declaration.group("name"))
+        localized = _mutation_is_shell_code(transformed, function_start, function_end)
+        if localized is None:
+            return False
+        if localized and _read_regular_utf8_snapshot(path) == snapshot:
+            return True
+    return False
+
+
+def _is_javascript_test_source(path: Path) -> bool:
+    """Accept Node-parseable JavaScript with a bounded bare test call.
+
+    The fleet runner imports ``*.test.js`` files, so they need not be
+    executable. ``node --check`` is the authoritative whole-file syntax layer;
+    parser-oracle mutations then distinguish code candidates from the same raw
+    text in strings, comments, template raw segments, regular expressions, and
+    other data. Neither the original nor mutated source is executed.
+    """
+    snapshot = _read_regular_utf8_snapshot(path)
+    if snapshot is None:
+        return False
+    source = snapshot[0]
+    original = _run_runner_parser(["node", "--check", str(path)])
+    if original is None or original.returncode != 0:
         return False
     if _read_regular_utf8_snapshot(path) != snapshot:
         return False
-
-    tokens: list[tuple[str, str]] = []
-
-    index = 0
-    while index < len(source):
-        char = source[index]
-        if char.isspace():
-            index += 1
-        elif (
-            (index == 0 and source.startswith("#!", index))
-            or source.startswith("<!--", index)
-            or source.startswith("-->", index)
-        ):
-            newline = source.find("\n", index + 2)
-            index = len(source) if newline == -1 else newline + 1
-        elif source.startswith("//", index):
-            newline = source.find("\n", index + 2)
-            index = len(source) if newline == -1 else newline + 1
-        elif source.startswith("/*", index):
-            end = source.find("*/", index + 2)
-            if end == -1:
-                break
-            index = end + 2
-        elif char == "/":
-            # Node already proved the whole file parses. Conservatively mask a
-            # slash-delimited region (or the rest of this line when division
-            # is lexically ambiguous) so regex/comment data can never become a
-            # test-call candidate. Ambiguity therefore fails closed.
-            index += 1
-            in_character_class = False
-            while index < len(source):
-                if source[index] == "\\":
-                    index += 2
-                elif source[index] in "\r\n":
-                    break
-                elif source[index] == "[":
-                    in_character_class = True
-                    index += 1
-                elif source[index] == "]":
-                    in_character_class = False
-                    index += 1
-                elif source[index] == "/" and not in_character_class:
-                    index += 1
-                    while index < len(source) and source[index].isalpha():
-                        index += 1
-                    tokens.append(("regex", ""))
-                    break
-                else:
-                    index += 1
-        elif char == "`":
-            # Template interpolation is a full JavaScript subgrammar. Node has
-            # already validated it; mask conservatively through the final
-            # unescaped backtick so nested template data cannot forge a call.
-            end = len(source) - 1
-            while end > index:
-                if source[end] == "`":
-                    backslashes = 0
-                    before = end - 1
-                    while before > index and source[before] == "\\":
-                        backslashes += 1
-                        before -= 1
-                    if backslashes % 2 == 0:
-                        break
-                end -= 1
-            if end == index:
-                break
-            tokens.append(("string", ""))
-            index = end + 1
-        elif char in "'\"":
-            quote = char
-            index += 1
-            while index < len(source) and source[index] != quote:
-                if source[index] == "\\":
-                    index += 2
-                else:
-                    index += 1
-            if index >= len(source):
-                break
-            tokens.append(("string", ""))
-            index += 1
-        elif char.isidentifier() or char in "$_":
-            end = index + 1
-            while end < len(source) and (source[end].isalnum() or source[end] in "$_"):
-                end += 1
-            tokens.append(("identifier", source[index:end]))
-            index = end
-        elif char.isdigit():
-            end = index + 1
-            while end < len(source) and (source[end].isalnum() or source[end] in "._"):
-                end += 1
-            tokens.append(("number", ""))
-            index = end
-        else:
-            tokens.append(("punctuation", char))
-            index += 1
-
-    for token_index, token in enumerate(tokens[:-1]):
-        if token != ("identifier", "test") or tokens[token_index + 1] != (
-            "punctuation",
-            "(",
-        ):
+    candidates = list(JAVASCRIPT_TEST_CANDIDATE_RE.finditer(source))
+    if len(candidates) > MAX_RUNNER_CANDIDATES:
+        return False
+    for candidate in candidates:
+        prefix = source[: candidate.start()]
+        if JAVASCRIPT_PROPERTY_PREFIX_RE.search(prefix):
             continue
-        if token_index:
-            previous = tokens[token_index - 1]
-            if previous in {("punctuation", "."), ("punctuation", "#")}:
-                continue
-            if previous == ("identifier", "new"):
-                continue
-        cursor = token_index + 2
-        if cursor >= len(tokens) or tokens[cursor][0] != "string":
+        if JAVASCRIPT_NEW_PREFIX_RE.search(prefix):
             continue
-        cursor += 1
-        if cursor >= len(tokens) or tokens[cursor] != ("punctuation", ","):
+        if JAVASCRIPT_FUNCTION_PREFIX_RE.search(prefix):
             continue
-        cursor += 1
-        if cursor < len(tokens) and tokens[cursor] == ("identifier", "async"):
-            cursor += 1
-        if cursor >= len(tokens) or tokens[cursor] != ("punctuation", "("):
-            continue
-        parameter_depth = 1
-        cursor += 1
-        while cursor < len(tokens) and parameter_depth:
-            if tokens[cursor] == ("punctuation", "("):
-                parameter_depth += 1
-            elif tokens[cursor] == ("punctuation", ")"):
-                parameter_depth -= 1
-            cursor += 1
-        if parameter_depth or cursor + 2 >= len(tokens):
-            continue
-        if tokens[cursor : cursor + 2] != [
-            ("punctuation", "="),
-            ("punctuation", ">"),
-        ]:
-            continue
-        cursor += 2
-        if tokens[cursor] != ("punctuation", "{"):
-            continue
-        return True
-
+        mutated = f"{source[: candidate.start()]}@{source[candidate.end() :]}"
+        localized = _run_runner_parser(
+            ["node", "--check", "-"],
+            input_text=mutated,
+        )
+        if localized is None:
+            return False
+        if localized.returncode != 0:
+            call_shaped = _run_runner_parser(
+                ["node", "--check", "-"],
+                input_text=(
+                    f"{source[: candidate.start()]}globalThis.test"
+                    f"{source[candidate.end() :]}"
+                ),
+            )
+            if call_shaped is None:
+                return False
+            if call_shaped.returncode == 0:
+                return _read_regular_utf8_snapshot(path) == snapshot
     return False
 
 
@@ -861,8 +869,8 @@ def print_enforcement_report(report: EnforcementReport) -> None:
     print(
         "enforcement-verifier: SCOPE: checks containment and existence; hooks and "
         "tests must be regular executable files, except runner-managed Pytest (.py) "
-        "sources with a test AST, or Bats (.bats) and *.test.js sources parsed by the "
-        "repository's existing Bats and Node runtime dependencies. Ordinary executable "
+        "sources with a test AST, Bats (.bats) sources parsed by Bats' non-executing "
+        "preprocessor plus Bash, or *.test.js sources parsed by Node. Ordinary executable "
         "test/hook files do not invoke those runners. A plausible path is necessary, "
         "not sufficient evidence that it enforces the claimed lesson. UNVERIFIABLE "
         "entries were not checked at all -- they are neither enforced nor phantom.",

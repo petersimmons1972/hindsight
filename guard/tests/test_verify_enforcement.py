@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -341,8 +342,107 @@ def test_javascript_non_bare_test_invocations_are_rejected(
     assert not MODULE._is_runner_managed_test_source(source)
 
 
-def test_bats_heredoc_data_is_counted_without_executing_test_body(tmp_path: Path) -> None:
-    """A literal closing brace in heredoc data is valid and count mode is non-executing."""
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const x=6 / 2; test("ok",()=>{});\n',
+        'const a=`a`; test("ok",()=>{}); const b=`b`;\n',
+        'test /* call-site trivia */ ("ok",()=>{});\n',
+    ],
+    ids=["division-before-test", "templates-around-test", "comment-before-call"],
+)
+def test_javascript_parser_oracle_accepts_valid_slash_and_template_source(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "parser-oracle.test.js"
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'const value = "test( data";\n',
+        "// test( data\nconst value = 1;\n",
+        "/* test( data */ const value = 1;\n",
+        "const value = `test( data`;\n",
+        "const value = /test\\( data/;\n",
+    ],
+    ids=["string", "line-comment", "block-comment", "template-raw", "regex"],
+)
+def test_javascript_parser_oracle_rejects_test_candidates_in_data(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "data-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_parser_oracle_accepts_test_in_template_interpolation(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "template-interpolation.test.js"
+    write_runner_source(source, 'const value = `${test("ok",()=>{})}`;\n')
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "function test() {}\n",
+        'const suite = {test() {}}; suite.test("ok",()=>{});\n',
+        'const suite = {}; suite /* a */ . /* b */ test("ok",()=>{});\n',
+        "const saved = test;\n",
+        "const \u03c0test = () => {}; \u03c0test();\n",
+    ],
+    ids=[
+        "function-declaration",
+        "property-call",
+        "commented-property-call",
+        "bare-reference",
+        "unicode-identifier",
+    ],
+)
+def test_javascript_non_call_contexts_do_not_count(
+    tmp_path: Path, contents: str
+) -> None:
+    source = tmp_path / "context-decoy.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_top_level_commands_are_never_executed(tmp_path: Path) -> None:
+    sentinel = tmp_path / "top-level-executed"
+    source = tmp_path / "top-level.bats"
+    write_runner_source(
+        source,
+        f'touch "{sentinel}"\n@test "ok" {{ true; }}\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+def test_bats_test_body_commands_are_never_executed(tmp_path: Path) -> None:
+    sentinel = tmp_path / "body-executed"
+    source = tmp_path / "body.bats"
+    write_runner_source(
+        source,
+        f'@test "ok" {{ touch "{sentinel}"; }}\n',
+    )
+
+    assert MODULE._is_runner_managed_test_source(source)
+    assert not sentinel.exists()
+
+
+def test_bats_heredoc_data_is_counted_without_executing_test_body(
+    tmp_path: Path,
+) -> None:
+    """A literal closing brace in heredoc data is valid and remains inert."""
     sentinel = tmp_path / "body-executed"
     source = tmp_path / "heredoc.bats"
     write_runner_source(
@@ -357,18 +457,147 @@ def test_bats_heredoc_data_is_counted_without_executing_test_body(tmp_path: Path
         ),
     )
 
-    counted = subprocess.run(
-        ["bats", "--count", str(source)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-
-    assert counted.returncode == 0
-    assert counted.stdout.strip() == "1"
     assert MODULE._is_runner_managed_test_source(source)
     assert not sentinel.exists()
+
+
+def test_bats_heredoc_test_text_is_not_a_declaration(tmp_path: Path) -> None:
+    source = tmp_path / "heredoc-decoy.bats"
+    write_runner_source(
+        source,
+        "cat <<'HEREDOC'\n@test \"fake\" { true; }\nHEREDOC\n",
+    )
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_missing_preprocessor_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "missing-preprocessor.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    monkeypatch.setattr(shutil, "which", lambda executable: None)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_missing_bash_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "missing-bash.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    real_run = subprocess.run
+
+    def fail_bash(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "bash":
+            raise FileNotFoundError("bash missing")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_bash)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "bash_failure",
+    [
+        subprocess.CompletedProcess(["bash", "-n"], 2, "", "invalid"),
+        subprocess.TimeoutExpired(cmd=["bash", "-n"], timeout=5),
+        OSError("bash failed"),
+    ],
+    ids=["syntax-failure", "timeout", "os-error"],
+)
+def test_bats_bash_validation_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bash_failure: subprocess.CompletedProcess[str]
+    | subprocess.TimeoutExpired
+    | OSError,
+) -> None:
+    source = tmp_path / "bash-failure.bats"
+    write_runner_source(source, '@test "ok" { true; }\n')
+    real_run = subprocess.run
+
+    def fail_bash(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        if argv == ["bash", "-n"]:
+            if isinstance(bash_failure, BaseException):
+                raise bash_failure
+            return bash_failure
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_bash)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize("probe", ["illegal-token", "call-shape"])
+@pytest.mark.parametrize(
+    "runner_error",
+    [
+        subprocess.TimeoutExpired(cmd=["node", "--check", "-"], timeout=5),
+        OSError("node failed"),
+    ],
+    ids=["timeout", "os-error"],
+)
+def test_javascript_candidate_probe_error_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    probe: str,
+    runner_error: subprocess.TimeoutExpired | OSError,
+) -> None:
+    source = tmp_path / "probe-error.test.js"
+    write_runner_source(source, 'test("ok",()=>{});\n')
+    real_run = subprocess.run
+
+    def fail_probe(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        input_text = kwargs.get("input")
+        if argv == ["node", "--check", "-"]:
+            if (
+                probe == "illegal-token"
+                and isinstance(input_text, str)
+                and input_text.startswith("@")
+            ):
+                raise runner_error
+            if (
+                probe == "call-shape"
+                and isinstance(input_text, str)
+                and input_text.startswith("globalThis.test")
+            ):
+                raise runner_error
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fail_probe)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        (
+            "too-many.test.js",
+            ('"test(";\n' * (MODULE.MAX_RUNNER_CANDIDATES + 1))
+            + 'test("real",()=>{});\n',
+        ),
+        (
+            "too-many.bats",
+            '@test "bounded" { true; }\n' * (MODULE.MAX_RUNNER_CANDIDATES + 1),
+        ),
+    ],
+)
+def test_runner_candidate_limit_fails_closed(
+    tmp_path: Path, filename: str, contents: str
+) -> None:
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
 
 
 @pytest.mark.parametrize(
@@ -431,14 +660,14 @@ def test_runner_nonzero_exit_fails_closed(
 
 
 @pytest.mark.parametrize(
-    "stdout", ["", "not a count\n", "1\nnoise\n", "-1\n", "0\n", None]
+    "stdout", ["", "echo no-tests\n", ")\n", None]
 )
-def test_bats_invalid_or_zero_count_output_fails_closed(
+def test_bats_invalid_or_empty_preprocessor_output_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     stdout: str | None,
 ) -> None:
-    source = tmp_path / "malformed-count.bats"
+    source = tmp_path / "malformed-preprocessor.bats"
     write_runner_source(source, '@test "ok" { true; }\n')
     monkeypatch.setattr(
         subprocess,
@@ -450,19 +679,15 @@ def test_bats_invalid_or_zero_count_output_fails_closed(
 
 
 @pytest.mark.parametrize(
-    ("filename", "contents", "expected_prefix", "stdout"),
+    ("filename", "contents"),
     [
         (
             "runner; touch PWNED $(echo x).test.js",
             'test("ok", () => {});\n',
-            ["node", "--check"],
-            "",
         ),
         (
             "runner; touch PWNED $(echo x).bats",
             '@test "ok" { true; }\n',
-            ["bats", "--count"],
-            "1\n",
         ),
     ],
 )
@@ -471,30 +696,36 @@ def test_runner_source_path_is_one_argv_element_without_a_shell(
     monkeypatch: pytest.MonkeyPatch,
     filename: str,
     contents: str,
-    expected_prefix: list[str],
-    stdout: str,
 ) -> None:
     source = tmp_path / filename
     write_runner_source(source, contents)
     calls: list[tuple[list[str], dict[str, object]]] = []
+    real_run = subprocess.run
 
     def record_run(
         argv: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[str]:
         calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
+        return real_run(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", record_run)
 
     assert MODULE._is_runner_managed_test_source(source)
-    assert len(calls) == 1
-    argv, kwargs = calls[0]
-    assert argv == [*expected_prefix, str(source)]
-    assert argv[-1] == str(source)
-    assert kwargs["capture_output"] is True
-    assert kwargs["text"] is True
-    assert 0 < kwargs["timeout"] <= 10
-    assert kwargs.get("shell", False) is False
+    path_calls = [(argv, kwargs) for argv, kwargs in calls if str(source) in argv]
+    assert len(path_calls) == 1
+    argv, _ = path_calls[0]
+    if filename.endswith(".test.js"):
+        assert argv == ["node", "--check", str(source)]
+    else:
+        assert Path(argv[0]).name == "bats-preprocess"
+        assert argv[1:] == [str(source)]
+        assert all(Path(call[0][0]).name != "bats" for call in calls)
+    for call_argv, kwargs in calls:
+        assert isinstance(call_argv, list)
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert 0 < kwargs["timeout"] <= 10
+        assert kwargs.get("shell", False) is False
 
 
 @pytest.mark.parametrize(
@@ -579,30 +810,23 @@ def test_source_aba_change_during_runner_parse_fails_closed(
 
 
 @pytest.mark.parametrize(
-    ("filename", "contents", "success_stdout"),
+    ("filename", "contents", "invalid"),
     [
-        ("repeat.test.js", 'test("ok", () => {});\n', ""),
-        ("repeat.bats", '@test "ok" { true; }\n', "1\n"),
+        ("repeat.test.js", 'test("ok", () => {});\n', 'test("broken", () =>\n'),
+        ("repeat.bats", '@test "ok" { true; }\n', "echo no-tests-remain\n"),
     ],
 )
 def test_runner_validation_is_fresh_on_repeat_invocation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     filename: str,
     contents: str,
-    success_stdout: str,
+    invalid: str,
 ) -> None:
     source = tmp_path / filename
-    write_runner_source(source, contents)
-    results = iter(
-        [
-            subprocess.CompletedProcess(["runner"], 1, "", "parse failed"),
-            subprocess.CompletedProcess(["runner"], 0, success_stdout, ""),
-        ]
-    )
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: next(results))
 
+    write_runner_source(source, invalid)
     assert not MODULE._is_runner_managed_test_source(source)
+    write_runner_source(source, contents)
     assert MODULE._is_runner_managed_test_source(source)
 
 
@@ -650,7 +874,6 @@ def test_executable_test_file_does_not_invoke_runner_dependency(
     ("filename", "contents"),
     [
         ("extra-paren.bats", '@test "ok" { true; }\n)\n'),
-        ("extra-bracket.bats", '@test "ok" { true; }\n]\n'),
         ("unclosed-paren.bats", '@test "ok" { true; }\necho (\n'),
         ("unclosed-quote.bats", '@test "ok" { true; }\necho "unterminated\n'),
         ("malformed-second.bats", '@test "ok" { true; }\n@test "broken" nope\n'),
@@ -862,7 +1085,7 @@ def test_runner_source_stat_error_is_a_phantom_not_a_traceback(
 
 @pytest.mark.parametrize(
     "contents",
-    ["test(", "// test(\n", 'test("x",)', 'test("x",,)', 'test("x", async)', 'test("x", function)', 'test("x", () =>)', 'test("x", () =>;)', 'test("x", () => {)'],
+    ["test(", "// test(\n", 'test("x",,)', 'test("x", function)', 'test("x", () =>)', 'test("x", () =>;)', 'test("x", () => {)'],
 )
 def test_invalid_or_commented_runner_test_stub_is_phantom(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contents: str

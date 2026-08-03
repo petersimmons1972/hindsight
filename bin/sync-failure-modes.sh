@@ -24,6 +24,43 @@ die() {
   exit 2
 }
 
+# Print the only filesystem path this tool is allowed to write for a consumer.
+# realpath -m follows existing ancestors (including links) while allowing the
+# leaf to be absent, so a link anywhere below the consumer root is detected.
+contained_target() {
+  local project="$1" root intended resolved
+  intended="$project/$TARGET_REL"
+  root="$(realpath -- "$project")" || {
+    printf 'ERROR: cannot resolve consumer root: %s\n' "$project" >&2
+    return 1
+  }
+  resolved="$(realpath -m -- "$intended")" || {
+    printf 'ERROR: cannot resolve target: intended=%s\n' "$intended" >&2
+    return 1
+  }
+  if [ "$resolved" != "$root/$TARGET_REL" ]; then
+    printf 'ERROR: target escapes consumer root: intended=%s resolved=%s root=%s\n' \
+      "$intended" "$resolved" "$root" >&2
+    return 1
+  fi
+  printf '%s\n' "$resolved"
+}
+
+restore_backup_atomically() {
+  local backup="$1" target="$2" parent temp
+  parent="$(dirname "$target")"
+  mkdir -p -- "$parent" || die "cannot create undo target directory: $parent"
+  temp="$(mktemp "$parent/.hindsight-sync-undo.XXXXXX")" || die "cannot create undo temp file: $parent"
+  if ! cp --no-dereference -- "$backup" "$temp"; then
+    rm -f -- "$temp"
+    die "cannot restore undo backup: $backup"
+  fi
+  if ! mv -T -- "$temp" "$target"; then
+    rm -f -- "$temp"
+    die "cannot install undo backup: $target"
+  fi
+}
+
 mode=dry-run
 consumers=''
 undo=''
@@ -71,9 +108,11 @@ restore_journal() {
         ;;
       untracked|tracked+hash:*|tracked+link)
         { [ -e "$backup" ] || [ -L "$backup" ]; } || die "undo backup missing for: $target"
-        mkdir -p -- "$(dirname "$target")"
-        rm -f -- "$target"
-        cp --no-dereference -- "$backup" "$target"
+        restore_backup_atomically "$backup" "$target"
+        ;;
+      invalid|directory)
+        # These entries were refused before any write, so undo must not alter
+        # them; retaining rows keeps the pre-write journal complete.
         ;;
       *) die "unknown undo state '$state' for: $target" ;;
     esac
@@ -119,24 +158,31 @@ if [ "$mode" = apply ]; then
   for project in "${projects[@]}"; do
     target="$project/$TARGET_REL"
     backup='-'
-    if [ -e "$target" ] || [ -L "$target" ]; then
-      if [ -L "$target" ]; then
-        if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
-          state=tracked+link
-        else
-          state=untracked
-        fi
-      elif git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
-        state="tracked+hash:$(sha256sum "$target" | awk '{print $1}')"
+    resolved_target=''
+    if [ -L "$target" ]; then
+      if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
+        state=tracked+link
       else
         state=untracked
       fi
       backup="$journal_dir/$index.before"
       cp --no-dereference -- "$target" "$backup"
+    elif ! resolved_target="$(contained_target "$project")"; then
+      state=invalid
+    elif [ -d "$resolved_target" ]; then
+      state=directory
+    elif [ -e "$resolved_target" ] || [ -L "$resolved_target" ]; then
+      if git -C "$project" ls-files --error-unmatch -- "$TARGET_REL" >/dev/null 2>&1; then
+        state="tracked+hash:$(sha256sum "$resolved_target" | awk '{print $1}')"
+      else
+        state=untracked
+      fi
+      backup="$journal_dir/$index.before"
+      cp --no-dereference -- "$resolved_target" "$backup"
     else
       state=absent
     fi
-    printf '%s\t%s\t%s\n' "$target" "$state" "$backup" >>"$journal"
+    printf '%s\t%s\t%s\n' "${resolved_target:-$target}" "$state" "$backup" >>"$journal"
     index=$((index + 1))
   done
   printf 'UNDO JOURNAL: %s\n' "$journal" >&2
@@ -164,32 +210,65 @@ for project in "${projects[@]}"; do
     failed=$((failed + 1))
     continue
   fi
-  if [ -e "$target" ] && ! grep -Fqx "$OWNERSHIP_MARKER" "$target"; then
+  if ! resolved_target="$(contained_target "$project")"; then
+    failed=$((failed + 1))
+    continue
+  fi
+  if [ -d "$resolved_target" ]; then
+    printf 'FAIL: %s (directory target: %s)\n' "$project" "$resolved_target" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if [ -e "$resolved_target" ]; then
+    link_count="$(stat -c %h -- "$resolved_target")" || {
+      printf 'FAIL: %s (cannot inspect target link count)\n' "$project" >&2
+      failed=$((failed + 1))
+      continue
+    }
+    if [ "$link_count" -gt 1 ]; then
+      printf 'FAIL: %s (hardlinked target: %s, links=%s)\n' "$project" "$resolved_target" "$link_count" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+  fi
+  if [ -e "$resolved_target" ] && ! grep -Fqx "$OWNERSHIP_MARKER" "$resolved_target"; then
     printf 'FAIL: %s (refusing foreign target)\n' "$project" >&2
     failed=$((failed + 1))
     continue
   fi
-  if [ -f "$target" ] && cmp -s "$expected" "$target"; then
+  if [ -f "$resolved_target" ] && cmp -s "$expected" "$resolved_target"; then
     printf 'UNCHANGED: %s\n' "$project" >&2
     unchanged=$((unchanged + 1))
     continue
   fi
   if [ "$mode" = dry-run ]; then
-    printf 'WOULD UPDATE: %s -> %s\n' "$project" "$TARGET_REL" >&2
+    printf 'WOULD UPDATE: %s -> %s\n' "$project" "$resolved_target" >&2
     succeeded=$((succeeded + 1))
     continue
   fi
-  if ! mkdir -p -- "$(dirname "$target")"; then
+  target_dir="$(dirname "$resolved_target")"
+  if ! mkdir -p -- "$target_dir"; then
     printf 'FAIL: %s (cannot create target directory)\n' "$project" >&2
     failed=$((failed + 1))
     continue
   fi
-  if ! cp -- "$expected" "$target"; then
-    printf 'FAIL: %s (cannot write target)\n' "$project" >&2
+  if ! rechecked_target="$(contained_target "$project")" || [ "$rechecked_target" != "$resolved_target" ]; then
+    printf 'FAIL: %s (target changed before write)\n' "$project" >&2
     failed=$((failed + 1))
     continue
   fi
-  printf 'UPDATED: %s -> %s\n' "$project" "$TARGET_REL" >&2
+  if ! temp_target="$(mktemp "$target_dir/.hindsight-sync.XXXXXX")"; then
+    printf 'FAIL: %s (cannot create temporary target)\n' "$project" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if ! cp -- "$expected" "$temp_target" || ! mv -T -- "$temp_target" "$resolved_target"; then
+    rm -f -- "$temp_target"
+    printf 'FAIL: %s (cannot atomically write target)\n' "$project" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  printf 'UPDATED: %s -> %s\n' "$project" "$resolved_target" >&2
   succeeded=$((succeeded + 1))
 done
 

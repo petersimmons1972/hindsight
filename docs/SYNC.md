@@ -22,17 +22,20 @@ disposable fixtures during development:
 bash bin/sync-failure-modes.sh --apply --consumers /tmp/consumers.conf
 ```
 
-Each consumer receives a namespaced copy at
-`docs/vendor/hindsight/failure-modes.md`, never at a bare `docs/` path.  An
-existing target without the Hindsight ownership marker is refused rather than
-overwritten.
+Each consumer receives a namespaced copy only when its resolved destination is
+exactly beneath that consumer's resolved root at
+`docs/vendor/hindsight/failure-modes.md`; a symlink in any ancestor that would
+escape that path is refused in both dry-run and apply modes. An existing target
+without the Hindsight ownership marker is refused rather than overwritten.
 
 Before its first write, an apply run creates an undo journal and prints its
 path on stderr. The journal records every target's prior state (`absent`,
-`untracked`, `tracked+hash`, or `tracked+link`) and keeps a backup for every
-existing filesystem entry, including dangling symbolic links. `--undo` restores
-the recorded target entry exactly. Apply refuses a symbolic-link target rather
-than writing through it; the journal still preserves that link for undo.
+`untracked`, `tracked+hash`, `tracked+link`, `directory`, or `invalid`) and
+keeps a backup for every existing filesystem entry, including dangling symbolic
+links. `--undo` restores backed-up entries with an atomic replacement and
+leaves refused directory or invalid entries untouched. Apply refuses symbolic
+links, hardlinked files, directories, and any resolved target that escapes its
+consumer root; the journal still preserves a refused leaf link for undo.
 
 Restore the recorded target entries with:
 

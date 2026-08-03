@@ -249,3 +249,159 @@ write_owned_copy() {
   [ ! -L "$target" ]
   [ "$(file_hash "$target")" = "$before" ]
 }
+
+@test "symlinked ancestors are refused in apply and dry-run without changing outside files" {
+  local repo outside form depth target before relative_target
+  for form in absolute relative; do
+    for depth in vendor hindsight; do
+      repo="$(make_repo "ancestor-$form-$depth")"
+      outside="$WORK/outside-$form-$depth"
+      mkdir -p "$outside"
+      if [ "$depth" = vendor ]; then
+        mkdir -p "$repo/docs"
+        mkdir -p "$outside/hindsight"
+        target="$outside/hindsight/failure-modes.md"
+        if [ "$form" = absolute ]; then
+          ln -s "$outside" "$repo/docs/vendor"
+        else
+          relative_target="$(realpath --relative-to="$repo/docs" "$outside")"
+          ln -s "$relative_target" "$repo/docs/vendor"
+        fi
+      else
+        mkdir -p "$repo/docs/vendor"
+        target="$outside/failure-modes.md"
+        if [ "$form" = absolute ]; then
+          ln -s "$outside" "$repo/docs/vendor/hindsight"
+        else
+          relative_target="$(realpath --relative-to="$repo/docs/vendor" "$outside")"
+          ln -s "$relative_target" "$repo/docs/vendor/hindsight"
+        fi
+      fi
+      printf '%s\n' "outside-$form-$depth" >"$target"
+      before="$(file_hash "$target")"
+
+      run bash "$TOOL" --consumers "$CONSUMERS"
+      [ "$status" -ne 0 ]
+      [[ "$output" == *"intended="* ]]
+      [[ "$output" == *"resolved="* ]]
+      [ "$(file_hash "$target")" = "$before" ]
+
+      run bash "$TOOL" --apply --consumers "$CONSUMERS"
+      [ "$status" -ne 0 ]
+      [[ "$output" == *"intended="* ]]
+      [[ "$output" == *"resolved="* ]]
+      [ "$(file_hash "$target")" = "$before" ]
+    done
+  done
+}
+
+@test "a git-tracked symlinked ancestor is refused without changing its outside file" {
+  local repo outside target before
+  repo="$(make_repo tracked-ancestor)"
+  outside="$WORK/tracked-outside"
+  mkdir -p "$repo/docs" "$outside/hindsight"
+  printf '%s\n' outside >"$outside/hindsight/failure-modes.md"
+  before="$(file_hash "$outside/hindsight/failure-modes.md")"
+  ln -s "$outside" "$repo/docs/vendor"
+  git -C "$repo" add docs/vendor
+  git -C "$repo" commit -qm tracked-link
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"intended="* ]]
+  [ "$(file_hash "$outside/hindsight/failure-modes.md")" = "$before" ]
+}
+
+@test "a hardlinked owned target is refused without changing its outside inode" {
+  local repo target outside before
+  repo="$(make_repo hardlink)"
+  target="$(target_for "$repo")"
+  outside="$WORK/outside-hardlink.md"
+  mkdir -p "$(dirname "$target")"
+  printf '%s\n%s\n' "$OWNERSHIP_MARKER" outside >"$outside"
+  ln "$outside" "$target"
+  before="$(file_hash "$outside")"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"hardlinked target"* ]]
+  [ "$(file_hash "$outside")" = "$before" ]
+}
+
+@test "a directory target fails cleanly and leaves a usable journal for other consumers" {
+  local healthy directory healthy_target before journal
+  healthy="$(make_repo healthy-before-directory)"
+  directory="$(make_repo directory-target)"
+  healthy_target="$(target_for "$healthy")"
+  mkdir -p "$(dirname "$healthy_target")" "$(target_for "$directory")"
+  printf '%s\n%s\n' "$OWNERSHIP_MARKER" old >"$healthy_target"
+  before="$(file_hash "$healthy_target")"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"directory target"* ]]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  [ -f "$journal" ]
+  run bash "$TOOL" --undo "$journal"
+  [ "$status" -eq 0 ]
+  [ "$(file_hash "$healthy_target")" = "$before" ]
+}
+
+@test "a tracked symlink target is journaled as tracked+link and restored exactly" {
+  local repo target destination journal
+  repo="$(make_repo tracked-leaf-link)"
+  target="$(target_for "$repo")"
+  destination="$WORK/tracked-link-destination"
+  mkdir -p "$(dirname "$target")"
+  ln -s "$destination" "$target"
+  git -C "$repo" add docs/vendor/hindsight/failure-modes.md
+  git -C "$repo" commit -qm tracked-link
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  grep -Fq $'tracked+link\t' "$journal"
+  run bash "$TOOL" --undo "$journal"
+  [ "$status" -eq 0 ]
+  [ -L "$target" ]
+  [ "$(readlink "$target")" = "$destination" ]
+}
+
+@test "a first sync creates a previously absent target" {
+  local repo target
+  repo="$(make_repo first-sync)"
+  target="$(target_for "$repo")"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+
+  [ "$status" -eq 0 ]
+  [ -f "$target" ]
+  grep -Fqx "$OWNERSHIP_MARKER" "$target"
+}
+
+@test "a failed undo copy leaves the current target intact" {
+  local repo target before current journal
+  repo="$(make_repo undo-copy-failure)"
+  target="$(target_for "$repo")"
+  mkdir -p "$(dirname "$target")" "$WORK/fakebin"
+  printf '%s\n%s\n' "$OWNERSHIP_MARKER" old >"$target"
+  before="$(file_hash "$target")"
+
+  run bash "$TOOL" --apply --consumers "$CONSUMERS"
+  [ "$status" -eq 0 ]
+  current="$(file_hash "$target")"
+  [ "$current" != "$before" ]
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO JOURNAL: //p' | head -n 1)"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$WORK/fakebin/cp"
+  chmod +x "$WORK/fakebin/cp"
+
+  run env PATH="$WORK/fakebin:$PATH" bash "$TOOL" --undo "$journal"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cannot restore undo backup"* ]]
+  [ "$(file_hash "$target")" = "$current" ]
+}

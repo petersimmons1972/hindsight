@@ -35,6 +35,8 @@ jobs:
         run: python3 guard/failure_mode_catalog_guard.py
       - name: Run Python tests
         run: python3 -m pytest guard/tests/ pipeline/tests/ -q
+      - name: Replay committed L2 offline
+        run: python3 pipeline/replay_l2.py
       - name: Run bats tests
         run: bats guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)

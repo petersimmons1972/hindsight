@@ -56,6 +56,12 @@ def write_executable(path: Path) -> None:
     path.chmod(0o755)
 
 
+def write_runner_source(path: Path, contents: str) -> None:
+    """Write a deliberately non-executable source file for a managed runner."""
+    path.write_text(contents, encoding="utf-8")
+    path.chmod(0o664)
+
+
 def run_verifier(
     monkeypatch: pytest.MonkeyPatch,
     l1_dir: Path,
@@ -181,6 +187,86 @@ def test_non_executable_runner_managed_test_source_is_plausible(
 
     assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
     assert "phantom:" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("test_feature.py", "def test_feature():\n    assert True\n"),
+        ("test_async.py", "async def test_feature():\n    assert True\n"),
+        ("test_class.py", "class TestFeature:\n    async def test_feature(self):\n        assert True\n"),
+        ("feature.bats", '@test "feature works" {\n  run true\n  [ "$status" -eq 0 ]\n}\n'),
+    ],
+)
+def test_non_executable_structurally_valid_runner_sources_are_plausible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    filename: str,
+    contents: str,
+) -> None:
+    """Mode-0664 Pytest and Bats sources are runner inputs, not inert stubs.
+
+    This restores the old Pytest-positive direction that origin/main accepted
+    before the executable-only predicate was introduced.
+    """
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    runner_source = repo / filename
+    write_runner_source(runner_source, contents)
+    assert runner_source.stat().st_mode & 0o777 == 0o664
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("runner-test", {"file": filename, "kind": "test"}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    assert "phantom:" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("test_decoy.py", "# def test_comment():\npass\n"),
+        ("test_decoy.py", '"def test_string(): pass"\n'),
+        ("test_decoy.py", "test_name = True\n"),
+        ("test_decoy.py", "def test_broken(:\n    pass\n"),
+        ("test_decoy.py", "class TestOnly:\n    pass\n"),
+        ("decoy.bats", "# @test \"commented\" { true; }\n"),
+        ("decoy.bats", 'echo "@test \\\"string\\\" { true; }"\n'),
+        ("decoy.bats", '@test "unterminated" {\n  true\n'),
+        ("decoy.bats", '@test "empty" {\n  # decoy\n}\n'),
+        ("decoy.bats", "decoy\n"),
+    ],
+)
+def test_invalid_non_executable_runner_sources_are_phantoms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, contents: str
+) -> None:
+    """Suffixes, comments, strings, and substrings cannot establish a runner contract."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    write_runner_source(repo / filename, contents)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(l1_dir, "sample", machine_record("decoy", {"file": filename, "kind": "test"}))
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+
+
+def test_runner_source_predicate_rejects_suffix_and_substring_only_mutants(tmp_path: Path) -> None:
+    """Mutation evidence: neither an allowed suffix nor a test substring is sufficient."""
+    suffix_only = tmp_path / "test_suffix.py"
+    substring_only = tmp_path / "not_a_test.txt"
+    write_runner_source(suffix_only, "decoy\n")
+    write_runner_source(substring_only, "def test_but_wrong_suffix():\n    assert True\n")
+
+    assert not MODULE._is_runner_managed_test_source(suffix_only)
+    assert not MODULE._is_runner_managed_test_source(substring_only)
 
 
 @pytest.mark.parametrize(

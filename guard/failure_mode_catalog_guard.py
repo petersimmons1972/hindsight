@@ -9,6 +9,7 @@ as unbacked must remain visible without being treated as build failures.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import stat
@@ -26,6 +27,148 @@ HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
 
 
 def _is_runner_managed_test_source(path: Path) -> bool:
+    """Recognize bounded, structurally valid non-executable runner sources.
+
+    A runner may execute its source input without an execute bit. Accepted
+    shapes are Pytest ``.py`` modules, Bats ``.bats`` files, and JavaScript
+    ``*.test.js`` files. Each format uses a structural probe, never a suffix
+    or substring alone.
+    """
+    if not path.is_file():
+        return False
+    if path.suffix == ".py":
+        return _is_pytest_source(path)
+    if path.suffix == ".bats":
+        return _is_bats_source(path)
+    if path.name.endswith(".test.js"):
+        return _is_javascript_test_source(path)
+    return False
+
+
+def _is_pytest_source(path: Path) -> bool:
+    """Accept Python only when its AST contains an actual Pytest test node."""
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return False
+
+    def is_test_function(node: ast.stmt) -> bool:
+        return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_")
+
+    return any(
+        is_test_function(node)
+        or (
+            isinstance(node, ast.ClassDef)
+            and node.name.startswith("Test")
+            and any(is_test_function(child) for child in node.body)
+        )
+        for node in module.body
+    )
+
+
+def _is_bats_source(path: Path) -> bool:
+    """Recognize a line-start ``@test \"name\" { command }`` Bats block.
+
+    This intentionally small lexer skips shell comments and quoted strings so
+    decorative ``@test`` text cannot become enforcement evidence. A valid
+    block must close all braces and contain a non-comment command token.
+    """
+    try:
+        source = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+    def skip_quoted(index: int) -> int | None:
+        quote = source[index]
+        index += 1
+        while index < len(source):
+            if source[index] == "\\":
+                index += 2
+            elif source[index] == quote:
+                return index + 1
+            else:
+                index += 1
+        return None
+
+    index = 0
+    line_start = True
+    while index < len(source):
+        char = source[index]
+        if char == "#":
+            newline = source.find("\n", index + 1)
+            if newline == -1:
+                return False
+            index = newline + 1
+            line_start = True
+            continue
+        if char in "'\"":
+            end = skip_quoted(index)
+            if end is None:
+                return False
+            line_start = False
+            index = end
+            continue
+        if char == "\n":
+            line_start = True
+            index += 1
+            continue
+        if char.isspace():
+            index += 1
+            continue
+        if not (line_start and source.startswith("@test", index)):
+            line_start = False
+            index += 1
+            continue
+        after_marker = index + len("@test")
+        if after_marker == len(source) or not source[after_marker].isspace():
+            line_start = False
+            index += 1
+            continue
+        index = after_marker
+        while index < len(source) and source[index].isspace():
+            index += 1
+        if index == len(source) or source[index] not in "'\"":
+            return False
+        index = skip_quoted(index)
+        if index is None:
+            return False
+        while index < len(source) and source[index].isspace():
+            index += 1
+        if index == len(source) or source[index] != "{":
+            return False
+        depth = 1
+        has_command = False
+        index += 1
+        while index < len(source):
+            char = source[index]
+            if char == "#":
+                newline = source.find("\n", index + 1)
+                if newline == -1:
+                    return False
+                index = newline + 1
+                continue
+            if char in "'\"":
+                end = skip_quoted(index)
+                if end is None:
+                    return False
+                index = end
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return has_command
+                if depth < 0:
+                    return False
+            elif not char.isspace() and char not in ";":
+                has_command = True
+            index += 1
+        return False
+    return False
+
+
+def _is_javascript_test_source(path: Path) -> bool:
     """Parse the supported non-executable JavaScript test-source shape.
 
     The fleet runner imports ``*.test.js`` files, so they need not be
@@ -35,9 +178,6 @@ def _is_runner_managed_test_source(path: Path) -> bool:
     It skips JavaScript comments and quoted strings while scanning, which keeps
     ``test(`` and ``// test(`` stubs from becoming enforcement evidence.
     """
-    if not path.is_file() or not path.name.endswith(".test.js"):
-        return False
-
     source = path.read_text(encoding="utf-8")
     tokens: list[tuple[str, str]] = []
     index = 0
@@ -491,8 +631,8 @@ def verify_enforcement(
 
     A resolved path establishes only that a claimed mechanism still exists.
     A ``hook`` must be a regular executable file. A ``test`` must be regular
-    and executable, except for runner-managed ``*.test.js`` sources containing
-    a test declaration. A present, non-executable stub is a phantom. The
+    and executable, except for a bounded runner-managed Pytest, Bats, or
+    ``*.test.js`` source shape. A present, non-executable stub is a phantom. The
     verifier intentionally makes no broader claim that a plausible file
     enforces its recorded lesson.
     """
@@ -660,8 +800,8 @@ def print_enforcement_report(report: EnforcementReport) -> None:
 
     print(
         "enforcement-verifier: SCOPE: checks containment and existence; hooks and tests must be "
-        "regular executable files, except runner-managed *.test.js sources with a balanced "
-        "test(name, body) call. A plausible path is necessary, not sufficient evidence that it "
+        "regular executable files, except structurally valid runner-managed Pytest (.py), Bats "
+        "(.bats), or *.test.js sources. A plausible path is necessary, not sufficient evidence that it "
         "enforces the claimed lesson. "
         "UNVERIFIABLE entries were not checked at all -- they are neither enforced nor phantom.",
         file=sys.stderr,

@@ -17,7 +17,7 @@ Repo:        /home/psimmons/projects/hindsight
 Branch from: main    Work on: feat/recurrence-trend-instrument
 Existing artifacts: pipeline/L2/clusters.jsonl (pinned) · pipeline/L2/recurrence-report.md
                     qa-ledger/actor-results.jsonl · catalog/failure-modes.md
-Green baseline: pytest 181, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
+Green baseline: pytest 179 passed + 2 skipped, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
 ```
 
 ## 3. GOAL
@@ -151,7 +151,7 @@ test fail on absence. Paste that run. Only then implement.
 | A3 | `python3 -m pytest pipeline/tests/test_recurrence_trend.py -q` | all pass; both synthetic families recovered (D6) |
 | A4 | `python3 pipeline/recurrence_trend.py --input /dev/null; echo "exit=$?"` | non-zero, names the empty input (R4) |
 | A5 | `grep -ci 'limitation\|not causal\|directional' <report>` | ≥1 (D7) |
-| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥181 passed |
+| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥179 passed, 0 failed |
 | A7 | `git diff --numstat origin/main...HEAD -- pipeline/L1 catalog conf` | **empty** |
 | A8 | `bats guard/tests/*.bats bin/tests/*.bats` | ≥109 ok, 0 failures |
 

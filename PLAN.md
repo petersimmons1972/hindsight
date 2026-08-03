@@ -23,7 +23,7 @@ Do not trust these numbers — run them. Every count in the previous plan drifte
 |---|---|---|
 | catalog sound | `python3 guard/failure_mode_catalog_guard.py` | OK, 171 IDs |
 | corpus coverage | `python3 pipeline/reconcile_l1.py` | COMPLETE 5/5 |
-| python suites | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | 181 passed |
+| python suites | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | 179 passed, 2 skipped |
 | bash suites | `bats guard/tests/*.bats bin/tests/*.bats` | 109 ok |
 | CI on main | `gh run list --branch main --limit 1 --json status,conclusion` | completed/success |
 

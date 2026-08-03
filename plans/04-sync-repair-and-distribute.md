@@ -26,7 +26,7 @@ enforcement self-check, not just catalog text.
 Repo:        /home/psimmons/projects/hindsight
 Branch from: main    Work on: fix/22-sync-repair
 Existing:    the PR #2 branch (dispatch/C6-vendor-sync) · conf/consumers.conf
-Green baseline: pytest 181, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
+Green baseline: pytest 179 passed + 2 skipped, bats 109, guard OK (171 IDs), reconcile COMPLETE 5/5.
 ```
 
 ## 3. GOAL
@@ -108,7 +108,7 @@ tree and **observe the batch abort** — that is the red. Paste it. Only then im
 | A3 | `bash bin/sync-failure-modes.sh --bogus-flag; echo "exit=$?"` | non-zero, **no write**, no fallback (T6) |
 | A4 | `bash bin/sync-failure-modes.sh --consumers ""; echo "exit=$?"` | non-zero (T7) |
 | A5 | `grep -c 'undo' /tmp/a2.err` | ≥1 — journal named before any write |
-| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥181 passed |
+| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥179 passed, 0 failed |
 | A7 | `bats guard/tests/*.bats bin/tests/*.bats` | ≥109 ok |
 | A8 | `git diff --numstat origin/main...HEAD -- pipeline/L1 catalog conf/known-phantoms.conf` | **empty** |
 

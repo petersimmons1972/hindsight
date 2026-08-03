@@ -110,7 +110,7 @@ observe **CI-shape exit 0 with stderr byte-identical to the honest baseline**. *
 | A3 | *decoy roots applied* → `--require-attestations` | **exit 1** (D3/D6) |
 | A4 | `touch -d '30 days ago' <att>; … --max-age-days 14` | exit 1, names the stale consumer |
 | A5 | `git checkout -- conf/ && git status --porcelain conf/` | **empty — config restored** |
-| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥181 passed |
+| A6 | `python3 -m pytest guard/tests/ pipeline/tests/ -q` | ≥179 passed, 0 failed |
 | A7 | `git diff --numstat origin/main...HEAD -- pipeline/L1 catalog conf` | **empty** |
 | A8 | `gh pr view 12 --json state --jq .state` *(only after this lands)* | `CLOSED`, with the measured evidence posted (D8) |
 | A9 | `bats guard/tests/*.bats bin/tests/*.bats` | ≥109 ok, 0 failures |

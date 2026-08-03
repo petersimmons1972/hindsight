@@ -10,6 +10,7 @@ readonly CATALOG="$REPO_ROOT/catalog/failure-modes.md"
 readonly TARGET_REL="docs/vendor/hindsight/failure-modes.md"
 readonly OWNERSHIP_MARKER='<!-- hindsight: vendored failure-mode catalog -->'
 readonly WRITE_HELPER="$SCRIPT_DIR/_sync_write.py"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python3 || true)}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -49,7 +50,7 @@ contained_target() {
 
 restore_backup_atomically() {
   local backup="$1" root="$2" mode="$3"
-  "$WRITE_HELPER" restore --root "$root" --source "$backup" --mode "$mode" || {
+  "$PYTHON_BIN" "$WRITE_HELPER" restore --root "$root" --source "$backup" --mode "$mode" || {
     printf 'ERROR: cannot restore undo backup: %s\n' "$backup" >&2
     return 1
   }
@@ -102,7 +103,7 @@ restore_journal() {
     fi
     case "$state" in
       absent)
-        "$WRITE_HELPER" remove --root "$root" || return 1
+        "$PYTHON_BIN" "$WRITE_HELPER" remove --root "$root" || return 1
         ;;
       untracked|tracked+hash:*|tracked+link)
         { [ -e "$backup" ] || [ -L "$backup" ]; } || die "undo backup missing for: $target"
@@ -128,6 +129,7 @@ fi
 [ -f "$consumers" ] || die "consumer list not found: $consumers"
 [ -s "$CATALOG" ] || die "canonical catalog not found or empty: $CATALOG"
 [ -x "$WRITE_HELPER" ] || die "descriptor-relative write helper is missing or not executable: $WRITE_HELPER"
+[ -n "$PYTHON_BIN" ] && [ -x "$PYTHON_BIN" ] || die "python3 interpreter is missing or not executable: ${PYTHON_BIN:-unset}"
 [ "$mode" = dry-run ] || [ -n "$consumers" ] || die '--apply requires --consumers'
 expected="$(mktemp "${TMPDIR:-/tmp}/hindsight-sync-expected.XXXXXX")"
 trap 'rm -f -- "$expected"' EXIT
@@ -297,7 +299,7 @@ for project in "${projects[@]}"; do
   fi
   # DIRFD_WRITE_HOOK
   target_mode="$(stat -c %a -- "$resolved_target" 2>/dev/null || printf '644')"
-  if ! "$WRITE_HELPER" write --root "$(realpath -- "$project")" --source "$expected" --mode "$target_mode"; then
+  if ! "$PYTHON_BIN" "$WRITE_HELPER" write --root "$(realpath -- "$project")" --source "$expected" --mode "$target_mode"; then
     printf 'FAIL: %s (cannot atomically write target)\n' "$project" >&2
     failed=$((failed + 1))
     continue

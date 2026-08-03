@@ -1,4 +1,4 @@
-#!/home/linuxbrew/.linuxbrew/bin/python3
+#!/usr/bin/env python3
 """Descriptor-relative writes for sync-failure-modes.sh.
 
 All target traversal starts from a verified consumer-root directory descriptor.

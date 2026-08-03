@@ -51,6 +51,29 @@ file_hash() {
   sha256sum "$1" | awk '{print $1}'
 }
 
+@test "committed bin files do not use machine-specific Python interpreters" {
+  local file shebang
+  while IFS= read -r -d '' file; do
+    IFS= read -r shebang <"$file" || continue
+    [[ "$shebang" != *'/home/linuxbrew'* ]]
+    [[ "$shebang" != *'/usr/local/Cellar'* ]]
+    if [[ "$shebang" =~ ^#!.*python3 ]]; then
+      [ "$shebang" = '#!/usr/bin/env python3' ] || [ "$shebang" = '#!/usr/bin/python3' ]
+    fi
+  done < <(find "$ROOT/bin" -type f -print0)
+}
+
+@test "sync fails loudly when no python3 interpreter is resolvable" {
+  mkdir -p "$WORK/no-python"
+  : >"$CONSUMERS"
+  ln -s "$(command -v dirname)" "$WORK/no-python/dirname"
+
+  run env -u PYTHON_BIN PATH="$WORK/no-python" /usr/bin/bash "$TOOL" --consumers "$CONSUMERS"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"python3 interpreter"* ]]
+}
+
 write_owned_copy() {
   printf '%s\n' '<!-- hindsight: vendored failure-mode catalog -->' >"$1"
   cat "$SOURCE" >>"$1"

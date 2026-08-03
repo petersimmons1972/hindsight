@@ -134,6 +134,65 @@ def test_empty_input_fails_loudly_and_names_the_input(tmp_path: Path, capsys: py
     assert "DATED-BY-ANCHOR" not in err
 
 
+def test_directory_validation_error_preserves_every_file_byte_for_byte(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Directory mode validates every staged repair before replacing a file."""
+    env = Env(tmp_path)
+    env.conf.write_text("a:sample-root\n", encoding="utf-8")
+    _commit(env.source, "docs/source.md", "# source\n## Anchor\n", "2026-01-08T09:00:00+00:00")
+    early = env.l1 / "a.jsonl"
+    late = env.l1 / "z.jsonl"
+    early.write_text(json.dumps(_row("anchor", "Anchor")) + "\n", encoding="utf-8")
+    late.write_text('{"id":\n', encoding="utf-8")
+    original = {path: path.read_bytes() for path in (early, late)}
+
+    assert repair_first_seen.main(env.args(env.l1)) == 1
+
+    assert {path: path.read_bytes() for path in (early, late)} == original
+    err = capsys.readouterr().err
+    assert "invalid JSON" in err
+    assert "NOT MEASURED" in err
+
+
+def test_predated_row_with_resolvable_anchor_preserves_date_and_provenance(tmp_path: Path) -> None:
+    env = Env(tmp_path)
+    _commit(env.source, "docs/source.md", "# source\n## Anchor\n", "2026-01-08T09:00:00+00:00")
+    row = _row("predated-anchor", "Anchor", first_seen="2020-01-01")
+    row["first_seen_provenance"] = "historical-import"
+    target = env.target([row])
+
+    stats = repair_first_seen.repair_file(
+        target,
+        roots=repair_first_seen.parse_source_roots(env.conf.read_text()),
+        projects_dir=env.projects,
+        self_dir=env.hindsight,
+        hindsight_repo=env.hindsight,
+    )
+
+    assert stats == repair_first_seen.RepairStats()
+    assert _load(target)["predated-anchor"] == row
+
+
+def test_predated_row_with_resolvable_fallback_preserves_date_and_provenance(tmp_path: Path) -> None:
+    env = Env(tmp_path)
+    _commit(env.hindsight, "pipeline/L1/sample.jsonl", '{"id":"predated-fallback"}\n', "2026-03-03T12:00:00+00:00")
+    row = _row("predated-fallback", "Absent", first_seen="2020-01-01")
+    row["first_seen_provenance"] = "historical-import"
+    target = env.target([row])
+
+    stats = repair_first_seen.repair_file(
+        target,
+        roots=repair_first_seen.parse_source_roots(env.conf.read_text()),
+        projects_dir=env.projects,
+        self_dir=env.hindsight,
+        hindsight_repo=env.hindsight,
+    )
+
+    assert stats == repair_first_seen.RepairStats()
+    assert _load(target)["predated-fallback"] == row
+
+
 def test_withdrawn_reporting_surface_is_not_exported() -> None:
     withdrawn_names = (
         "Corpus" + "Measurement", "ARM_B_" + "FAMILIES", "COMPARATOR_" + "FAMILIES",

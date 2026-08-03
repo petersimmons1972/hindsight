@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,6 +112,26 @@ def repair_file(
     hindsight_repo: Path,
 ) -> RepairStats:
     """Date undated rows in ``path`` and fail loudly for invalid input."""
+    stats, output = _compute_repair(
+        path,
+        roots=roots,
+        projects_dir=projects_dir,
+        self_dir=self_dir,
+        hindsight_repo=hindsight_repo,
+    )
+    Path(path).write_text(output, encoding="utf-8")
+    return stats
+
+
+def _compute_repair(
+    path: Path,
+    *,
+    roots: dict[str, str],
+    projects_dir: Path,
+    self_dir: Path,
+    hindsight_repo: Path,
+) -> tuple[RepairStats, str]:
+    """Return a validated repair output without modifying ``path``."""
     path = Path(path)
     if not path.is_file():
         raise ValueError(f"L1 input not found: {path}")
@@ -152,8 +174,33 @@ def repair_file(
                 continue
         out_lines[index] = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
 
-    path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
-    return stats
+    return stats, "\n".join(out_lines) + "\n"
+
+
+def _replace_staged_outputs(outputs: list[tuple[Path, str]]) -> None:
+    """Replace validated outputs one file at a time, cleaning temporary files on error."""
+    temp_paths: list[Path] = []
+    try:
+        for path, output in outputs:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                delete=False,
+            ) as temp:
+                temp.write(output)
+                temp.flush()
+                os.fsync(temp.fileno())
+                temp_path = Path(temp.name)
+            os.chmod(temp_path, path.stat().st_mode & 0o777)
+            temp_paths.append(temp_path)
+        for (path, _output), temp_path in zip(outputs, list(temp_paths)):
+            os.replace(temp_path, path)
+            temp_paths.remove(temp_path)
+    finally:
+        for temp_path in temp_paths:
+            temp_path.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,21 +231,42 @@ def main(argv: list[str] | None = None) -> int:
     if l1_target.is_dir() and not files:
         print(f"date-repair: ERROR: no .jsonl files found in {l1_target}", file=sys.stderr)
         return 1
-    total = RepairStats()
-    had_error = False
+    computations: list[tuple[Path, RepairStats, str]] = []
     for file in files:
         try:
-            stats = repair_file(file, roots=roots, projects_dir=projects_dir, self_dir=self_dir, hindsight_repo=hindsight_repo)
-        except ValueError as exc:
+            stats, output = _compute_repair(
+                file,
+                roots=roots,
+                projects_dir=projects_dir,
+                self_dir=self_dir,
+                hindsight_repo=hindsight_repo,
+            )
+        except (OSError, ValueError) as exc:
             print(f"date-repair: ERROR: {exc}", file=sys.stderr)
-            had_error = True
-            continue
+            print("date-repair: NOT MEASURED", file=sys.stderr)
+            return 1
+        computations.append((file, stats, output))
+    if l1_target.is_dir():
+        try:
+            _replace_staged_outputs([(file, output) for file, _stats, output in computations])
+        except OSError as exc:
+            print(f"date-repair: ERROR: cannot replace staged output: {exc}", file=sys.stderr)
+            print("date-repair: NOT MEASURED", file=sys.stderr)
+            return 1
+    else:
+        file, _stats, output = computations[0]
+        try:
+            file.write_text(output, encoding="utf-8")
+        except OSError as exc:
+            print(f"date-repair: ERROR: cannot write repaired output: {exc}", file=sys.stderr)
+            print("date-repair: NOT MEASURED", file=sys.stderr)
+            return 1
+
+    total = RepairStats()
+    for _file, stats, _output in computations:
         total.dated_by_anchor += stats.dated_by_anchor
         total.dated_by_fallback += stats.dated_by_fallback
         total.still_undated += stats.still_undated
-    if had_error:
-        print("date-repair: NOT MEASURED", file=sys.stderr)
-        return 1
     print(f"date-repair: DATED-BY-ANCHOR: {total.dated_by_anchor}", file=sys.stderr)
     print(f"date-repair: DATED-BY-FALLBACK: {total.dated_by_fallback}", file=sys.stderr)
     print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)

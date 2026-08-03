@@ -361,6 +361,8 @@ def test_prints_the_three_counts_on_stderr(tmp_path: Path, capsys: pytest.Captur
     captured = capsys.readouterr()
     assert "date-repair: DATED-BY-ANCHOR: 1" in captured.err
     assert "date-repair: DATED-BY-FALLBACK: 1" in captured.err
+    assert "DIFFERENTIAL" not in captured.err
+    assert "WARNING" not in captured.err
     assert "date-repair: STILL-UNDATED: 1" in captured.err
     # A row already dated coming in must never inflate any of the three counts.
     assert exit_code == 0
@@ -694,7 +696,7 @@ def test_measure_corpus_not_measured_when_clusters_file_absent(
 # point of the test is exactly that it can never be mistaken for one.
 # --------------------------------------------------------------------------
 
-def test_cli_prints_not_measured_on_both_lines_when_l1_is_not_the_corpus(
+def test_cli_does_not_print_withdrawn_statistics_when_l1_is_not_the_corpus(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     env = Env(tmp_path)
@@ -705,8 +707,5 @@ def test_cli_prints_not_measured_on_both_lines_when_l1_is_not_the_corpus(
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    stat_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln or "WARNING" in ln]
-    assert len(stat_lines) == 2
-    for ln in stat_lines:
-        assert ln.endswith("NOT MEASURED (target is not the corpus)")
-    assert "%" not in captured.err
+    assert "DIFFERENTIAL" not in captured.err
+    assert "WARNING" not in captured.err

@@ -30,15 +30,6 @@ no rewrite, no provenance key added. Rows that resolve under neither path are
 left with no ``first_seen`` and no provenance key -- STILL-UNDATED, never a
 guess.
 
-The corpus statistics (DIFFERENTIAL / WARNING) are UNPOINTABLE: they read
-exactly two module constants derived from this file's own location --
-``CORPUS_L1`` and ``CORPUS_CLUSTERS`` -- and nothing else. No CLI flag or
-function argument can make them read any other directory or file. ``--l1``
-may retarget the REPAIR (dating rows in some other file, e.g. for a test
-fixture); it has no influence whatsoever on the statistics. If the repair
-target isn't ``CORPUS_L1``, both statistic lines print NOT MEASURED naming
-that as the reason.
-
 Usage:  python3 repair_first_seen.py [--l1 PATH] [--source-roots PATH]
                                       [--projects-dir PATH] [--self-dir PATH]
                                       [--hindsight-repo PATH]
@@ -55,46 +46,22 @@ from pathlib import Path
 SELF_ROOT_TOKEN = "SELF"
 PROJECTS_ROOT_TOKEN = "."
 
-# This file's own directory -- the ONE anchor the statistics are allowed to
-# read from. Derived from __file__, never from an argument: there is no CLI
-# flag, no function parameter, no environment variable that can move it.
 _PIPELINE_DIR = Path(__file__).resolve().parent
-
-# The real corpus location and the real cluster-membership file. Every
-# statistic (DIFFERENTIAL, WARNING) reads these two constants and nothing
-# else. ``--l1`` can still retarget the REPAIR -- that's what makes repair
-# testable against a scratch fixture -- but it can never make a statistic
-# read anywhere but here (see _measure_corpus).
 CORPUS_L1 = _PIPELINE_DIR / "L1"
 CORPUS_CLUSTERS = _PIPELINE_DIR / "L2" / "clusters.jsonl"
-
-
-def _repo_root() -> Path:
-    return _PIPELINE_DIR.parent
-
-
-# The two family sets this packet reports a fairness differential across.
-# Fixed here as MODULE CONSTANTS, never read from an argument or inferred
-# from whatever a clusters file happens to contain -- an argument-supplied
-# or partial family list is exactly how a scratch/stripped clusters file
-# used to get treated as authoritative (instances #1 and #6 of the
-# fabricated-statistic defect; see _resolve_measurement).
 ARM_B_FAMILIES = {"c-043", "c-045", "c-063", "c-082", "c-104", "c-191"}
 COMPARATOR_FAMILIES = {
     "c-003", "c-004", "c-007", "c-008", "c-038", "c-044", "c-049", "c-051",
     "c-055", "c-058", "c-070", "c-085", "c-101", "c-117", "c-178",
 }
-EXPECTED_FAMILIES = ARM_B_FAMILIES | COMPARATOR_FAMILIES  # 21 families total
-
-# The real corpus's ground-truth member counts. ENFORCED (instance #8: a
-# clusters.jsonl silently stripped of 2 of c-104's members shrank the
-# denominator from 32 to 30 and printed a fabricated 53.3% -- nothing checked
-# that the resolved membership actually matched the known-good count). Any
-# other resolved count on either arm is a hard NOT MEASURED naming the actual
-# counts, never a silent recompute of the percentage over whatever survived.
+EXPECTED_FAMILIES = ARM_B_FAMILIES | COMPARATOR_FAMILIES
 EXPECTED_ARM_B_MEMBERS = 32
 EXPECTED_COMPARATOR_MEMBERS = 102
-EXPECTED_MEMBERS = EXPECTED_ARM_B_MEMBERS + EXPECTED_COMPARATOR_MEMBERS  # 134
+EXPECTED_MEMBERS = EXPECTED_ARM_B_MEMBERS + EXPECTED_COMPARATOR_MEMBERS
+
+
+def _repo_root() -> Path:
+    return _PIPELINE_DIR.parent
 
 
 @dataclass
@@ -573,14 +540,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"date-repair: DATED-BY-ANCHOR: {total.dated_by_anchor}", file=sys.stderr)
         print(f"date-repair: DATED-BY-FALLBACK: {total.dated_by_fallback}", file=sys.stderr)
         print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)
-
-    # ONE gate, established once, consulted by every statistic path below --
-    # reached on EVERY exit, error or success alike, so the DIFFERENTIAL and
-    # WARNING lines are never silently skipped (instance #5: a fail-loud
-    # return used to happen before either line printed at all).
-    measurement = _measure_corpus(l1_target)
-    _print_differential(measurement)
-    _print_fallback_warning(measurement)
 
     return 1 if had_error else 0
 

@@ -35,10 +35,15 @@ class CatalogRow:
 class SourceTotals:
     machine: int = 0
     judgment: int = 0
+    # Machine rows with enforcement: null remain an honest, separately
+    # reported lack of a claimed mechanism; judgment rows are not warnings.
     unbacked: int = 0
+    # All rows with a non-null enforcement value, irrespective of auto.
+    # This root-independent count backs the corpus-wide debt floor.
+    enforcement_bearing: int = 0
     phantoms: int = 0
     unverifiable: int = 0
-    # Incremented once per machine entry that had a non-null enforcement
+    # Incremented once per entry that had a non-null enforcement
     # value AND a resolved source root -- i.e. an entry that was actually
     # run through the exists() check, regardless of whether it passed
     # (enforced) or failed (phantom). This is what makes the root floor
@@ -205,14 +210,18 @@ def load_enforcement_floor(path: Path) -> int:
 
 
 def total_enforcement_bearing(report: EnforcementReport) -> int:
-    """Machine entries with a non-null enforcement value, across all sources.
+    """All entries with a non-null enforcement value, across all sources.
 
-    Deliberately root-independent (machine - unbacked, not phantoms +
-    checked): an unmapped/absent-root source still counts its non-null
-    entries here even though it can't be resolved, so this total is
+    Deliberately root-independent: an unmapped/absent-root source still
+    counts its non-null entries here even though it can't be resolved, so this total is
     computable -- and thus a real, always-on gate -- in ANY environment,
     including a CI runner with none of the source repos checked out.
     """
+    return sum(totals.enforcement_bearing for totals in report.sources.values())
+
+
+def machine_enforcement_bearing(report: EnforcementReport) -> int:
+    """Pre-issue-31 machine-only subtotal, retained solely for visible migration output."""
     return sum(totals.machine - totals.unbacked for totals in report.sources.values())
 
 
@@ -383,7 +392,7 @@ def _resolve_source_root(
 def verify_enforcement(
     l1_dir: Path, projects_dir: Path, source_roots: dict[str, str]
 ) -> EnforcementReport:
-    """Check that machine-entry enforcement paths resolve within their OWN source's root.
+    """Check that every claimed enforcement path resolves within its OWN source's root.
 
     Each L1 source was extracted from a different repo. A path is:
       - enforced      -- that source's root is known and present, and the path resolves.
@@ -436,7 +445,6 @@ def verify_enforcement(
                 totals.machine += 1
             elif auto == "judgment":
                 totals.judgment += 1
-                continue
             else:
                 raise ValueError(
                     f"invalid auto value in {jsonl_path}:{line_number}: {auto!r}"
@@ -444,7 +452,8 @@ def verify_enforcement(
 
             enforcement = record.get("enforcement")
             if enforcement is None:
-                totals.unbacked += 1
+                if auto == "machine":
+                    totals.unbacked += 1
                 continue
             if not isinstance(enforcement, dict):
                 raise TypeError(
@@ -455,6 +464,8 @@ def verify_enforcement(
                 raise ValueError(
                     f"invalid enforcement.file in {jsonl_path}:{line_number}: expected non-empty string"
                 )
+
+            totals.enforcement_bearing += 1
 
             entry_id = record.get("id", "<missing id>")
             if source_root is None:
@@ -551,7 +562,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--verify-enforcement",
         action="store_true",
-        help="verify that machine L1 enforcement paths exist under their own source's repo root",
+        help="verify that claimed L1 enforcement paths exist under their own source's repo root",
     )
     parser.add_argument(
         "--require-roots",
@@ -658,9 +669,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"enforcement-verifier: {exc}", file=sys.stderr)
             return 1
         total_bearing = total_enforcement_bearing(report)
+        old_machine_bearing = machine_enforcement_bearing(report)
         print(
             f"enforcement-verifier: DEBT-FLOOR: {total_bearing} total enforcement-bearing "
-            f"entries (floor {floor})",
+            f"entries (was {old_machine_bearing} machine-only; floor {floor})",
             file=sys.stderr,
         )
         if total_bearing < floor:

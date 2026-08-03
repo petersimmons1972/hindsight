@@ -1,6 +1,6 @@
 """Contract tests for the L1 enforcement-existence verifier.
 
-The verifier resolves each `auto: machine` entry's enforcement path against
+The verifier resolves every non-null enforcement path against
 the checkout root of the source it came from -- NOT against a single shared
 directory. A path is one of three things:
 
@@ -89,6 +89,10 @@ def run_verifier(
 
 def machine_record(id_: str, enforcement: dict[str, str] | None) -> dict[str, object]:
     return {"id": id_, "auto": "machine", "enforcement": enforcement}
+
+
+def judgment_record(id_: str, enforcement: dict[str, str] | None) -> dict[str, object]:
+    return {"id": id_, "auto": "judgment", "enforcement": enforcement}
 
 
 # ---------------------------------------------------------------------------
@@ -751,8 +755,8 @@ def test_total_enforcement_bearing_excludes_entries_that_enforce_nothing() -> No
     """
     report = MODULE.EnforcementReport(
         sources={
-            "hollow": MODULE.SourceTotals(machine=3, unbacked=3),
-            "real": MODULE.SourceTotals(machine=2, unbacked=1, checked=1),
+            "hollow": MODULE.SourceTotals(machine=3, unbacked=3, enforcement_bearing=0),
+            "real": MODULE.SourceTotals(machine=2, unbacked=1, enforcement_bearing=1, checked=1),
         },
         phantoms=[],
         unverifiable=[],
@@ -791,7 +795,7 @@ def test_nulling_every_enforcement_value_breaches_the_debt_floor(
     )
     err = capsys.readouterr().err
     assert exit_code == 1
-    assert "DEBT-FLOOR: 1 total enforcement-bearing entries (floor 2)" in err
+    assert "DEBT-FLOOR: 1 total enforcement-bearing entries (was 1 machine-only; floor 2)" in err
 
 
 def test_malformed_enforcement_file_raises_and_is_not_relabelled_unbacked(
@@ -1025,14 +1029,73 @@ def test_M30_a_file_where_a_checkout_should_be_is_not_a_resolved_root(
     assert "SKIPPED" not in err
 
 
-def test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor(
+def test_judgment_entry_with_resolving_enforcement_is_checked_and_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """S4/M07: the floor counts machine-with-claim, never judgment.
+    """A judgment is a totals label, not an exemption from path resolution."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", judgment_record("judgment-ok", {"file": "control.py", "kind": "test"})
+    )
 
-    Judgment entries require no enforcement at all. Adding them must not
-    satisfy a floor that machine-only work no longer meets.
-    """
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=1) == 0
+    err = capsys.readouterr().err
+    assert "phantom:" not in err
+    assert "  sample: 0 1 0 0 0 1" in err
+
+
+def test_judgment_entry_with_missing_enforcement_is_a_phantom(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A judgment-tagged path claim must reach the same phantom gate as a machine claim."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir, "sample", judgment_record("judgment-missing", {"file": "missing.py", "kind": "test"})
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=1) == 1
+    assert "phantom: missing.py (sample:judgment-missing," in capsys.readouterr().err
+
+
+def test_machine_entry_remains_checked_when_a_judgment_entry_is_also_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Widening eligibility must not change the established machine path behavior."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    (projects / "repo").mkdir(parents=True)
+    (projects / "repo" / "control.py").touch()
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("machine-ok", {"file": "control.py", "kind": "test"}),
+        judgment_record("judgment-ok", {"file": "control.py", "kind": "test"}),
+    )
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path, enforcement_floor=2) == 0
+    err = capsys.readouterr().err
+    assert "phantom:" not in err
+    assert "  sample: 1 1 0 0 0 2" in err
+
+
+def test_debt_floor_counts_every_enforcement_bearing_row_and_reports_old_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The floor includes both auto categories while exposing the old subset."""
     l1_dir = tmp_path / "L1"
     l1_dir.mkdir()
     projects = tmp_path / "projects"
@@ -1044,19 +1107,17 @@ def test_M07_judgment_entries_cannot_prop_up_the_enforcement_floor(
         l1_dir,
         "sample",
         machine_record("kept", {"file": "control.py", "kind": "test"}),
-        {"id": "j1", "auto": "judgment", "enforcement": None},
-        {"id": "j2", "auto": "judgment", "enforcement": None},
-        {"id": "j3", "auto": "judgment", "enforcement": None},
-        {"id": "j4", "auto": "judgment", "enforcement": None},
-        {"id": "j5", "auto": "judgment", "enforcement": None},
+        machine_record("machine-unbacked", None),
+        judgment_record("judgment-claim", {"file": "control.py", "kind": "test"}),
+        judgment_record("judgment-unbacked", None),
     )
 
     exit_code = run_verifier(
-        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=3
+        monkeypatch, l1_dir, projects, roots_path, enforcement_floor=2
     )
     err = capsys.readouterr().err
-    assert exit_code == 1
-    assert "below floor 3" in err
+    assert exit_code == 0
+    assert "DEBT-FLOOR: 2 total enforcement-bearing entries (was 1 machine-only; floor 2)" in err
 
 
 @pytest.mark.parametrize(

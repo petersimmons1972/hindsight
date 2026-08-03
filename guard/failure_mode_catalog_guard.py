@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import stat
 import sys
@@ -24,18 +25,30 @@ ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
 # appear legitimately as provenance annotations inside the bug-class column
 # (e.g. "Container Runtime - Design (FM-RC-01)") and must not be flagged.
 HISTORICAL_SCHEME_RE = re.compile(r"^\| *FM-(RC|REC)-\d+ *\|")
+OPENING_DELIMITERS = {"(": ")", "{": "}", "[": "]"}
+CLOSING_DELIMITERS = {closing: opening for opening, closing in OPENING_DELIMITERS.items()}
+
+
+def _read_regular_utf8(path: Path) -> str | None:
+    """Read one regular UTF-8 file, failing closed at the narrow I/O boundary."""
+    try:
+        with path.open("r", encoding="utf-8") as source_file:
+            source = source_file.read()
+            if not stat.S_ISREG(os.fstat(source_file.fileno()).st_mode):
+                return None
+    except (OSError, UnicodeError):
+        return None
+    return source
 
 
 def _is_runner_managed_test_source(path: Path) -> bool:
-    """Recognize bounded, structurally valid non-executable runner sources.
+    """Recognize bounded, structurally plausible non-executable runner sources.
 
     A runner may execute its source input without an execute bit. Accepted
     shapes are Pytest ``.py`` modules, Bats ``.bats`` files, and JavaScript
     ``*.test.js`` files. Each format uses a structural probe, never a suffix
     or substring alone.
     """
-    if not path.is_file():
-        return False
     if path.suffix == ".py":
         return _is_pytest_source(path)
     if path.suffix == ".bats":
@@ -47,9 +60,12 @@ def _is_runner_managed_test_source(path: Path) -> bool:
 
 def _is_pytest_source(path: Path) -> bool:
     """Accept Python only when its AST contains an actual Pytest test node."""
+    source = _read_regular_utf8(path)
+    if source is None:
+        return False
     try:
-        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError, UnicodeDecodeError):
+        module = ast.parse(source, filename=str(path))
+    except SyntaxError:
         return False
 
     def is_test_function(node: ast.stmt) -> bool:
@@ -67,15 +83,16 @@ def _is_pytest_source(path: Path) -> bool:
 
 
 def _is_bats_source(path: Path) -> bool:
-    """Recognize a line-start ``@test \"name\" { command }`` Bats block.
+    """Recognize bounded whole-file Bats structural plausibility.
 
     This intentionally small lexer skips shell comments and quoted strings so
-    decorative ``@test`` text cannot become enforcement evidence. A valid
-    block must close all braces and contain a non-comment command token.
+    decorative ``@test`` text cannot become enforcement evidence. It validates
+    exactly nested ``()``, ``{}``, and ``[]`` delimiters through EOF and
+    requires at least one complete, non-empty ``@test \"name\" { ... }`` block.
+    This is not a complete shell or Bats parser.
     """
-    try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    source = _read_regular_utf8(path)
+    if source is None:
         return False
 
     def skip_quoted(index: int) -> int | None:
@@ -90,6 +107,10 @@ def _is_bats_source(path: Path) -> bool:
                 index += 1
         return None
 
+    delimiters: list[str] = []
+    candidate_depth: int | None = None
+    candidate_has_command = False
+    candidate_found = False
     index = 0
     line_start = True
     while index < len(source):
@@ -97,7 +118,8 @@ def _is_bats_source(path: Path) -> bool:
         if char == "#":
             newline = source.find("\n", index + 1)
             if newline == -1:
-                return False
+                index = len(source)
+                continue
             index = newline + 1
             line_start = True
             continue
@@ -108,6 +130,14 @@ def _is_bats_source(path: Path) -> bool:
             line_start = False
             index = end
             continue
+        if char == "\\":
+            if index + 1 == len(source):
+                return False
+            if candidate_depth is not None:
+                candidate_has_command = True
+            line_start = source[index + 1] == "\n"
+            index += 2
+            continue
         if char == "\n":
             line_start = True
             index += 1
@@ -116,70 +146,88 @@ def _is_bats_source(path: Path) -> bool:
             index += 1
             continue
         if not (line_start and source.startswith("@test", index)):
+            if char in OPENING_DELIMITERS:
+                delimiters.append(char)
+                if candidate_depth is not None and char != "{":
+                    candidate_has_command = True
+            elif char in CLOSING_DELIMITERS:
+                if not delimiters or delimiters[-1] != CLOSING_DELIMITERS[char]:
+                    return False
+                closes_candidate = candidate_depth == len(delimiters) and char == "}"
+                delimiters.pop()
+                if closes_candidate:
+                    if not candidate_has_command:
+                        return False
+                    candidate_found = True
+                    candidate_depth = None
+                    candidate_has_command = False
+            elif candidate_depth is not None and char != ";":
+                candidate_has_command = True
             line_start = False
             index += 1
             continue
+
         after_marker = index + len("@test")
         if after_marker == len(source) or not source[after_marker].isspace():
             line_start = False
             index += 1
             continue
+        if candidate_depth is not None:
+            return False
         index = after_marker
         while index < len(source) and source[index].isspace():
             index += 1
         if index == len(source) or source[index] not in "'\"":
             return False
-        index = skip_quoted(index)
-        if index is None:
+        quoted_end = skip_quoted(index)
+        if quoted_end is None:
             return False
+        index = quoted_end
         while index < len(source) and source[index].isspace():
             index += 1
         if index == len(source) or source[index] != "{":
             return False
-        depth = 1
-        has_command = False
+        delimiters.append("{")
+        candidate_depth = len(delimiters)
+        candidate_has_command = False
+        line_start = False
         index += 1
-        while index < len(source):
-            char = source[index]
-            if char == "#":
-                newline = source.find("\n", index + 1)
-                if newline == -1:
-                    return False
-                index = newline + 1
-                continue
-            if char in "'\"":
-                end = skip_quoted(index)
-                if end is None:
-                    return False
-                index = end
-                continue
-            if char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    return has_command
-                if depth < 0:
-                    return False
-            elif not char.isspace() and char not in ";":
-                has_command = True
-            index += 1
-        return False
-    return False
+
+    return candidate_found and candidate_depth is None and not delimiters
 
 
 def _is_javascript_test_source(path: Path) -> bool:
-    """Parse the supported non-executable JavaScript test-source shape.
+    """Recognize bounded whole-file JavaScript structural plausibility.
 
     The fleet runner imports ``*.test.js`` files, so they need not be
-    executable. This deliberately recognizes a bounded syntactic form instead
-    of substring matching: a balanced ``test(<quoted name>, () => {...})``
-    call (optionally ``async``).
-    It skips JavaScript comments and quoted strings while scanning, which keeps
-    ``test(`` and ``// test(`` stubs from becoming enforcement evidence.
+    executable. This lexer validates exactly nested ``()``, ``{}``, and ``[]``
+    delimiters through EOF, skips complete comments and literals, and requires
+    at least one ``test(<quoted name>, [async] (...) => {...})`` candidate.
+    Every encountered bare ``test(`` must have that bounded form; property
+    calls such as a regular expression's ``.test(...)`` are ordinary source.
+    This is structural plausibility, not a complete JavaScript parser.
     """
-    source = path.read_text(encoding="utf-8")
+    source = _read_regular_utf8(path)
+    if source is None:
+        return False
+
     tokens: list[tuple[str, str]] = []
+    delimiter_stack: list[tuple[str, int]] = []
+    matching_delimiters: dict[int, int] = {}
+
+    def append_punctuation(char: str) -> bool:
+        token_index = len(tokens)
+        tokens.append(("punctuation", char))
+        if char in OPENING_DELIMITERS:
+            delimiter_stack.append((char, token_index))
+        elif char in CLOSING_DELIMITERS:
+            if not delimiter_stack or delimiter_stack[-1][0] != CLOSING_DELIMITERS[char]:
+                return False
+            _, opening_index = delimiter_stack.pop()
+            matching_delimiters[opening_index] = token_index
+            matching_delimiters[token_index] = opening_index
+        return True
+
     index = 0
     while index < len(source):
         char = source[index]
@@ -197,8 +245,13 @@ def _is_javascript_test_source(path: Path) -> bool:
             quote = char
             index += 1
             while index < len(source) and source[index] != quote:
-                index += 2 if source[index] == "\\" else 1
-            if index == len(source):
+                if source[index] == "\\":
+                    index += 2
+                elif quote != "`" and source[index] in "\r\n":
+                    return False
+                else:
+                    index += 1
+            if index >= len(source):
                 return False
             tokens.append(("string", ""))
             index += 1
@@ -209,46 +262,48 @@ def _is_javascript_test_source(path: Path) -> bool:
             tokens.append(("identifier", source[index:end]))
             index = end
         else:
-            tokens.append(("punctuation", char))
+            if not append_punctuation(char):
+                return False
             index += 1
 
-    for index, token in enumerate(tokens[:-4]):
-        if token != ("identifier", "test") or tokens[index + 1] != ("punctuation", "("):
+    if delimiter_stack:
+        return False
+
+    candidate_found = False
+    for token_index, token in enumerate(tokens[:-1]):
+        if token != ("identifier", "test") or tokens[token_index + 1] != ("punctuation", "("):
             continue
-        if tokens[index + 2][0] != "string" or tokens[index + 3] != ("punctuation", ","):
+        if token_index and tokens[token_index - 1] == ("punctuation", "."):
             continue
-        body_index = index + 4
-        if tokens[body_index] == ("identifier", "async"):
-            body_index += 1
-        if body_index >= len(tokens) or tokens[body_index] != ("punctuation", "("):
-            continue
-        depth = 1
-        brace_depth = 0
-        arrow_seen = False
-        arrow_body_seen = False
-        for candidate_index, candidate in enumerate(tokens[body_index:], start=body_index):
-            if candidate == ("punctuation", "("):
-                depth += 1
-            elif candidate == ("punctuation", ")"):
-                depth -= 1
-                if depth == 0:
-                    return arrow_seen and arrow_body_seen and brace_depth == 0
-            elif candidate == ("punctuation", "{"):
-                brace_depth += 1
-                if arrow_seen and depth == 1:
-                    arrow_body_seen = True
-            elif candidate == ("punctuation", "}"):
-                brace_depth -= 1
-                if brace_depth < 0:
-                    return False
-            elif (
-                candidate == ("punctuation", "=")
-                and depth == 1
-                and candidate_index + 1 < len(tokens)
-                and tokens[candidate_index + 1] == ("punctuation", ">")
-            ):
-                arrow_seen = True
-    return False
+        call_open = token_index + 1
+        call_close = matching_delimiters[call_open]
+        cursor = token_index + 2
+        if cursor >= call_close or tokens[cursor][0] != "string":
+            return False
+        cursor += 1
+        if cursor >= call_close or tokens[cursor] != ("punctuation", ","):
+            return False
+        cursor += 1
+        if cursor < call_close and tokens[cursor] == ("identifier", "async"):
+            cursor += 1
+        if cursor >= call_close or tokens[cursor] != ("punctuation", "("):
+            return False
+        parameters_close = matching_delimiters[cursor]
+        cursor = parameters_close + 1
+        if cursor + 2 >= call_close or tokens[cursor : cursor + 2] != [
+            ("punctuation", "="),
+            ("punctuation", ">"),
+        ]:
+            return False
+        cursor += 2
+        if tokens[cursor] != ("punctuation", "{"):
+            return False
+        body_close = matching_delimiters[cursor]
+        if body_close + 1 != call_close:
+            return False
+        candidate_found = True
+
+    return candidate_found
 
 
 @dataclass(frozen=True)
@@ -631,10 +686,11 @@ def verify_enforcement(
 
     A resolved path establishes only that a claimed mechanism still exists.
     A ``hook`` must be a regular executable file. A ``test`` must be regular
-    and executable, except for a bounded runner-managed Pytest, Bats, or
-    ``*.test.js`` source shape. A present, non-executable stub is a phantom. The
-    verifier intentionally makes no broader claim that a plausible file
-    enforces its recorded lesson.
+    and executable, except for runner-managed Pytest sources with a valid test
+    AST or Bats/``*.test.js`` sources with bounded whole-file structural
+    plausibility. A present, non-executable stub is a phantom. The verifier
+    intentionally makes no broader claim that a plausible file enforces its
+    recorded lesson, and the Bats/JavaScript recognizers are not full parsers.
     """
     if not l1_dir.is_dir():
         raise ValueError(f"L1 directory not found: {l1_dir}")
@@ -710,8 +766,13 @@ def verify_enforcement(
             totals.checked += 1
             resolved = (source_root / enforcement_file).resolve()
             contained = resolved.is_relative_to(source_root)
-            exists = contained and resolved.exists()
-            if not exists:
+            resolved_mode: int | None = None
+            if contained:
+                try:
+                    resolved_mode = resolved.stat().st_mode
+                except OSError:
+                    pass
+            if resolved_mode is None:
                 totals.phantoms += 1
                 phantoms.append(
                     PhantomEntry(
@@ -725,8 +786,8 @@ def verify_enforcement(
 
             kind = enforcement.get("kind")
             executable_kind = kind in {"test", "hook"}
-            executable_file = resolved.is_file() and bool(
-                resolved.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            executable_file = stat.S_ISREG(resolved_mode) and bool(
+                resolved_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             )
             plausible_mechanism = (
                 not executable_kind
@@ -800,9 +861,10 @@ def print_enforcement_report(report: EnforcementReport) -> None:
 
     print(
         "enforcement-verifier: SCOPE: checks containment and existence; hooks and tests must be "
-        "regular executable files, except structurally valid runner-managed Pytest (.py), Bats "
-        "(.bats), or *.test.js sources. A plausible path is necessary, not sufficient evidence that it "
-        "enforces the claimed lesson. "
+        "regular executable files, except runner-managed Pytest (.py) sources with a test AST, or "
+        "bounded whole-file structurally plausible Bats (.bats) and *.test.js sources. These are "
+        "not full Bats/JavaScript parsers. A plausible path is necessary, not sufficient evidence "
+        "that it enforces the claimed lesson. "
         "UNVERIFIABLE entries were not checked at all -- they are neither enforced nor phantom.",
         file=sys.stderr,
     )

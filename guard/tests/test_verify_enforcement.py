@@ -270,6 +270,182 @@ def test_runner_source_predicate_rejects_suffix_and_substring_only_mutants(tmp_p
 
 
 @pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        ("extra-paren.bats", '@test "ok" { true; }\n)\n'),
+        ("extra-bracket.bats", '@test "ok" { true; }\n]\n'),
+        ("unclosed-paren.bats", '@test "ok" { true; }\necho (\n'),
+        ("unclosed-brace.bats", '@test "ok" { true; }\necho {\n'),
+        ("unclosed-bracket.bats", '@test "ok" { true; }\necho [\n'),
+        ("unclosed-quote.bats", '@test "ok" { true; }\necho "unterminated\n'),
+        ("malformed-second.bats", '@test "ok" { true; }\n@test "broken" nope\n'),
+        ("extra-paren.test.js", 'test("ok", () => {}); )'),
+        ("extra-bracket.test.js", 'test("ok", () => {}); ]'),
+        ("unclosed-paren.test.js", 'test("ok", () => {}); ('),
+        ("unclosed-brace.test.js", 'test("ok", () => {}); {'),
+        ("unclosed-bracket.test.js", 'test("ok", () => {}); ['),
+        ("unclosed-block-comment.test.js", 'test("ok", () => {}); /* unterminated'),
+        ("unclosed-quote.test.js", 'test("ok", () => {}); "unterminated'),
+        ("unclosed-template.test.js", 'test("ok", () => {}); `unterminated'),
+        ("malformed-second.test.js", 'test("ok", () => {}); test("broken", () =>);'),
+    ],
+)
+def test_valid_runner_test_prefix_does_not_hide_invalid_suffix(
+    tmp_path: Path, filename: str, contents: str
+) -> None:
+    """A candidate is evidence only when the bounded whole file is valid."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_bats_valid_prefix_does_not_hide_invalid_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "valid-prefix.bats"
+    write_runner_source(source, '@test "ok" { true; }\n}\n')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_valid_prefix_does_not_hide_invalid_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "valid-prefix.test.js"
+    write_runner_source(source, 'test("ok", () => {}); }')
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents"),
+    [
+        (
+            "multiple.bats",
+            (
+                "setup() { true; }\n"
+                '@test "first" { true; }\n'
+                '@test "second" { run true; }\n'
+                "teardown() { true; }\n"
+                "echo '}])'\n"
+                "# harmless trailing comment with ({["
+            ),
+        ),
+        (
+            "multiple.test.js",
+            (
+                "const before = [1];\n"
+                'test("first", () => {});\n'
+                'test("second", async () => { const nested = {}; });\n'
+                'const text = "}])"; /* harmless unmatched-looking ({[ */\n'
+                "/ok/.test(text);\n"
+                "const after = {ok: true}; // harmless trailing statement and comment"
+            ),
+        ),
+    ],
+)
+def test_whole_file_runner_scan_retains_multiple_tests_and_harmless_trailing_source(
+    tmp_path: Path, filename: str, contents: str
+) -> None:
+    """Scanning to EOF must retain ordinary multi-test runner sources."""
+    source = tmp_path / filename
+    write_runner_source(source, contents)
+
+    assert MODULE._is_runner_managed_test_source(source)
+
+
+def test_javascript_runner_source_with_invalid_utf8_fails_closed(tmp_path: Path) -> None:
+    source = tmp_path / "invalid-utf8.test.js"
+    source.write_bytes(b'test("ok", () => {});\n\xff')
+    source.chmod(0o664)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize("read_error", [PermissionError("denied"), FileNotFoundError("vanished")])
+def test_javascript_runner_source_read_error_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    read_error: OSError,
+) -> None:
+    source = tmp_path / "read-error.test.js"
+    write_runner_source(source, 'test("ok", () => {});\n')
+    real_open = Path.open
+
+    def fail_target_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path == source:
+            raise read_error
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_target_open)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+def test_runner_plausibility_uses_stat_not_a_separate_exists_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Containment-to-plausibility must not have an exists/stat TOCTOU split."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / "feature.test.js"
+    write_runner_source(source, 'test("ok", () => {});\n')
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("runner-test", {"file": "feature.test.js", "kind": "test"}),
+    )
+    real_exists = Path.exists
+
+    def reject_target_exists(path: Path) -> bool:
+        if path == source:
+            raise AssertionError("enforcement path must not be checked with exists() before stat/read")
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", reject_target_exists)
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 0
+    assert "phantom:" not in capsys.readouterr().err
+
+
+def test_runner_source_stat_error_is_a_phantom_not_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Disappearance at metadata inspection fails closed inside the verifier."""
+    l1_dir = tmp_path / "L1"
+    l1_dir.mkdir()
+    projects = tmp_path / "projects"
+    repo = projects / "repo"
+    repo.mkdir(parents=True)
+    source = repo / "vanished.test.js"
+    write_runner_source(source, 'test("ok", () => {});\n')
+    roots_path = tmp_path / "source-roots.conf"
+    write_source_roots(roots_path, {"sample": "repo"})
+    write_records(
+        l1_dir,
+        "sample",
+        machine_record("runner-test", {"file": "vanished.test.js", "kind": "test"}),
+    )
+    real_stat = Path.stat
+
+    def fail_target_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == source:
+            raise FileNotFoundError("vanished during metadata inspection")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target_stat)
+
+    assert run_verifier(monkeypatch, l1_dir, projects, roots_path) == 1
+    assert "phantom: vanished.test.js (sample:runner-test," in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
     "contents",
     ["test(", "// test(\n", 'test("x",)', 'test("x",,)', 'test("x", async)', 'test("x", function)', 'test("x", () =>)', 'test("x", () =>;)', 'test("x", () => {)'],
 )

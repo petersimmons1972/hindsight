@@ -65,6 +65,16 @@ class EmbeddingProtocolError(ValueError):
     """The optional embedding service returned a response outside its contract."""
 
 
+SNAPSHOT_SCHEMA = "hindsight.embedding-snapshot/v1"
+SNAPSHOT_BACKEND_FIELDS = frozenset({"name", "model", "revision", "dimensions"})
+HTTP_BACKEND_IDENTITY: dict[str, object] = {
+    "name": "http",
+    "model": "BAAI/bge-m3",
+    "revision": "bge-m3-Q8_0.gguf",
+    "dimensions": 1024,
+}
+
+
 def default_threshold(backend_name: str) -> float:
     """Return the calibrated threshold for a known backend or sparse fallback."""
     return BACKEND_DEFAULT_THRESHOLDS.get(backend_name, DEFAULT_THRESHOLD)
@@ -494,6 +504,85 @@ def select_backend(requested: str = "auto") -> EmbeddingBackend:
     return TfidfEmbeddingBackend()
 
 
+def _validate_backend_identity(identity: object, *, source: str) -> dict[str, object]:
+    """Validate the backend/model identity used to authorize snapshot replay."""
+    if not isinstance(identity, dict):
+        raise TypeError(f"{source} backend identity must be an object")
+    if set(identity) != SNAPSHOT_BACKEND_FIELDS:
+        missing = sorted(SNAPSHOT_BACKEND_FIELDS.difference(identity))
+        unexpected = sorted(set(identity).difference(SNAPSHOT_BACKEND_FIELDS))
+        raise ValueError(
+            f"{source} backend identity fields do not match schema: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    for field in ("name", "model", "revision"):
+        if not isinstance(identity[field], str) or not identity[field]:
+            raise ValueError(f"{source} backend identity {field} must be a non-empty string")
+    dimensions = identity["dimensions"]
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int) or dimensions <= 0:
+        raise ValueError(f"{source} backend identity dimensions must be a positive integer")
+    return identity
+
+
+def load_embedding_snapshot(
+    path: Path, entries: Sequence[Entry], expected_backend: dict[str, object]
+) -> np.ndarray:
+    """Load an ID-keyed snapshot only when provenance and corpus IDs match exactly."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise TypeError(f"{path}: snapshot must be an object")
+    if payload.get("schema") != SNAPSHOT_SCHEMA:
+        raise ValueError(f"{path}: unsupported snapshot schema {payload.get('schema')!r}")
+
+    actual_backend = _validate_backend_identity(payload.get("backend"), source="snapshot")
+    declared_backend = _validate_backend_identity(expected_backend, source="declared")
+    if actual_backend != declared_backend:
+        differences = ", ".join(
+            f"{field}: snapshot={actual_backend[field]!r}, declared={declared_backend[field]!r}"
+            for field in sorted(SNAPSHOT_BACKEND_FIELDS)
+            if actual_backend[field] != declared_backend[field]
+        )
+        raise ValueError(f"snapshot backend identity mismatch: {differences}")
+
+    embeddings = payload.get("embeddings")
+    if not isinstance(embeddings, dict) or not all(isinstance(key, str) for key in embeddings):
+        raise ValueError(f"{path}: embeddings must be an object keyed by L1 id")
+    corpus_ids = {entry.id for entry in entries}
+    snapshot_ids = set(embeddings)
+    if not corpus_ids.intersection(snapshot_ids):
+        raise ValueError(
+            "ALARM: zero ID overlap between corpus and embedding snapshot: "
+            f"corpus_ids={sorted(corpus_ids)}, snapshot_ids={sorted(snapshot_ids)}"
+        )
+    missing = sorted(corpus_ids.difference(snapshot_ids))
+    unexpected = sorted(snapshot_ids.difference(corpus_ids))
+    if missing or unexpected:
+        raise ValueError(f"embedding snapshot ID mismatch: missing={missing}, unexpected={unexpected}")
+
+    dimensions = int(actual_backend["dimensions"])
+    ordered_ids = [entry.id for entry in sorted(entries, key=lambda entry: entry.id)]
+    vectors: list[np.ndarray] = []
+    for entry_id in ordered_ids:
+        vector = embeddings[entry_id]
+        if not isinstance(vector, list):
+            raise TypeError(f"embedding snapshot id {entry_id!r} vector must be a list")
+        try:
+            array = np.asarray(vector, dtype=np.float32)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"embedding snapshot id {entry_id!r} vector must be numeric") from exc
+        if array.shape != (dimensions,):
+            raise ValueError(
+                f"embedding snapshot id {entry_id!r} has dimensions {array.size}, expected {dimensions}"
+            )
+        if not np.isfinite(array).all():
+            raise ValueError(f"embedding snapshot id {entry_id!r} vector must be finite")
+        vectors.append(array)
+    return np.vstack(vectors)
+
+
 def _source_repo(source_path: str) -> str:
     parts = Path(source_path).parts
     return parts[0] if parts else source_path
@@ -568,10 +657,10 @@ def _assert_non_degenerate(
         )
 
 
-def _similarity_matrix(texts: Sequence[str], embeddings: np.ndarray, backend: EmbeddingBackend) -> np.ndarray:
+def _similarity_matrix(texts: Sequence[str], embeddings: np.ndarray, backend_name: str) -> np.ndarray:
     """Blend the calibrated HTTP metric with lexical evidence when selected."""
     dense_similarity = embeddings @ embeddings.T
-    if backend.name != "http":
+    if backend_name != "http":
         return dense_similarity
     lexical_embeddings = TfidfEmbeddingBackend().embed(texts)
     lexical_similarity = lexical_embeddings @ lexical_embeddings.T
@@ -579,24 +668,23 @@ def _similarity_matrix(texts: Sequence[str], embeddings: np.ndarray, backend: Em
 
 
 def cluster_entries(
-    entries: Sequence[Entry], backend: EmbeddingBackend, threshold: float | None = None
+    entries: Sequence[Entry], embeddings: np.ndarray, backend_name: str, threshold: float | None = None
 ) -> list[Cluster]:
-    """Cluster entries using only their incident, check, and class-hint text."""
-    threshold = default_threshold(backend.name) if threshold is None else threshold
+    """Cluster entries from a pre-computed matrix without contacting a backend."""
+    threshold = default_threshold(backend_name) if threshold is None else threshold
     if not 0.0 < threshold <= 1.0:
         raise ValueError("threshold must be in (0, 1]")
     ordered = sorted(entries, key=lambda entry: entry.id)
     if not ordered:
         raise ValueError("cannot cluster an empty entry set")
     texts = [similarity_text(entry) for entry in ordered]
-    embeddings = backend.embed(texts)
     if embeddings.shape[0] != len(ordered) or embeddings.ndim != 2:
-        raise ValueError("backend returned an embedding matrix with the wrong shape")
+        raise ValueError("pre-computed embedding matrix has the wrong shape")
     if not np.isfinite(embeddings).all():
-        raise ValueError("backend returned non-finite embeddings")
+        raise ValueError("pre-computed embedding matrix contains non-finite values")
     norms = np.linalg.norm(embeddings, axis=1)
     if np.any(norms == 0):
-        raise ValueError("backend returned a zero embedding")
+        raise ValueError("pre-computed embedding matrix contains a zero embedding")
     embeddings = embeddings / norms[:, None]
     if len(ordered) > 1 and np.allclose(embeddings, embeddings[0], atol=1e-9):
         # A broken backend that returns the same vector for every text is
@@ -607,11 +695,11 @@ def cluster_entries(
         # output at exit 0.  Catch the degenerate input directly, before any
         # blending, regardless of which backend produced it.
         raise RuntimeError(
-            f"degenerate clustering for backend {backend.name!r} at threshold {threshold:.2f}: "
+            f"degenerate clustering for backend {backend_name!r} at threshold {threshold:.2f}: "
             "backend returned identical embeddings for every text"
         )
-    assignments = _cluster_indices(_similarity_matrix(texts, embeddings, backend), threshold)
-    _assert_non_degenerate(assignments, backend.name, threshold, len(ordered))
+    assignments = _cluster_indices(_similarity_matrix(texts, embeddings, backend_name), threshold)
+    _assert_non_degenerate(assignments, backend_name, threshold, len(ordered))
 
     groups = [[ordered[index] for index in group] for group in assignments]
     groups.sort(key=lambda group: group[0].id)
@@ -631,6 +719,16 @@ def cluster_entries(
             )
         )
     return clusters
+
+
+def cluster_entries_from_backend(
+    entries: Sequence[Entry], backend: EmbeddingBackend, threshold: float | None = None
+) -> list[Cluster]:
+    """Keep the live path intact while the clustering core remains backend-free."""
+    ordered = sorted(entries, key=lambda entry: entry.id)
+    texts = [similarity_text(entry) for entry in ordered]
+    embeddings = backend.embed(texts)
+    return cluster_entries(ordered, embeddings, backend.name, threshold)
 
 
 def write_clusters(
@@ -663,7 +761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         entries = load_entries(args.input_dir)
         backend = select_backend(args.backend)
         threshold = args.threshold if args.threshold is not None else default_threshold(backend.name)
-        clusters = cluster_entries(entries, backend, threshold)
+        clusters = cluster_entries_from_backend(entries, backend, threshold)
         write_clusters(args.output, clusters, backend, threshold, len(entries))
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"cluster: error: {exc}", file=sys.stderr)

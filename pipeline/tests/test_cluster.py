@@ -146,6 +146,14 @@ def test_snapshot_matrix_reproduces_equivalent_live_vector_partition(tmp_path: P
     assert _assignments(replay) == live_assignments
 
 
+def test_precomputed_matrix_rejects_ambiguous_unsorted_entry_order() -> None:
+    entries = _snapshot_entries()
+    matrix = np.eye(len(entries), dtype=np.float32)
+
+    with pytest.raises(ValueError, match=r"entries must be sorted by L1 id.*matrix row order"):
+        MODULE.cluster_entries(list(reversed(entries)), matrix, backend_name="test-dense")
+
+
 def test_snapshot_backend_identity_mismatch_is_rejected_loudly(tmp_path: Path) -> None:
     entries = _snapshot_entries()
     snapshot = tmp_path / "embedding-snapshot.json"

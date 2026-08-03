@@ -670,13 +670,17 @@ def _similarity_matrix(texts: Sequence[str], embeddings: np.ndarray, backend_nam
 def cluster_entries(
     entries: Sequence[Entry], embeddings: np.ndarray, backend_name: str, threshold: float | None = None
 ) -> list[Cluster]:
-    """Cluster entries from a pre-computed matrix without contacting a backend."""
+    """Cluster ID-sorted entries from a same-order matrix without contacting a backend."""
     threshold = default_threshold(backend_name) if threshold is None else threshold
     if not 0.0 < threshold <= 1.0:
         raise ValueError("threshold must be in (0, 1]")
     ordered = sorted(entries, key=lambda entry: entry.id)
     if not ordered:
         raise ValueError("cannot cluster an empty entry set")
+    if [entry.id for entry in entries] != [entry.id for entry in ordered]:
+        raise ValueError(
+            "entries must be sorted by L1 id so pre-computed matrix row order is unambiguous"
+        )
     texts = [similarity_text(entry) for entry in ordered]
     if embeddings.shape[0] != len(ordered) or embeddings.ndim != 2:
         raise ValueError("pre-computed embedding matrix has the wrong shape")

@@ -1,5 +1,8 @@
 # PLAN-07 — rebuild the discriminating check by reverting the hunk, not copying the tree
-Issue: petersimmons1972/hindsight#23 · Replaces PR #10 · Status: READY · Blocks nothing
+Issue: petersimmons1972/hindsight#23 · Replaces PR #10 · Status: FOUNDER-BLOCKED — PR #48 was
+closed unmerged after independent review found this universal reverse-hunk design unsound. Do not
+execute §14 until the founder selects a supported-shape gate, language-aware reducer, or
+diagnostic-only behavior. Blocks nothing.
 
 ## 1. CONTEXT YOU DO NOT HAVE
 
@@ -17,9 +20,11 @@ is absent" with "the module is absent", and the second is true of essentially ev
 
 It also gates nothing today: `rg -n verify-discriminating .github/` returns **0 hits**.
 
-**The replacement design, founder-approved:** keep the test, **revert the diff's implementation
-hunks**, and run at HEAD. The module still exists — only its behaviour is gone. This is exactly what
-the adversarial verifiers did by hand all campaign, and it caught every real defect found.
+**The former replacement proposal, now rejected for universal use:** keep the test, **revert the
+diff's implementation hunks**, and run at HEAD. PR #48's independent review found that the design
+cannot safely distinguish import-only failures from genuine behavior regressions, and can certify
+syntax or missing-file errors as discriminating. Preserve this analysis as prior art; do not dispatch
+it until the founder chooses a bounded replacement shape.
 
 This packet also discharges the standing **audition debt** — a real audition slot exempted three
 times, which is exactly how a gate stops meaning anything.

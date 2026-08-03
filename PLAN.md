@@ -71,10 +71,10 @@ Each is self-contained and executable by a model with zero conversational contex
 | 01 | `plans/01-enforcement-disclosure.md` | #18 | COMPLETE — PR #27 merged; main guard green |
 | 02 | `plans/02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green |
 | 03 | `plans/03-recurrence-trend-instrument.md` | #29 | **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok); `docs/DECISIONS.md` rows 22–26 |
-| 04 | `plans/04-sync-repair-and-distribute.md` | #22 (closes #24) | READY |
-| 05 | `plans/05-enforcement-locality.md` | #20 / PR #12 | BLOCKED — founder accepted the design; PR #12 closes only when this lands |
-| 06 | `plans/06-l3-invariant-ledger.md` | #21 | BLOCKED by 02 |
-| 07 | `plans/07-discriminating-rebuild.md` | #23 | READY, blocks nothing |
+| 04 | `plans/04-sync-repair-and-distribute.md` | #22 (closes #24) | FOUNDER-BLOCKED — decide push-vs-pull before merging the #40/#41/#43/#44/#46 stack; #24 must choose this path or C6c |
+| 05 | `plans/05-enforcement-locality.md` | PR #12 | BLOCKED — issue #20 closed with packet 20-1/PR #52; the remaining locality work is held behind Plan 04 and closes PR #12 only when its replacement capability lands |
+| 06 | `plans/06-l3-invariant-ledger.md` | #21 | FOUNDER-BLOCKED — coordinator fixture landed in PR #63; resolve W1/W2 disk-artifact contract before dispatch |
+| 07 | `plans/07-discriminating-rebuild.md` | #23 | FOUNDER-BLOCKED — PR #48 closed as unsound; choose supported-shape gate, language-aware reducer, or diagnostic-only behavior |
 | 08 | `plans/08-reconcile-partial-is-not-pass.md` | #25 | **COMPLETE — PR #26 merged; main guard green** |
 
 `docs/INVARIANTS.md` is the canonical R1–R9 + PROHIBITIONS source. `docs/LEDGER.md` is executed,
@@ -89,9 +89,9 @@ OPEN — #18 was lost for a day because "half-applied" had nowhere to live.
 02  #19  ingest consults the corpus    <- the dogfooding closure; prerequisite for 03
 03  ---  recurrence-trend instrument   <- WITHDRAWN 2026-08-03; replaced by #38/#39 mechanization
 04  #22  sync repaired, becomes the distribution channel (closes #24)
-05  #20  enforcement locality; then close PR #12
-06  #21  L3 invariant ledger, reshaped from prose to a validated ledger
-07  #23  discriminating rebuild, attack-spec-first
+05  PR #12  enforcement locality; then close PR #12  <- #20 closed by packet 20-1 / PR #52
+06  #21  L3 invariant ledger, reshaped from prose to a validated ledger  <- fixture merged; W1/W2 artifact contract needs founder ruling
+07  #23  discriminating rebuild, attack-spec-first                       <- PR #48 rejected; design-ruling blocked
 ```
 
 **08 first**, added after a cross-vendor ledger audit on 2026-08-02 and reproduced by the

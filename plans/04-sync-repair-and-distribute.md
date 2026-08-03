@@ -1,5 +1,8 @@
 # PLAN-04 — repair the sync channel so the floor reaches its consumers
-Issue: petersimmons1972/hindsight#22 (closes #24) · Status: READY · Blocked-by: none · Blocks: 05
+Issue: petersimmons1972/hindsight#22 (closes #24) · Status: FOUNDER-BLOCKED — do not execute this
+packet or merge #40/#41/#43/#44/#46 until the founder decides whether Hindsight may push into
+repositories it does not own. Issue #24 must also choose this repair path or the C6c replacement.
+Blocks: 05.
 
 ## 1. CONTEXT YOU DO NOT HAVE
 

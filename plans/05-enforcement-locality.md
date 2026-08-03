@@ -1,5 +1,6 @@
 # PLAN-05 — each repo verifies its own enforcement claims
-Issue: petersimmons1972/hindsight#20 · Also closes PR #12 · Status: BLOCKED by 04 · Founder-approved design
+Tracker: PR #12 — issue #20 was closed by packet 20-1 / PR #52; this plan's remaining locality
+work still closes PR #12. Status: BLOCKED by 04 · Founder-approved design.
 
 ## 1. CONTEXT YOU DO NOT HAVE
 

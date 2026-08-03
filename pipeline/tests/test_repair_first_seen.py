@@ -192,6 +192,114 @@ def test_directory_replace_failure_restores_every_original_and_cleans_temps(
     assert "NOT MEASURED" in err
 
 
+def test_cleanup_leftovers_do_not_change_committed_or_repeat_run_outcomes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-commit cleanup failures are warnings, not failed measurements."""
+    env = Env(tmp_path)
+    first, second = _directory_targets_with_repairable_rows(env)
+    real_unlink = Path.unlink
+    refused: list[Path] = []
+
+    def fail_backup_unlink(path: Path, missing_ok: bool = False) -> None:
+        if ".backup-" in path.name:
+            refused.append(path)
+            raise OSError("injected backup cleanup failure")
+        real_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_backup_unlink)
+
+    assert repair_first_seen.main(env.args(env.l1)) == 0
+
+    assert _load(first)["a"]["first_seen"] == "2026-01-08"
+    assert _load(second)["b"]["first_seen"] == "2026-01-08"
+    assert len(refused) == 2
+    assert all(path.exists() for path in refused)
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "repaired outputs were committed" in err
+    assert all(str(path) in err for path in refused)
+    assert "DATED-BY-ANCHOR: 2" in err
+    assert "DATED-BY-FALLBACK: 0" in err
+    assert "STILL-UNDATED: 0" in err
+    assert "NOT MEASURED" not in err
+
+    monkeypatch.undo()
+    assert repair_first_seen.main(env.args(env.l1)) == 0
+    repeat_err = capsys.readouterr().err
+    assert "DATED-BY-ANCHOR: 0" in repeat_err
+    assert "DATED-BY-FALLBACK: 0" in repeat_err
+    assert "STILL-UNDATED: 0" in repeat_err
+    assert "WARNING" not in repeat_err
+    assert "NOT MEASURED" not in repeat_err
+
+
+def test_single_file_replace_failure_restores_original_bytes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-file mode uses staged replacement and compensation."""
+    env = Env(tmp_path)
+    _commit(env.source, "docs/source.md", "# source\n## Anchor\n", "2026-01-08T09:00:00+00:00")
+    target = env.target([_row("anchor", "Anchor")])
+    original = target.read_bytes()
+    real_replace = os.replace
+    calls = 0
+
+    def fail_replacement(source: str | Path, destination: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected single-file replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(repair_first_seen.os, "replace", fail_replacement)
+
+    assert repair_first_seen.main(env.args(target)) == 1
+
+    assert target.read_bytes() == original
+    assert not list(env.l1.glob(".*"))
+    err = capsys.readouterr().err
+    assert "injected single-file replace failure" in err
+    assert "NOT MEASURED" in err
+
+
+def test_single_file_rollback_failure_names_byte_identical_recovery_artifact(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ambiguous replace failure preserves an exact original-byte recovery path."""
+    env = Env(tmp_path)
+    _commit(env.source, "docs/source.md", "# source\n## Anchor\n", "2026-01-08T09:00:00+00:00")
+    target = env.target([_row("anchor", "Anchor")])
+    original = target.read_bytes()
+    real_replace = os.replace
+    calls = 0
+
+    def replace_then_fail_rollback(source: str | Path, destination: str | Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            real_replace(source, destination)
+            raise OSError("injected ambiguous replace failure")
+        if calls == 2:
+            raise OSError("injected single-file rollback failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(repair_first_seen.os, "replace", replace_then_fail_rollback)
+
+    assert repair_first_seen.main(env.args(target)) == 1
+
+    recovery_paths = list(env.l1.glob(".sample.jsonl.backup-*"))
+    assert len(recovery_paths) == 1
+    recovery_path = recovery_paths[0]
+    assert recovery_path.read_bytes() == original
+    err = capsys.readouterr().err
+    assert "injected ambiguous replace failure" in err
+    assert "injected single-file rollback failure" in err
+    assert str(recovery_path) in err
+    assert "contains the original bytes" in err
+    assert "NOT MEASURED" in err
+
+
 def test_staging_metadata_failure_preserves_originals_and_cleans_registered_temp(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -219,7 +327,8 @@ def test_rollback_failure_names_both_errors_and_preserves_recovery_backup(
 ) -> None:
     """A failed rollback leaves the original's backup available for recovery."""
     env = Env(tmp_path)
-    first, _second = _directory_targets_with_repairable_rows(env)
+    first, second = _directory_targets_with_repairable_rows(env)
+    original = {path: path.read_bytes() for path in (first, second)}
     real_replace = os.replace
     calls = 0
 
@@ -236,10 +345,15 @@ def test_rollback_failure_names_both_errors_and_preserves_recovery_backup(
 
     assert repair_first_seen.main(env.args(env.l1)) == 1
 
-    assert list(env.l1.glob(".a.jsonl.backup-*"))
+    recovery_paths = list(env.l1.glob(".b.jsonl.backup-*"))
+    assert len(recovery_paths) == 1
+    recovery_path = recovery_paths[0]
+    assert recovery_path.read_bytes() == original[second]
     err = capsys.readouterr().err
     assert "injected primary replace failure" in err
     assert "injected rollback replace failure" in err
+    assert str(recovery_path) in err
+    assert "contains the original bytes" in err
     assert "NOT MEASURED" in err
 
 

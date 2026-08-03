@@ -178,17 +178,21 @@ def _compute_repair(
     return stats, "\n".join(out_lines) + "\n"
 
 
-def _replace_staged_outputs(outputs: list[tuple[Path, str]]) -> None:
+def _replace_staged_outputs(outputs: list[tuple[Path, str]]) -> list[Path]:
     """Commit outputs with normal-failure compensation, not crash atomicity.
 
     Every original has a same-directory backup before replacement. Ordinary
     staging and replace errors are compensated, but a process crash between
-    replacements cannot make the whole directory atomic.
+    replacements cannot make the whole directory atomic. Cleanup failures
+    after every replacement succeeds are returned without changing that
+    committed outcome.
     """
     staged_paths: list[Path] = []
     backup_paths: dict[Path, Path] = {}
     preserve_for_recovery: set[Path] = set()
     ordered_outputs = sorted(outputs, key=lambda item: str(item[0]))
+    transaction_error: OSError | None = None
+    committed = False
     try:
         for path, output in ordered_outputs:
             with tempfile.NamedTemporaryFile(
@@ -226,30 +230,54 @@ def _replace_staged_outputs(outputs: list[tuple[Path, str]]) -> None:
         replaced_paths: list[Path] = []
         try:
             for (path, _output), temp_path in zip(ordered_outputs, staged_paths):
-                os.replace(temp_path, path)
+                # A failed replace is ambiguous: include its target in
+                # compensation in case the destination changed before erroring.
                 replaced_paths.append(path)
+                os.replace(temp_path, path)
         except OSError as primary_error:
-            rollback_errors: list[tuple[Path, OSError]] = []
+            rollback_errors: list[tuple[Path, Path, OSError]] = []
             for path in reversed(replaced_paths):
                 try:
                     os.replace(backup_paths[path], path)
                 except OSError as rollback_error:
-                    preserve_for_recovery.add(backup_paths[path])
-                    rollback_errors.append((path, rollback_error))
+                    recovery_path = backup_paths[path]
+                    preserve_for_recovery.add(recovery_path)
+                    rollback_errors.append((path, recovery_path, rollback_error))
             if rollback_errors:
                 rollback_detail = "; ".join(
-                    f"{path}: {error}" for path, error in rollback_errors
+                    f"{path}: recovery artifact {recovery_path} contains the original bytes: {error}"
+                    for path, recovery_path, error in rollback_errors
                 )
                 raise OSError(
                     f"replacement failed: {primary_error}; rollback failed: {rollback_detail}"
                 ) from primary_error
             raise
-    finally:
-        for temporary_path in staged_paths:
-            temporary_path.unlink(missing_ok=True)
-        for backup_path in backup_paths.values():
-            if backup_path not in preserve_for_recovery:
-                backup_path.unlink(missing_ok=True)
+        committed = True
+    except OSError as error:
+        transaction_error = error
+
+    cleanup_errors: list[tuple[Path, OSError]] = []
+    cleanup_paths = [*staged_paths, *backup_paths.values()]
+    for cleanup_path in cleanup_paths:
+        if cleanup_path in preserve_for_recovery:
+            continue
+        try:
+            cleanup_path.unlink(missing_ok=True)
+        except OSError as error:
+            cleanup_errors.append((cleanup_path, error))
+
+    if transaction_error is not None:
+        if cleanup_errors:
+            cleanup_detail = "; ".join(
+                f"{path}: {error}" for path, error in cleanup_errors
+            )
+            raise OSError(
+                f"{transaction_error}; cleanup failed, leaving: {cleanup_detail}"
+            ) from transaction_error
+        raise transaction_error
+    if not committed:
+        raise RuntimeError("staged output transaction ended without an outcome")
+    return [path for path, _error in cleanup_errors]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -295,21 +323,22 @@ def main(argv: list[str] | None = None) -> int:
             print("date-repair: NOT MEASURED", file=sys.stderr)
             return 1
         computations.append((file, stats, output))
-    if l1_target.is_dir():
-        try:
-            _replace_staged_outputs([(file, output) for file, _stats, output in computations])
-        except OSError as exc:
-            print(f"date-repair: ERROR: cannot replace staged output: {exc}", file=sys.stderr)
-            print("date-repair: NOT MEASURED", file=sys.stderr)
-            return 1
-    else:
-        file, _stats, output = computations[0]
-        try:
-            file.write_text(output, encoding="utf-8")
-        except OSError as exc:
-            print(f"date-repair: ERROR: cannot write repaired output: {exc}", file=sys.stderr)
-            print("date-repair: NOT MEASURED", file=sys.stderr)
-            return 1
+    try:
+        cleanup_leftovers = _replace_staged_outputs(
+            [(file, output) for file, _stats, output in computations]
+        )
+    except OSError as exc:
+        print(f"date-repair: ERROR: cannot replace staged output: {exc}", file=sys.stderr)
+        print("date-repair: NOT MEASURED", file=sys.stderr)
+        return 1
+
+    if cleanup_leftovers:
+        leftovers = ", ".join(str(path) for path in cleanup_leftovers)
+        print(
+            "date-repair: WARNING: repaired outputs were committed, but cleanup "
+            f"failed; exact leftover paths: {leftovers}",
+            file=sys.stderr,
+        )
 
     total = RepairStats()
     for _file, stats, _output in computations:

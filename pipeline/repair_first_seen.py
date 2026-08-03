@@ -30,9 +30,18 @@ no rewrite, no provenance key added. Rows that resolve under neither path are
 left with no ``first_seen`` and no provenance key -- STILL-UNDATED, never a
 guess.
 
+The corpus statistics (DIFFERENTIAL / WARNING) are UNPOINTABLE: they read
+exactly two module constants derived from this file's own location --
+``CORPUS_L1`` and ``CORPUS_CLUSTERS`` -- and nothing else. No CLI flag or
+function argument can make them read any other directory or file. ``--l1``
+may retarget the REPAIR (dating rows in some other file, e.g. for a test
+fixture); it has no influence whatsoever on the statistics. If the repair
+target isn't ``CORPUS_L1``, both statistic lines print NOT MEASURED naming
+that as the reason.
+
 Usage:  python3 repair_first_seen.py [--l1 PATH] [--source-roots PATH]
                                       [--projects-dir PATH] [--self-dir PATH]
-                                      [--hindsight-repo PATH] [--clusters PATH]
+                                      [--hindsight-repo PATH]
 """
 from __future__ import annotations
 
@@ -46,12 +55,30 @@ from pathlib import Path
 SELF_ROOT_TOKEN = "SELF"
 PROJECTS_ROOT_TOKEN = "."
 
+# This file's own directory -- the ONE anchor the statistics are allowed to
+# read from. Derived from __file__, never from an argument: there is no CLI
+# flag, no function parameter, no environment variable that can move it.
+_PIPELINE_DIR = Path(__file__).resolve().parent
+
+# The real corpus location and the real cluster-membership file. Every
+# statistic (DIFFERENTIAL, WARNING) reads these two constants and nothing
+# else. ``--l1`` can still retarget the REPAIR -- that's what makes repair
+# testable against a scratch fixture -- but it can never make a statistic
+# read anywhere but here (see _measure_corpus).
+CORPUS_L1 = _PIPELINE_DIR / "L1"
+CORPUS_CLUSTERS = _PIPELINE_DIR / "L2" / "clusters.jsonl"
+
+
+def _repo_root() -> Path:
+    return _PIPELINE_DIR.parent
+
+
 # The two family sets this packet reports a fairness differential across.
 # Fixed here as MODULE CONSTANTS, never read from an argument or inferred
-# from whatever a --clusters file happens to contain -- an argument-supplied
+# from whatever a clusters file happens to contain -- an argument-supplied
 # or partial family list is exactly how a scratch/stripped clusters file
 # used to get treated as authoritative (instances #1 and #6 of the
-# fabricated-statistic defect; see _measure_corpus).
+# fabricated-statistic defect; see _resolve_measurement).
 ARM_B_FAMILIES = {"c-043", "c-045", "c-063", "c-082", "c-104", "c-191"}
 COMPARATOR_FAMILIES = {
     "c-003", "c-004", "c-007", "c-008", "c-038", "c-044", "c-049", "c-051",
@@ -59,16 +86,15 @@ COMPARATOR_FAMILIES = {
 }
 EXPECTED_FAMILIES = ARM_B_FAMILIES | COMPARATOR_FAMILIES  # 21 families total
 
-# The real corpus's ground-truth total member count (32 Arm B + 102
-# comparator = 134) once every expected family and member resolves. This is
-# documentation of what a genuine measurement against THIS repo's real
-# pipeline/L2/clusters.jsonl produces -- not a count enforced at runtime.
-# The gate below enforces the thing that actually matters (every expected
-# family present, every one of its declared members loaded), which is what
-# makes 134 the real corpus's answer; a synthetic/test corpus legitimately
-# has a different total and is still honestly "measured" if it resolves
-# completely on its own terms.
-EXPECTED_MEMBERS = 134
+# The real corpus's ground-truth member counts. ENFORCED (instance #8: a
+# clusters.jsonl silently stripped of 2 of c-104's members shrank the
+# denominator from 32 to 30 and printed a fabricated 53.3% -- nothing checked
+# that the resolved membership actually matched the known-good count). Any
+# other resolved count on either arm is a hard NOT MEASURED naming the actual
+# counts, never a silent recompute of the percentage over whatever survived.
+EXPECTED_ARM_B_MEMBERS = 32
+EXPECTED_COMPARATOR_MEMBERS = 102
+EXPECTED_MEMBERS = EXPECTED_ARM_B_MEMBERS + EXPECTED_COMPARATOR_MEMBERS  # 134
 
 
 @dataclass
@@ -236,20 +262,16 @@ def repair_file(
     return stats
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
 @dataclass
 class CorpusMeasurement:
     """The ONE trust gate. Every statistic print path -- the differential,
     the fallback WARNING -- consults this and only this. ``measured`` is
     True only when the corpus's IDENTITY has been established: this run's
-    target really is the real corpus directory, every expected family is
-    present in the clusters file, and every one of its declared members was
-    actually loaded. When any of that fails, ``reason`` names the shortfall
-    and every statistic path prints NOT MEASURED with it -- never a number,
-    never a silent skip.
+    target really is CORPUS_L1, every expected family is present in
+    CORPUS_CLUSTERS, each arm's resolved membership matches the known-good
+    count, and every declared member was actually loaded. When any of that
+    fails, ``reason`` names the shortfall and every statistic path prints
+    NOT MEASURED with it -- never a number, never a silent skip.
 
     ``id_provenance`` covers EVERY row loaded from the corpus (not just
     cluster members), so it backs both the per-family differential and the
@@ -263,31 +285,10 @@ class CorpusMeasurement:
     comparator_ids: frozenset[str] | None = None
 
 
-def _measure_corpus(l1_target: Path, real_corpus_dir: Path, clusters_path: Path) -> CorpusMeasurement:
-    """Establish corpus identity ONCE, before any statistic is computed.
-
-    Checked in order, first failure wins:
-      1. the real corpus directory exists at all (not a missing pipeline/L1);
-      2. this run's actual target IS that directory, not some other
-         argument-inferred path (a scratch dir never becomes "the corpus"
-         just because a flag pointed there);
-      3. the clusters file declares every module-constant family -- a file
-         stripped of a family must not resolve vacuously over the rest;
-      4. every member of every declared family was actually loaded from a
-         row in the corpus -- an id absent from every row never resolved.
-    """
-    if not real_corpus_dir.is_dir():
-        return CorpusMeasurement(False, f"no corpus directory at {real_corpus_dir}")
-
-    if l1_target.resolve() != real_corpus_dir.resolve():
-        return CorpusMeasurement(False, "target is not the corpus")
-
-    try:
-        clusters_text = clusters_path.read_text(encoding="utf-8")
-    except OSError:
-        return CorpusMeasurement(False, f"no clusters file at {clusters_path}")
-
-    found_families: dict[str, set[str]] = {}
+def _parse_cluster_families(clusters_text: str) -> dict[str, set[str]]:
+    """PURE: parse clusters.jsonl TEXT into cluster_id -> members, restricted
+    to this module's known family ids. No IO, no path argument."""
+    found: dict[str, set[str]] = {}
     for line in clusters_text.splitlines():
         line = line.strip()
         if not line:
@@ -297,8 +298,45 @@ def _measure_corpus(l1_target: Path, real_corpus_dir: Path, clusters_path: Path)
         if cid is None:
             continue  # the _meta header row
         if cid in EXPECTED_FAMILIES:
-            found_families[cid] = set(rec.get("members", []))
+            found[cid] = set(rec.get("members", []))
+    return found
 
+
+def _parse_id_provenance(records: list[dict]) -> dict[str, str]:
+    """PURE: turn already-parsed L1 row dicts into id -> provenance. No IO,
+    no path argument."""
+    id_provenance: dict[str, str] = {}
+    for rec in records:
+        rid = rec.get("id")
+        if rid is None:
+            continue
+        prov = rec.get("first_seen_provenance")
+        if prov == "git-anchor":
+            id_provenance[rid] = "git-anchor"
+        elif prov == "l1-ingest-fallback":
+            id_provenance[rid] = "l1-ingest-fallback"
+        elif rec.get("first_seen") is not None:
+            id_provenance[rid] = "pre-existing"
+        else:
+            id_provenance[rid] = "undated"
+    return id_provenance
+
+
+def _resolve_measurement(found_families: dict[str, set[str]], id_provenance: dict[str, str]) -> CorpusMeasurement:
+    """PURE: every check after "the clusters text is parsed and the corpus
+    rows are loaded" -- family presence, the EXPECTED_ARM_B_MEMBERS /
+    EXPECTED_COMPARATOR_MEMBERS equality, and unresolved-member detection.
+    Takes only already-loaded data (dicts), does no IO, and accepts no path.
+
+    Checked in order, first failure wins:
+      1. the clusters data declares every module-constant family -- a file
+         stripped of a family must not resolve vacuously over the rest;
+      2. each arm's resolved membership count matches the known-good total
+         -- a family quietly stripped of members (not the whole family, just
+         some of its members) must not silently shrink the denominator;
+      3. every member of every declared family was actually loaded from a
+         corpus row -- an id absent from every row never resolved.
+    """
     missing_families = EXPECTED_FAMILIES - found_families.keys()
     if missing_families:
         return CorpusMeasurement(
@@ -310,25 +348,13 @@ def _measure_corpus(l1_target: Path, real_corpus_dir: Path, clusters_path: Path)
     arm_b_ids: set[str] = set().union(*(found_families[c] for c in ARM_B_FAMILIES))
     comparator_ids: set[str] = set().union(*(found_families[c] for c in COMPARATOR_FAMILIES))
 
-    id_provenance: dict[str, str] = {}
-    for jf in sorted(real_corpus_dir.glob("*.jsonl")):
-        for line in jf.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            rec = json.loads(line)
-            rid = rec.get("id")
-            if rid is None:
-                continue
-            prov = rec.get("first_seen_provenance")
-            if prov == "git-anchor":
-                id_provenance[rid] = "git-anchor"
-            elif prov == "l1-ingest-fallback":
-                id_provenance[rid] = "l1-ingest-fallback"
-            elif rec.get("first_seen") is not None:
-                id_provenance[rid] = "pre-existing"
-            else:
-                id_provenance[rid] = "undated"
+    if len(arm_b_ids) != EXPECTED_ARM_B_MEMBERS or len(comparator_ids) != EXPECTED_COMPARATOR_MEMBERS:
+        return CorpusMeasurement(
+            False,
+            f"cluster membership resolved to {len(arm_b_ids)} arm-b members "
+            f"(expected {EXPECTED_ARM_B_MEMBERS}) and {len(comparator_ids)} comparator members "
+            f"(expected {EXPECTED_COMPARATOR_MEMBERS})",
+        )
 
     expected_ids = arm_b_ids | comparator_ids
     unresolved_ids = expected_ids - id_provenance.keys()
@@ -346,6 +372,83 @@ def _measure_corpus(l1_target: Path, real_corpus_dir: Path, clusters_path: Path)
     )
 
 
+def _read_corpus_records() -> list[dict]:
+    """The ONE disk read of the real corpus: every row from every
+    CORPUS_L1/*.jsonl file. Reads the module constant only -- takes no
+    argument, so there is nothing to point elsewhere."""
+    records: list[dict] = []
+    for jf in sorted(CORPUS_L1.glob("*.jsonl")):
+        for line in jf.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            if isinstance(rec, dict):
+                records.append(rec)
+    return records
+
+
+def _measure_corpus(l1_target: Path) -> CorpusMeasurement:
+    """Establish corpus identity ONCE, before any statistic is computed.
+    IO orchestration only -- both reads are of the module constants
+    (CORPUS_L1, CORPUS_CLUSTERS), never of an argument; all computation is
+    delegated to the pure _resolve_measurement.
+
+    ``l1_target`` is used for exactly one comparison: is this run's actual
+    repair target CORPUS_L1 itself? Nothing derived from ``l1_target`` is
+    ever used as a read location -- there is structurally no way for a
+    ``--l1`` override to redirect what gets measured, only whether it
+    matches (in which case it's measured) or doesn't (NOT MEASURED).
+    """
+    if not CORPUS_L1.is_dir():
+        return CorpusMeasurement(False, f"no corpus directory at {CORPUS_L1}")
+
+    if l1_target.resolve() != CORPUS_L1.resolve():
+        return CorpusMeasurement(False, "target is not the corpus")
+
+    try:
+        clusters_text = CORPUS_CLUSTERS.read_text(encoding="utf-8")
+    except OSError:
+        return CorpusMeasurement(False, f"no clusters file at {CORPUS_CLUSTERS}")
+
+    found_families = _parse_cluster_families(clusters_text)
+    id_provenance = _parse_id_provenance(_read_corpus_records())
+    return _resolve_measurement(found_families, id_provenance)
+
+
+def _summarize_family(ids: frozenset[str], id_provenance: dict[str, str]) -> tuple[int, int, int, int]:
+    """PURE: (pre-existing, git-anchor, l1-ingest-fallback, undated) counts
+    for *ids* against an already-loaded provenance map."""
+    pre = anchor = fallback = undated = 0
+    for i in ids:
+        p = id_provenance.get(i)
+        if p == "pre-existing":
+            pre += 1
+        elif p == "git-anchor":
+            anchor += 1
+        elif p == "l1-ingest-fallback":
+            fallback += 1
+        elif p == "undated":
+            undated += 1
+    return pre, anchor, fallback, undated
+
+
+def _pct_pre_dated(pre: int, anchor: int, fallback: int) -> str:
+    """PURE."""
+    total = pre + anchor + fallback
+    if total == 0:
+        return "n/a"
+    return f"{pre / total * 100:.1f}%"
+
+
+def _fallback_share(id_provenance: dict[str, str]) -> tuple[int, int]:
+    """PURE: (fallback count, dated count) across every row in an
+    already-loaded provenance map."""
+    anchor = sum(1 for p in id_provenance.values() if p == "git-anchor")
+    fallback = sum(1 for p in id_provenance.values() if p == "l1-ingest-fallback")
+    return fallback, anchor + fallback
+
+
 def _print_differential(measurement: CorpusMeasurement) -> None:
     """Report the PROVENANCE-QUALITY split between the Arm B intervention
     families and the comparator pool. Reporting only -- this packet does not
@@ -360,35 +463,15 @@ def _print_differential(measurement: CorpusMeasurement) -> None:
         print(f"date-repair: DIFFERENTIAL: NOT MEASURED ({measurement.reason})", file=sys.stderr)
         return
 
-    def summarize(ids: frozenset[str]) -> tuple[int, int, int, int]:
-        pre = anchor = fallback = undated = 0
-        for i in ids:
-            p = measurement.id_provenance.get(i)
-            if p == "pre-existing":
-                pre += 1
-            elif p == "git-anchor":
-                anchor += 1
-            elif p == "l1-ingest-fallback":
-                fallback += 1
-            elif p == "undated":
-                undated += 1
-        return pre, anchor, fallback, undated
-
-    def pct_pre_dated(pre: int, anchor: int, fallback: int) -> str:
-        total = pre + anchor + fallback
-        if total == 0:
-            return "n/a"
-        return f"{pre / total * 100:.1f}%"
-
     for label, ids in (
         ("intervention-family", measurement.arm_b_ids),
         ("comparator-pool", measurement.comparator_ids),
     ):
-        pre, anchor, fallback, undated = summarize(ids)
+        pre, anchor, fallback, undated = _summarize_family(ids, measurement.id_provenance)
         print(
             f"date-repair: DIFFERENTIAL: {label} (n={len(ids)}) "
             f"pre-existing={pre} git-anchor={anchor} l1-ingest-fallback={fallback} "
-            f"undated={undated} -> {pct_pre_dated(pre, anchor, fallback)} pre-dated",
+            f"undated={undated} -> {_pct_pre_dated(pre, anchor, fallback)} pre-dated",
             file=sys.stderr,
         )
 
@@ -415,9 +498,7 @@ def _print_fallback_warning(measurement: CorpusMeasurement) -> None:
         print(f"date-repair: WARNING: NOT MEASURED ({measurement.reason})", file=sys.stderr)
         return
 
-    anchor = sum(1 for p in measurement.id_provenance.values() if p == "git-anchor")
-    fallback = sum(1 for p in measurement.id_provenance.values() if p == "l1-ingest-fallback")
-    dated = anchor + fallback
+    fallback, dated = _fallback_share(measurement.id_provenance)
     if dated == 0:
         return
     fallback_share = fallback / dated
@@ -432,13 +513,17 @@ def _print_fallback_warning(measurement: CorpusMeasurement) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--l1", type=Path, default=None,
-                     help="L1 jsonl file, or a directory of them (default: pipeline/L1 under --self-dir)")
+                     help="L1 jsonl file, or a directory of them, to REPAIR (default: CORPUS_L1, "
+                          "this repo's own pipeline/L1). Retargeting this only changes what gets "
+                          "dated -- the DIFFERENTIAL/WARNING statistics always read CORPUS_L1 and "
+                          "CORPUS_CLUSTERS regardless, and print NOT MEASURED whenever this doesn't "
+                          "resolve to CORPUS_L1 itself.")
     ap.add_argument("--source-roots", type=Path, default=None)
     ap.add_argument("--projects-dir", type=Path, default=None)
-    ap.add_argument("--self-dir", type=Path, default=None)
+    ap.add_argument("--self-dir", type=Path, default=None,
+                     help="Root used to resolve the SELF-mapped source-roots token during REPAIR "
+                          "only; has no effect on the statistics.")
     ap.add_argument("--hindsight-repo", type=Path, default=None)
-    ap.add_argument("--clusters", type=Path, default=None,
-                     help="pipeline/L2/clusters.jsonl, for the DIFFERENTIAL report")
     args = ap.parse_args(argv)
 
     repo_root = _repo_root()
@@ -446,8 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     hindsight_repo = args.hindsight_repo if args.hindsight_repo is not None else repo_root
     projects_dir = args.projects_dir if args.projects_dir is not None else (Path.home() / "projects")
     source_roots_path = args.source_roots if args.source_roots is not None else (repo_root / "conf" / "source-roots.conf")
-    l1_target = args.l1 if args.l1 is not None else (self_dir / "pipeline" / "L1")
-    clusters_path = args.clusters if args.clusters is not None else (hindsight_repo / "pipeline" / "L2" / "clusters.jsonl")
+    l1_target = args.l1 if args.l1 is not None else CORPUS_L1
 
     try:
         roots_text = source_roots_path.read_text(encoding="utf-8")
@@ -468,8 +552,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         files = [l1_target]
 
-    real_corpus_dir = self_dir / "pipeline" / "L1"
-
     total = RepairStats()
     had_error = False
     for f in files:
@@ -487,19 +569,20 @@ def main(argv: list[str] | None = None) -> int:
         # D-2 / R4: a fail-loud path must never print counts, not even
         # zeros -- a zero is indistinguishable from a genuine all-zero run.
         print("date-repair: NOT MEASURED", file=sys.stderr)
-        return 1
+    else:
+        print(f"date-repair: DATED-BY-ANCHOR: {total.dated_by_anchor}", file=sys.stderr)
+        print(f"date-repair: DATED-BY-FALLBACK: {total.dated_by_fallback}", file=sys.stderr)
+        print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)
 
-    print(f"date-repair: DATED-BY-ANCHOR: {total.dated_by_anchor}", file=sys.stderr)
-    print(f"date-repair: DATED-BY-FALLBACK: {total.dated_by_fallback}", file=sys.stderr)
-    print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)
-
-    # ONE gate, established once, consulted by every statistic path below.
-    # See CorpusMeasurement / _measure_corpus.
-    measurement = _measure_corpus(l1_target, real_corpus_dir, clusters_path)
+    # ONE gate, established once, consulted by every statistic path below --
+    # reached on EVERY exit, error or success alike, so the DIFFERENTIAL and
+    # WARNING lines are never silently skipped (instance #5: a fail-loud
+    # return used to happen before either line printed at all).
+    measurement = _measure_corpus(l1_target)
     _print_differential(measurement)
     _print_fallback_warning(measurement)
 
-    return 0
+    return 1 if had_error else 0
 
 
 if __name__ == "__main__":

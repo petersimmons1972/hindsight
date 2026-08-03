@@ -1,10 +1,5 @@
 """Contract tests for the ``first_seen`` date-repair tool (Issue #32, packet P0).
 
-RED phase only: ``pipeline/repair_first_seen.py`` does not exist yet. Every test
-below is expected to fail on collection (ModuleNotFoundError) until the module
-is implemented in the next packet. That is the point -- these tests pin the
-contract first.
-
 The contract, per the issue:
 
 * A row's ``source_path`` / ``source_anchor`` are mapped, via the row's SOURCE
@@ -25,8 +20,26 @@ The contract, per the issue:
 * Every run reports the three counts (DATED-BY-ANCHOR / DATED-BY-FALLBACK /
   STILL-UNDATED) on stderr, prefixed ``date-repair:``.
 
-All git fixtures below are built as disposable temp repos at test time --
-nothing here touches the real ~/projects checkouts, conf/, or catalog/.
+Two DIFFERENT things get exercised in this file, deliberately kept apart:
+
+1. ``repair_file`` / the CLI's REPAIR path -- takes an explicit target and
+   is legitimately testable against disposable git fixtures (the ``Env``
+   class below). ``--l1`` retargeting this is what makes repair testable at
+   all.
+2. The corpus STATISTICS (``_measure_corpus`` and everything it feeds) --
+   these are UNPOINTABLE by construction: they read exactly the module
+   constants ``CORPUS_L1`` / ``CORPUS_CLUSTERS`` (this real checkout's own
+   ``pipeline/L1`` and ``pipeline/L2/clusters.jsonl``), never an argument.
+   There is therefore no way to build a disposable fixture that looks like
+   "the corpus" to these functions -- and no test here tries to. The maths
+   (``_resolve_measurement``, ``_summarize_family``, ``_pct_pre_dated``,
+   ``_fallback_share``) is tested with plain in-memory data; the read-only
+   orchestration (``_measure_corpus``) is tested straight against the real,
+   already-on-disk corpus (read-only -- these tests never call ``repair_file``
+   or ``main`` against real project files, so nothing here can re-date a row
+   or touch ``catalog/`` / ``conf/``); and the CLI is tested only for the
+   ONE statistics behaviour it can actually still reach: NOT MEASURED when
+   ``--l1`` isn't the corpus.
 """
 from __future__ import annotations
 
@@ -38,7 +51,7 @@ from pathlib import Path
 
 import pytest
 
-from pipeline import repair_first_seen  # RED: module does not exist yet
+from pipeline import repair_first_seen  # noqa: E402
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "repair_first_seen_sample.jsonl"
@@ -88,7 +101,13 @@ def _remove_and_commit(repo: Path, rel_path: str, author_date: str, message: str
 
 
 class Env:
-    """A disposable projects_dir + hindsight_repo pair, wired for --source-roots."""
+    """A disposable projects_dir + hindsight_repo pair, wired for --source-roots.
+
+    Used ONLY to exercise repair_file / the CLI's repair path against
+    fixture git history. This has no bearing on the corpus statistics at
+    all -- there is no argument that routes a fake corpus location into
+    _measure_corpus, so nothing built here can be mistaken for "the corpus".
+    """
 
     def __init__(self, tmp_path: Path) -> None:
         self.projects_dir = tmp_path / "projects"
@@ -134,20 +153,6 @@ def _load_fixture_row(row_id: str) -> dict:
         if row["id"] == row_id:
             return dict(row)
     raise AssertionError(f"fixture row {row_id!r} not found in {FIXTURE}")
-
-
-def _full_clusters_text(**member_overrides: list[str]) -> str:
-    """A clusters.jsonl containing an entry for EVERY module-constant family
-    (the corpus-trust gate's family-presence check), with all 21 members
-    empty unless overridden. An empty-members family satisfies "the family
-    is present" while contributing nothing to the arm/comparator id union --
-    so a test can target just the one or two families it cares about without
-    needing all real 134 members physically present."""
-    lines = []
-    all_families = repair_first_seen.ARM_B_FAMILIES | repair_first_seen.COMPARATOR_FAMILIES
-    for cid in sorted(all_families):
-        lines.append(json.dumps({"cluster_id": cid, "members": member_overrides.get(cid, [])}))
-    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------------
@@ -369,388 +374,339 @@ def test_prints_the_three_counts_on_stderr(tmp_path: Path, capsys: pytest.Captur
     assert "first_seen_provenance" not in rows["fixture-undatable-1"]
 
 
+# ==========================================================================
+# UNPOINTABLE STATISTICS -- Issue #32 refactor.
+#
+# CORPUS_L1 / CORPUS_CLUSTERS are module constants derived from this file's
+# own __file__ location. No CLI flag, no function argument, reaches them.
+# Everything below tests either the PURE maths (in-memory data, no IO, no
+# path) or the real, already-on-disk corpus READ-ONLY (no repair_file / main
+# call touches it) or the one CLI behaviour that's still reachable: NOT
+# MEASURED when --l1 isn't the corpus.
+# ==========================================================================
+
 # --------------------------------------------------------------------------
-# D-1: FABRICATED STATISTIC -- the differential must be computed over the
-# real corpus directory, never a directory inferred from --l1. If the run's
-# target isn't the real corpus, print NOT MEASURED, never a number.
+# constants: derived from module location, and the 134 equality is real
 # --------------------------------------------------------------------------
 
-def test_differential_not_measured_when_target_is_not_the_real_corpus(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_corpus_constants_are_derived_from_this_files_own_location() -> None:
+    module_dir = Path(repair_first_seen.__file__).resolve().parent
+    assert repair_first_seen.CORPUS_L1 == module_dir / "L1"
+    assert repair_first_seen.CORPUS_CLUSTERS == module_dir / "L2" / "clusters.jsonl"
+
+
+def test_expected_members_is_the_sum_of_the_two_arm_constants() -> None:
+    assert repair_first_seen.EXPECTED_MEMBERS == (
+        repair_first_seen.EXPECTED_ARM_B_MEMBERS + repair_first_seen.EXPECTED_COMPARATOR_MEMBERS
+    )
+    assert repair_first_seen.EXPECTED_MEMBERS == 134
+    assert repair_first_seen.EXPECTED_ARM_B_MEMBERS == 32
+    assert repair_first_seen.EXPECTED_COMPARATOR_MEMBERS == 102
+
+
+def test_no_clusters_flag_exists_to_redirect_the_statistics() -> None:
+    """The old --clusters flag is gone entirely -- argparse must reject it,
+    not silently ignore it or accept it and do nothing."""
+    with pytest.raises(SystemExit):
+        repair_first_seen.main(["--clusters", "/tmp/anything"])
+
+
+# --------------------------------------------------------------------------
+# _resolve_measurement -- PURE. In-memory found_families / id_provenance
+# dicts only; no path, no IO. This is what instance #8 (a clusters file
+# quietly stripped of some of a family's members) and instance #6 (a
+# clusters file missing whole families) attacked.
+# --------------------------------------------------------------------------
+
+def _synthetic_full_families(**overrides: dict[str, list[str]]) -> dict[str, set[str]]:
+    """Every EXPECTED_FAMILIES key present (satisfies family-presence), all
+    empty unless overridden -- lets a test target just the families/counts
+    it cares about."""
+    all_families = repair_first_seen.ARM_B_FAMILIES | repair_first_seen.COMPARATOR_FAMILIES
+    return {cid: set(overrides.get(cid, [])) for cid in all_families}
+
+
+def test_resolve_measurement_succeeds_on_exact_expected_membership() -> None:
+    arm_b_ids = [f"ab-{i}" for i in range(repair_first_seen.EXPECTED_ARM_B_MEMBERS)]
+    comparator_ids = [f"cp-{i}" for i in range(repair_first_seen.EXPECTED_COMPARATOR_MEMBERS)]
+    families = _synthetic_full_families(
+        **{next(iter(sorted(repair_first_seen.ARM_B_FAMILIES))): arm_b_ids,
+           next(iter(sorted(repair_first_seen.COMPARATOR_FAMILIES))): comparator_ids}
+    )
+    id_provenance = {i: "git-anchor" for i in arm_b_ids} | {i: "l1-ingest-fallback" for i in comparator_ids}
+
+    measurement = repair_first_seen._resolve_measurement(families, id_provenance)
+
+    assert measurement.measured is True
+    assert measurement.reason is None
+    assert len(measurement.arm_b_ids) == 32
+    assert len(measurement.comparator_ids) == 102
+
+
+def test_resolve_measurement_not_measured_when_a_family_is_missing() -> None:
+    families = _synthetic_full_families()
+    del families[next(iter(repair_first_seen.ARM_B_FAMILIES))]
+
+    measurement = repair_first_seen._resolve_measurement(families, {})
+
+    assert measurement.measured is False
+    assert "missing 1 of 21 expected families" in measurement.reason
+
+
+def test_resolve_measurement_not_measured_when_arm_b_membership_shrinks() -> None:
+    """Instance #8 regression: 2 of a family's declared members quietly
+    stripped out of the clusters data -- the arm-b union comes up 30, not
+    32. Must NOT MEASURED naming the actual count, never silently recompute
+    the percentage over the 30 that survived."""
+    arm_b_ids = [f"ab-{i}" for i in range(30)]  # 2 short of EXPECTED_ARM_B_MEMBERS
+    comparator_ids = [f"cp-{i}" for i in range(repair_first_seen.EXPECTED_COMPARATOR_MEMBERS)]
+    families = _synthetic_full_families(
+        **{next(iter(sorted(repair_first_seen.ARM_B_FAMILIES))): arm_b_ids,
+           next(iter(sorted(repair_first_seen.COMPARATOR_FAMILIES))): comparator_ids}
+    )
+    id_provenance = {i: "git-anchor" for i in arm_b_ids} | {i: "git-anchor" for i in comparator_ids}
+
+    measurement = repair_first_seen._resolve_measurement(families, id_provenance)
+
+    assert measurement.measured is False
+    assert "30 arm-b members" in measurement.reason
+    assert "expected 32" in measurement.reason
+
+
+def test_resolve_measurement_not_measured_when_comparator_membership_grows() -> None:
+    """The equality cuts both ways -- more resolved members than expected is
+    just as much a fabrication risk (a family gained a member from somewhere
+    it shouldn't have) as fewer."""
+    arm_b_ids = [f"ab-{i}" for i in range(repair_first_seen.EXPECTED_ARM_B_MEMBERS)]
+    comparator_ids = [f"cp-{i}" for i in range(103)]  # 1 too many
+    families = _synthetic_full_families(
+        **{next(iter(sorted(repair_first_seen.ARM_B_FAMILIES))): arm_b_ids,
+           next(iter(sorted(repair_first_seen.COMPARATOR_FAMILIES))): comparator_ids}
+    )
+    id_provenance = {i: "git-anchor" for i in arm_b_ids} | {i: "git-anchor" for i in comparator_ids}
+
+    measurement = repair_first_seen._resolve_measurement(families, id_provenance)
+
+    assert measurement.measured is False
+    assert "103 comparator members" in measurement.reason
+    assert "expected 102" in measurement.reason
+
+
+def test_resolve_measurement_not_measured_when_a_declared_member_never_loaded() -> None:
+    arm_b_ids = [f"ab-{i}" for i in range(repair_first_seen.EXPECTED_ARM_B_MEMBERS)]
+    comparator_ids = [f"cp-{i}" for i in range(repair_first_seen.EXPECTED_COMPARATOR_MEMBERS)]
+    families = _synthetic_full_families(
+        **{next(iter(sorted(repair_first_seen.ARM_B_FAMILIES))): arm_b_ids,
+           next(iter(sorted(repair_first_seen.COMPARATOR_FAMILIES))): comparator_ids}
+    )
+    # ab-0 never appears in any loaded L1 row.
+    id_provenance = {i: "git-anchor" for i in arm_b_ids[1:]} | {i: "git-anchor" for i in comparator_ids}
+
+    measurement = repair_first_seen._resolve_measurement(families, id_provenance)
+
+    assert measurement.measured is False
+    assert measurement.reason == "1 of 134 cluster members did not resolve"
+
+
+# --------------------------------------------------------------------------
+# _summarize_family / _pct_pre_dated / _fallback_share -- PURE maths.
+# --------------------------------------------------------------------------
+
+def test_summarize_family_counts_each_provenance_bucket() -> None:
+    ids = frozenset({"a", "b", "c", "d", "e"})
+    id_provenance = {
+        "a": "pre-existing", "b": "git-anchor", "c": "l1-ingest-fallback",
+        "d": "l1-ingest-fallback", "e": "undated",
+    }
+    assert repair_first_seen._summarize_family(ids, id_provenance) == (1, 1, 2, 1)
+
+
+def test_pct_pre_dated_computes_percentage_and_handles_zero_total() -> None:
+    assert repair_first_seen._pct_pre_dated(1, 1, 2) == "25.0%"
+    assert repair_first_seen._pct_pre_dated(0, 0, 0) == "n/a"
+
+
+def test_fallback_share_counts_across_all_provenance_values() -> None:
+    id_provenance = {
+        "x1": "git-anchor", "x2": "l1-ingest-fallback",
+        "x3": "l1-ingest-fallback", "x4": "l1-ingest-fallback",
+        "x5": "pre-existing", "x6": "undated",
+    }
+    fallback, dated = repair_first_seen._fallback_share(id_provenance)
+    assert (fallback, dated) == (3, 4)
+
+
+# --------------------------------------------------------------------------
+# _print_differential / _print_fallback_warning -- take a CorpusMeasurement
+# object only, no path, no IO. Hand-built in-memory measurements.
+# --------------------------------------------------------------------------
+
+def test_print_differential_not_measured_names_the_reason(capsys: pytest.CaptureFixture[str]) -> None:
+    measurement = repair_first_seen.CorpusMeasurement(False, "some reason")
+    repair_first_seen._print_differential(measurement)
+    assert capsys.readouterr().err.strip() == "date-repair: DIFFERENTIAL: NOT MEASURED (some reason)"
+
+
+def test_print_differential_reports_provenance_split_not_just_dated_flag(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    env = Env(tmp_path)
-
-    # The real corpus (self_dir/pipeline/L1): a1 IS dated, via git-anchor.
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    (l2_dir / "clusters.jsonl").write_text(
-        json.dumps({"cluster_id": "c-043", "members": ["a1"]}) + "\n", encoding="utf-8"
+    # Every id already carries first_seen -- the old "is not None" metric
+    # would read 100.0%/100.0% and hide the provenance skew below.
+    id_provenance = {
+        "a1": "pre-existing", "a2": "git-anchor", "a3": "l1-ingest-fallback", "a4": "l1-ingest-fallback",
+        "b1": "pre-existing", "b2": "l1-ingest-fallback",
+    }
+    measurement = repair_first_seen.CorpusMeasurement(
+        True,
+        id_provenance=id_provenance,
+        arm_b_ids=frozenset({"a1", "a2", "a3", "a4"}),
+        comparator_ids=frozenset({"b1", "b2"}),
     )
-    (corpus_dir / "sample.jsonl").write_text(
-        json.dumps({"id": "a1", "first_seen": "2020-01-01",
-                     "first_seen_provenance": "git-anchor"}) + "\n",
-        encoding="utf-8",
-    )
-
-    # This run's actual TARGET is an unrelated scratch file whose parent dir
-    # happens to contain a same-id row that is UNDATED. If the differential's
-    # directory is inferred from the target's parent (the bug), it reports
-    # a1 as 0% dated -- the opposite of the real corpus's 100%. Either number
-    # is a fabrication here; the only honest output is "not measured".
-    scratch_dir = tmp_path / "scratch"
-    scratch_dir.mkdir()
-    (scratch_dir / "unrelated-noise.jsonl").write_text(
-        json.dumps({"id": "a1"}) + "\n", encoding="utf-8"
-    )
-    row = _load_fixture_row("fixture-existing-1")
-    target_file = scratch_dir / "sample.jsonl"
-    target_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
-
-    exit_code = repair_first_seen.main(env.main_args("--l1", str(target_file)))
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    diff_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln]
-    assert len(diff_lines) == 1
-    assert diff_lines[0] == "date-repair: DIFFERENTIAL: NOT MEASURED (target is not the corpus)"
-
-
-# --------------------------------------------------------------------------
-# D-2: R4 VIOLATION -- on a fail-loud path, no counts (not even zeros) may
-# be printed. A zero must never look like "wasn't measured".
-# --------------------------------------------------------------------------
-
-def test_fail_loud_path_prints_not_measured_never_zero_counts(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    env = Env(tmp_path)
-    empty = env.l1_dir / "sample.jsonl"
-    empty.write_text("", encoding="utf-8")
-
-    exit_code = repair_first_seen.main(env.main_args("--l1", str(empty)))
-
-    captured = capsys.readouterr()
-    assert exit_code != 0
-    assert "date-repair: ERROR:" in captured.err
-    assert "date-repair: NOT MEASURED" in captured.err
-    # A zero count must never be emitted on this path -- it is
-    # indistinguishable from a genuine all-zero successful run.
-    assert "DATED-BY-ANCHOR" not in captured.err
-    assert "DATED-BY-FALLBACK" not in captured.err
-    assert "STILL-UNDATED" not in captured.err
-
-
-# --------------------------------------------------------------------------
-# D-3: DEGENERATE METRIC -- the differential must report the split across
-# pre-existing / git-anchor / l1-ingest-fallback provenance, not just
-# "first_seen is not None", which goes to 100%/100% once repair finishes
-# and can never again surface the bias it exists to surface.
-# --------------------------------------------------------------------------
-
-def test_differential_reports_provenance_split_not_just_dated_flag(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    env = Env(tmp_path)
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    # Every module-constant family must be present for the corpus-trust gate
-    # (else this becomes a "missing families" NOT MEASURED, covered by its
-    # own dedicated test below) -- the other 19 families get zero members,
-    # which satisfies "present" while adding nothing to either id union, so
-    # the counts below are exactly the two families under test.
-    (l2_dir / "clusters.jsonl").write_text(
-        _full_clusters_text(**{"c-043": ["a1", "a2", "a3", "a4"], "c-003": ["b1", "b2"]}),
-        encoding="utf-8",
-    )
-    # Every one of these six rows already carries first_seen -- the old
-    # "is not None" metric would read 100.0%/100.0% and hide the skew below.
-    (corpus_dir / "sample.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in [
-            {"id": "a1", "first_seen": "2020-01-01"},
-            {"id": "a2", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"},
-            {"id": "a3", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-            {"id": "a4", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-            {"id": "b1", "first_seen": "2020-01-01"},
-            {"id": "b2", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-        ]),
-        encoding="utf-8",
-    )
-
-    exit_code = repair_first_seen.main(env.main_args())
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "100.0%" not in captured.err
+    repair_first_seen._print_differential(measurement)
+    err = capsys.readouterr().err
+    assert "100.0%" not in err
     assert (
         "date-repair: DIFFERENTIAL: intervention-family (n=4) "
         "pre-existing=1 git-anchor=1 l1-ingest-fallback=2 undated=0 -> 25.0% pre-dated"
-    ) in captured.err
+    ) in err
     assert (
         "date-repair: DIFFERENTIAL: comparator-pool (n=2) "
         "pre-existing=1 git-anchor=0 l1-ingest-fallback=1 undated=0 -> 50.0% pre-dated"
-    ) in captured.err
+    ) in err
+
+
+def test_print_fallback_warning_not_measured_names_the_reason(capsys: pytest.CaptureFixture[str]) -> None:
+    measurement = repair_first_seen.CorpusMeasurement(False, "some reason")
+    repair_first_seen._print_fallback_warning(measurement)
+    assert capsys.readouterr().err.strip() == "date-repair: WARNING: NOT MEASURED (some reason)"
+
+
+def test_print_fallback_warning_fires_above_fifty_percent(capsys: pytest.CaptureFixture[str]) -> None:
+    id_provenance = {
+        "x1": "git-anchor", "x2": "l1-ingest-fallback",
+        "x3": "l1-ingest-fallback", "x4": "l1-ingest-fallback",
+    }
+    measurement = repair_first_seen.CorpusMeasurement(True, id_provenance=id_provenance)
+    repair_first_seen._print_fallback_warning(measurement)
+    err = capsys.readouterr().err
+    assert "date-repair: WARNING:" in err
+    assert "75.0%" in err
+
+
+def test_print_fallback_warning_silent_at_or_below_fifty_percent(capsys: pytest.CaptureFixture[str]) -> None:
+    id_provenance = {"x1": "git-anchor", "x2": "l1-ingest-fallback"}
+    measurement = repair_first_seen.CorpusMeasurement(True, id_provenance=id_provenance)
+    repair_first_seen._print_fallback_warning(measurement)
+    assert capsys.readouterr().err == ""
+
+
+def test_print_fallback_warning_silent_when_nothing_dated(capsys: pytest.CaptureFixture[str]) -> None:
+    measurement = repair_first_seen.CorpusMeasurement(
+        True, id_provenance={"x1": "pre-existing", "x2": "undated"}
+    )
+    repair_first_seen._print_fallback_warning(measurement)
+    assert capsys.readouterr().err == ""
 
 
 # --------------------------------------------------------------------------
-# D-4 / B-1: the >50%-fallback WARNING must be computed from CORPUS
-# PROVENANCE -- the first_seen_provenance tags already sitting on the L1
-# rows -- never from this run's own deltas. Repair is idempotent: the run
-# that dates rows only happens once per row, so a deltas-gated warning goes
-# permanently silent in steady state (dated_this_run == 0 forever after)
-# even while the corpus stays mostly fallback-dated. The warning must fire
-# on EVERY run against the real corpus, whether or not this run itself
-# dated anything.
+# _measure_corpus against the REAL, already-on-disk corpus -- read-only.
+# Neither test below calls repair_file or main, so nothing here can re-date
+# a row or touch catalog/ or conf/. This is the ground-truth regression the
+# whole refactor exists to protect.
 # --------------------------------------------------------------------------
 
-def test_warning_fires_from_corpus_provenance_even_when_run_dates_nothing(
+def test_measure_corpus_reproduces_the_real_corpus_ground_truth() -> None:
+    measurement = repair_first_seen._measure_corpus(repair_first_seen.CORPUS_L1)
+
+    assert measurement.measured is True
+    assert measurement.reason is None
+    assert len(measurement.arm_b_ids) == 32
+    assert len(measurement.comparator_ids) == 102
+
+    arm_b = repair_first_seen._summarize_family(measurement.arm_b_ids, measurement.id_provenance)
+    comparator = repair_first_seen._summarize_family(measurement.comparator_ids, measurement.id_provenance)
+    assert arm_b == (17, 3, 12, 0)
+    assert comparator == (66, 4, 32, 0)
+    assert repair_first_seen._pct_pre_dated(*arm_b[:3]) == "53.1%"
+    assert repair_first_seen._pct_pre_dated(*comparator[:3]) == "64.7%"
+
+
+def test_warning_fires_from_the_real_corpus_independent_of_any_runs_deltas() -> None:
+    """_print_fallback_warning's signature takes only a CorpusMeasurement --
+    it cannot see, and therefore cannot be influenced by, how many rows any
+    particular run dated. This proves the real corpus's 90.1% fallback share
+    fires from corpus provenance alone."""
+    measurement = repair_first_seen._measure_corpus(repair_first_seen.CORPUS_L1)
+    assert measurement.measured is True
+
+    fallback, dated = repair_first_seen._fallback_share(measurement.id_provenance)
+    assert dated > 0
+    assert f"{fallback / dated * 100:.1f}%" == "90.1%"
+
+    import io
+    from contextlib import redirect_stderr
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        repair_first_seen._print_fallback_warning(measurement)
+    assert "90.1%" in buf.getvalue()
+
+
+def test_measure_corpus_not_measured_when_target_is_not_the_corpus(tmp_path: Path) -> None:
+    scratch = tmp_path / "not-the-corpus"
+    scratch.mkdir()
+    measurement = repair_first_seen._measure_corpus(scratch)
+    assert measurement == repair_first_seen.CorpusMeasurement(False, "target is not the corpus")
+
+
+def test_measure_corpus_not_measured_when_corpus_directory_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """monkeypatch, not an argument: there is no CLI flag that reaches this
+    branch in production (CORPUS_L1 always exists in this checkout), so the
+    only way to exercise it at all is to substitute the constant for the
+    duration of one test."""
+    missing = tmp_path / "no-such-corpus"
+    monkeypatch.setattr(repair_first_seen, "CORPUS_L1", missing)
+    measurement = repair_first_seen._measure_corpus(missing)
+    assert measurement.measured is False
+    assert measurement.reason == f"no corpus directory at {missing}"
+
+
+def test_measure_corpus_not_measured_when_clusters_file_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    corpus_dir = tmp_path / "L1"
+    corpus_dir.mkdir()
+    missing_clusters = tmp_path / "no-such-clusters.jsonl"
+    monkeypatch.setattr(repair_first_seen, "CORPUS_L1", corpus_dir)
+    monkeypatch.setattr(repair_first_seen, "CORPUS_CLUSTERS", missing_clusters)
+
+    measurement = repair_first_seen._measure_corpus(corpus_dir)
+
+    assert measurement.measured is False
+    assert measurement.reason == f"no clusters file at {missing_clusters}"
+
+
+# --------------------------------------------------------------------------
+# The one CLI-reachable statistics behaviour: NOT MEASURED when --l1 (which
+# only ever retargets REPAIR) doesn't resolve to CORPUS_L1. No fixture here
+# pretends to be "the corpus" -- it's an ordinary scratch file, and the
+# point of the test is exactly that it can never be mistaken for one.
+# --------------------------------------------------------------------------
+
+def test_cli_prints_not_measured_on_both_lines_when_l1_is_not_the_corpus(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     env = Env(tmp_path)
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    # All 21 expected families present (satisfies the corpus-trust gate),
-    # every member list empty -- the WARNING is corpus-wide, not scoped to
-    # cluster membership, so an empty differential is irrelevant here.
-    (l2_dir / "clusters.jsonl").write_text(_full_clusters_text(), encoding="utf-8")
-
-    # Steady state: every row already carries first_seen + provenance, so
-    # THIS run dates zero of them -- but the corpus itself is 3 fallback /
-    # 1 anchor = 75% fallback, which must still trigger the WARNING.
-    (corpus_dir / "sample.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in [
-            {"id": "x1", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"},
-            {"id": "x2", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-            {"id": "x3", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-            {"id": "x4", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-        ]),
-        encoding="utf-8",
-    )
-
-    exit_code = repair_first_seen.main(env.main_args())
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    # This run itself dated nothing -- the old deltas-based warning would
-    # have gone silent here. Prove it didn't.
-    assert "date-repair: DATED-BY-ANCHOR: 0" in captured.err
-    assert "date-repair: DATED-BY-FALLBACK: 0" in captured.err
-    assert "date-repair: WARNING:" in captured.err
-    assert "75.0%" in captured.err
-
-
-def test_warning_reflects_corpus_not_this_runs_deltas(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A run that itself dates a single anchor row (a minority outcome)
-    must still warn, because the CORPUS around it is majority-fallback --
-    the opposite of what a deltas-based (this run only) computation would
-    show for a single anchor-only delta."""
-    env = Env(tmp_path)
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    (l2_dir / "clusters.jsonl").write_text(_full_clusters_text(), encoding="utf-8")
-
-    _commit(env.sample_root, "docs/anchor.md",
-            "# Doc\n\n## Anchor Heading One\nOriginal text.\n",
-            "2026-01-08T09:00:00+00:00", "add anchor heading")
-
-    # Pre-existing corpus rows: already 3 fallback-dated, 0 anchor-dated.
-    # This run's OWN delta is 1 anchor / 0 fallback -- by itself a 0%
-    # fallback share -- but the corpus as a whole is still majority
-    # fallback once the new anchor row is folded in (3 of 4 = 75%).
-    (corpus_dir / "sample.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in [
-            {
-                "id": "sample-anchor-1",
-                "source_path": "sampleroot/docs/anchor.md",
-                "source_anchor": "Anchor Heading One",
-                "instance": "An anchor-dateable entry.",
-                "check": "n/a",
-                "enforcement": None,
-                "auto": "machine",
-            },
-            {"id": "x2", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-            {"id": "x3", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-            {"id": "x4", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-        ]),
-        encoding="utf-8",
-    )
-
-    exit_code = repair_first_seen.main(env.main_args())
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    assert "date-repair: DATED-BY-ANCHOR: 1" in captured.err
-    assert "date-repair: DATED-BY-FALLBACK: 0" in captured.err
-    assert "date-repair: WARNING:" in captured.err
-    assert "75.0%" in captured.err
-
-
-# --------------------------------------------------------------------------
-# B-2(a): a differential over a directory where cluster members don't
-# actually resolve (id absent from every loaded L1 row) must ALARM --
-# "NOT MEASURED (<n> of <m> cluster members did not resolve)" -- never
-# silently exclude the unresolved ids and print a count for the rest as if
-# it were the whole family.
-# --------------------------------------------------------------------------
-
-def test_differential_not_measured_when_cluster_members_do_not_resolve(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    env = Env(tmp_path)
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    # All 21 expected families present (else this trips the family-presence
-    # check instead, covered by its own dedicated test) -- only c-043/c-003
-    # carry members, so exactly 3 ids are ever expected.
-    (l2_dir / "clusters.jsonl").write_text(
-        _full_clusters_text(**{"c-043": ["a1", "a2"], "c-003": ["b1"]}),
-        encoding="utf-8",
-    )
-    # Only a1 is ever loaded -- a2 and b1 are absent from every L1 row, i.e.
-    # never resolve. 2 of the 3 expected members are unresolved.
-    (corpus_dir / "sample.jsonl").write_text(
-        json.dumps({"id": "a1", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"}) + "\n",
-        encoding="utf-8",
-    )
-
-    exit_code = repair_first_seen.main(env.main_args())
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    diff_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln]
-    assert diff_lines == [
-        "date-repair: DIFFERENTIAL: NOT MEASURED (2 of 3 cluster members did not resolve)"
-    ]
-    assert "intervention-family" not in captured.err
-    assert "comparator-pool" not in captured.err
-
-
-def test_differential_all_members_unresolved_reports_not_measured_not_zero(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Reproduces the exact scratch-directory shape from the B-2 report:
-    a --self-dir/--l1/--clusters combination where the L1 rows loaded share
-    no ids with the cluster membership at all. 0 of N resolving must ALARM,
-    never print a fully-formed zero differential as if it were a real
-    measurement of an empty family."""
-    env = Env(tmp_path)
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    (l2_dir / "clusters.jsonl").write_text(
-        _full_clusters_text(**{"c-043": ["a1", "a2", "a3"], "c-003": ["b1"]}),
-        encoding="utf-8",
-    )
-    # A scratch corpus with unrelated ids -- 0 of the 4 expected members
-    # resolve.
-    (corpus_dir / "sample.jsonl").write_text(
-        json.dumps({"id": "unrelated-1", "first_seen": "2020-01-01"}) + "\n",
-        encoding="utf-8",
-    )
-
-    exit_code = repair_first_seen.main(env.main_args())
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    diff_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln]
-    assert diff_lines == [
-        "date-repair: DIFFERENTIAL: NOT MEASURED (4 of 4 cluster members did not resolve)"
-    ]
-    assert "n=0" not in captured.err
-    assert "n=3" not in captured.err
-    assert "n=1" not in captured.err
-
-
-# --------------------------------------------------------------------------
-# SINGLE-GATE regression coverage (Issue #32 refactor): the four shortfall
-# kinds the ONE corpus-trust gate must catch, each printing NOT MEASURED
-# with a reason on EVERY statistic path (DIFFERENTIAL and WARNING alike) --
-# never a number, never silence.
-#
-#   (a) L1 dir outside this checkout -> test_differential_not_measured_when_target_is_not_the_real_corpus (above)
-#   (b) L1 dir missing entirely      -> test_gate_not_measured_when_corpus_directory_is_missing (below)
-#   (c) clusters file missing families -> test_gate_not_measured_when_clusters_file_missing_expected_families (below)
-#   (d) member id absent from loaded rows -> test_differential_not_measured_when_cluster_members_do_not_resolve
-#       and test_differential_all_members_unresolved_reports_not_measured_not_zero (above)
-# --------------------------------------------------------------------------
-
-def test_gate_not_measured_when_corpus_directory_is_missing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """self_dir/pipeline/L1 (the real corpus location) does not exist at
-    all. This must NOT MEASURED on every statistic path -- never silence
-    (instance #5: a missing pipeline/L1 used to print nothing)."""
-    env = Env(tmp_path)
-    # This run's own target is a file OUTSIDE self_dir/pipeline/L1 entirely,
-    # so the run itself succeeds and dates nothing -- but self_dir/pipeline/L1
-    # (the corpus the gate must measure) is never created.
-    target = env.target(_load_fixture_row("fixture-existing-1"))
+    row = _load_fixture_row("fixture-existing-1")
+    target = env.target(row)
 
     exit_code = repair_first_seen.main(env.main_args("--l1", str(target)))
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    stat_lines = [
-        ln for ln in captured.err.splitlines()
-        if "DIFFERENTIAL" in ln or "WARNING" in ln
-    ]
+    stat_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln or "WARNING" in ln]
     assert len(stat_lines) == 2
     for ln in stat_lines:
-        assert "NOT MEASURED" in ln
-        assert "no corpus directory at" in ln
+        assert ln.endswith("NOT MEASURED (target is not the corpus)")
     assert "%" not in captured.err
-
-
-def test_gate_not_measured_when_clusters_file_missing_expected_families(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A clusters.jsonl that resolves and parses fine but is missing some of
-    the module-constant expected families -- distinct from instance #6's
-    fully-stripped-empty case and from a member being absent from a family
-    that IS present. Both DIFFERENTIAL and WARNING must NOT MEASURED, never
-    a vacuous count over whichever families happened to survive."""
-    env = Env(tmp_path)
-    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
-    corpus_dir.mkdir(parents=True)
-    l2_dir = env.hindsight_repo / "pipeline" / "L2"
-    l2_dir.mkdir(parents=True)
-    # Only 2 of the 21 expected families present.
-    (l2_dir / "clusters.jsonl").write_text(
-        json.dumps({"cluster_id": "c-043", "members": ["a1"]}) + "\n"
-        + json.dumps({"cluster_id": "c-003", "members": ["b1"]}) + "\n",
-        encoding="utf-8",
-    )
-    (corpus_dir / "sample.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in [
-            {"id": "a1", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"},
-            {"id": "b1", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
-        ]),
-        encoding="utf-8",
-    )
-
-    exit_code = repair_first_seen.main(env.main_args())
-
-    captured = capsys.readouterr()
-    assert exit_code == 0
-    stat_lines = [
-        ln for ln in captured.err.splitlines()
-        if "DIFFERENTIAL" in ln or "WARNING" in ln
-    ]
-    assert len(stat_lines) == 2
-    for ln in stat_lines:
-        assert "NOT MEASURED" in ln
-        assert "missing 19 of 21 expected families" in ln
-    assert "%" not in captured.err
-    assert "n=1" not in captured.err

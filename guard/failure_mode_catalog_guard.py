@@ -65,7 +65,6 @@ let bad = false;
 let calls = 0;
 let topLevelCalls = 0;
 let trusted = null;
-const globalAliases = new Set();
 
 function identifier(node, name) {
   return node && node.type === 'Identifier' && node.name === name;
@@ -79,47 +78,6 @@ function staticName(node, name) {
 function member(node, objectName, propertyName) {
   return node && node.type === 'MemberExpression' &&
     identifier(node.object, objectName) && staticName(node.property, propertyName);
-}
-function globalObject(node) {
-  return node && node.type === 'Identifier' &&
-    (node.name === 'global' || node.name === 'globalThis' || globalAliases.has(node.name));
-}
-function recordAliasBindings(pattern) {
-  if (!pattern || typeof pattern !== 'object') return;
-  if (pattern.type === 'Identifier') {
-    globalAliases.add(pattern.name);
-    return;
-  }
-  if (pattern.type === 'RestElement') {
-    recordAliasBindings(pattern.argument);
-    return;
-  }
-  if (pattern.type === 'AssignmentPattern') {
-    recordAliasBindings(pattern.left);
-    return;
-  }
-  if (pattern.type === 'ArrayPattern') {
-    pattern.elements.forEach(recordAliasBindings);
-    return;
-  }
-  if (pattern.type === 'ObjectPattern') {
-    pattern.properties.forEach((property) =>
-      recordAliasBindings(property.type === 'RestElement' ? property.argument : property.value));
-  }
-}
-function runnerMutationMember(node) {
-  if (node && node.type === 'ChainExpression') node = node.expression;
-  if (!node || node.type !== 'MemberExpression') return false;
-  return staticName(node.property, 'test') || (globalObject(node.object) && node.computed);
-}
-function containsRunnerMutation(node) {
-  if (!node || typeof node !== 'object') return false;
-  if (runnerMutationMember(node)) return true;
-  return Object.keys(node).some((key) =>
-    !['start','end','loc','range'].includes(key) &&
-    (Array.isArray(node[key])
-      ? node[key].some(containsRunnerMutation)
-      : containsRunnerMutation(node[key])));
 }
 function exactTrustedBinding(node) {
   if (!node || node.type !== 'VariableDeclaration' || node.kind !== 'const' ||
@@ -159,33 +117,9 @@ function isTopLevelCall(node, parent, ancestors) {
   return parent && parent.type === 'ExpressionStatement' &&
     ancestors.length >= 2 && ancestors[ancestors.length - 2].type === 'Program';
 }
-function mutationCall(node) {
-  if (!node || node.type !== 'CallExpression' || node.arguments.length < 2) return false;
-  const callee = node.callee;
-  const mutatesTarget = member(callee, 'Object', 'assign') ||
-    member(callee, 'Object', 'defineProperty') ||
-    member(callee, 'Object', 'defineProperties') ||
-    member(callee, 'Reflect', 'defineProperty') || member(callee, 'Reflect', 'set');
-  return mutatesTarget && globalObject(node.arguments[0]);
-}
 function walk(node, parent = null, key = '', ancestors = []) {
   if (!node || typeof node !== 'object' || bad) return;
   if (typeof node.type === 'string' && !SUPPORTED.has(node.type)) { bad = true; return; }
-  if (node.type === 'VariableDeclarator' && globalObject(node.init)) {
-    recordAliasBindings(node.id);
-    bad = true;
-  }
-  if (node.type === 'AssignmentExpression' && globalObject(node.right)) {
-    recordAliasBindings(node.left);
-    bad = true;
-  }
-  if (node.type === 'AssignmentExpression' && containsRunnerMutation(node.left)) bad = true;
-  if ((node.type === 'ForInStatement' || node.type === 'ForOfStatement') &&
-      containsRunnerMutation(node.left)) bad = true;
-  if (node.type === 'UpdateExpression' && containsRunnerMutation(node.argument)) bad = true;
-  if (node.type === 'UnaryExpression' && node.operator === 'delete' &&
-      containsRunnerMutation(node.argument)) bad = true;
-  if (mutationCall(node)) bad = true;
   if (node.type === 'CallExpression' && identifier(node.callee, 'test')) {
     if (!isRunnerCall(node)) bad = true;
     else {
@@ -215,7 +149,7 @@ try {
   if (exactTrustedBinding(tree.body[first])) trusted = tree.body[first];
   walk(tree);
   process.stdout.write(JSON.stringify({
-    managed: !bad && calls > 0 && (!trusted || topLevelCalls > 0)
+    managed: !bad && trusted !== null && calls > 0 && topLevelCalls > 0
   }));
 } catch (_) {
   process.stdout.write('{"managed":false}');
@@ -449,11 +383,12 @@ def _is_javascript_test_source(
     """Classify a stable JavaScript snapshot with one inert Acorn AST parse.
 
     Candidate bytes travel only on stdin to a fixed reviewer program. The
-    reviewer rejects shadows, runner mutations, non-call lookalikes, malformed
-    syntax and unsupported AST nodes, while preserving the exact top-level
-    Fleet ``global.__ff`` binding. Parser failures and malformed or oversized
-    output fail closed. A caller-owned cache may reuse only the same canonical
-    path and descriptor fingerprint within one verifier report.
+    reviewer requires the exact leading Fleet ``global.__ff`` binding and a
+    direct runner-shaped call through its captured ``test`` identifier. It
+    rejects later shadows or mutations, non-call lookalikes, malformed syntax,
+    and unsupported AST nodes. Parser failures and malformed or oversized output
+    fail closed. A caller-owned cache may reuse only the same canonical path and
+    descriptor fingerprint within one verifier report.
     """
     snapshot = _read_regular_utf8_snapshot(path)
     if snapshot is None:
@@ -1055,7 +990,8 @@ def print_enforcement_report(report: EnforcementReport) -> None:
         "enforcement-verifier: SCOPE: checks containment and existence; hooks and "
         "tests must be regular executable files, except runner-managed Pytest (.py) "
         "sources with a test AST, Bats (.bats) sources parsed by Bats' non-executing "
-        "preprocessor plus Bash, or *.test.js sources parsed once by Node's bundled Acorn. "
+        "preprocessor plus Bash, or *.test.js sources parsed once by Node's bundled Acorn "
+        "and carrying the exact leading Fleet global.__ff runner binding. "
         "Ordinary executable "
         "test/hook files do not invoke those runners. A plausible path is necessary, "
         "not sufficient evidence that it enforces the claimed lesson. UNVERIFIABLE "

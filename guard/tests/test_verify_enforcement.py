@@ -33,6 +33,7 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+TRUSTED_JS_BINDING = "const { test, assert, eq } = global.__ff;\n"
 
 
 def write_records(l1_dir: Path, source: str, *records: dict[object, object]) -> None:
@@ -182,7 +183,9 @@ def test_non_executable_runner_managed_test_source_is_plausible(
     projects = tmp_path / "projects"
     repo = projects / "repo"
     repo.mkdir(parents=True)
-    (repo / "feature.test.js").write_text("test('feature', () => {});\n", encoding="utf-8")
+    (repo / "feature.test.js").write_text(
+        TRUSTED_JS_BINDING + "test('feature', () => {});\n", encoding="utf-8"
+    )
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(
@@ -356,7 +359,7 @@ def test_javascript_parser_oracle_accepts_valid_slash_and_template_source(
     tmp_path: Path, contents: str
 ) -> None:
     source = tmp_path / "parser-oracle.test.js"
-    write_runner_source(source, contents)
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
 
     assert MODULE._is_runner_managed_test_source(source)
 
@@ -385,7 +388,11 @@ def test_javascript_parser_oracle_accepts_test_in_template_interpolation(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "template-interpolation.test.js"
-    write_runner_source(source, 'const value = `${test("ok",()=>{})}`;\n')
+    write_runner_source(
+        source,
+        TRUSTED_JS_BINDING
+        + 'test("outer",()=>{ const value = `${test("nested",()=>{})}`; });\n',
+    )
 
     assert MODULE._is_runner_managed_test_source(source)
 
@@ -466,6 +473,28 @@ def test_javascript_all_bare_test_bindings_are_rejected(
 ) -> None:
     """Any additional code-level bare ``test`` is a conservative shadow."""
     source = tmp_path / "shadowed-binding.test.js"
+    write_runner_source(source, contents)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        'test("fake",()=>{});\n',
+        'const alias = condition ? globalThis : local; alias.test = runner; test("fake",()=>{});\n',
+        'const alias = globalThis || local; alias.test = runner; test("fake",()=>{});\n',
+        'const alias = (local, globalThis); alias.test = runner; test("fake",()=>{});\n',
+        'const [alias] = [globalThis]; alias.test = runner; test("fake",()=>{});\n',
+        'const alias = (() => globalThis)(); alias.test = runner; test("fake",()=>{});\n',
+    ],
+    ids=["ambient", "conditional", "logical", "sequence", "array", "iife"],
+)
+def test_javascript_ambient_test_calls_without_trusted_binding_are_rejected(
+    tmp_path: Path, contents: str
+) -> None:
+    """No ambient-global value flow can substitute for the concrete runner binding."""
+    source = tmp_path / "ambient-wrapper.test.js"
     write_runner_source(source, contents)
 
     assert not MODULE._is_runner_managed_test_source(source)
@@ -656,6 +685,36 @@ def test_javascript_global_ff_near_neighbors_are_rejected(
 
 
 @pytest.mark.parametrize(
+    "suffix",
+    [
+        'test = replacement; test("fake",()=>{});\n',
+        'test++; test("fake",()=>{});\n',
+        'delete test; test("fake",()=>{});\n',
+        '({test} = replacement); test("fake",()=>{});\n',
+        'import { runner as test } from "fake"; test("fake",()=>{});\n',
+        'function shadow(test) { test("fake",()=>{}); } test("real",()=>{});\n',
+        'function test() {} test("fake",()=>{});\n',
+    ],
+    ids=[
+        "assignment",
+        "update",
+        "delete",
+        "destructuring-assignment",
+        "import",
+        "parameter",
+        "declaration",
+    ],
+)
+def test_javascript_trusted_test_binding_cannot_be_mutated_or_shadowed(
+    tmp_path: Path, suffix: str
+) -> None:
+    source = tmp_path / "mutated-trusted-binding.test.js"
+    write_runner_source(source, TRUSTED_JS_BINDING + suffix)
+
+    assert not MODULE._is_runner_managed_test_source(source)
+
+
+@pytest.mark.parametrize(
     "contents",
     [
         'const \\u0074est = (name, body) => 0; test("fake",()=>{});\n',
@@ -810,7 +869,7 @@ def test_javascript_global_alias_near_neighbors_remain_runner_managed(
 ) -> None:
     """Textual lookalikes and mutations of local objects are not global aliases."""
     source = tmp_path / "global-alias-neighbor.test.js"
-    write_runner_source(source, contents)
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
 
     assert MODULE._is_runner_managed_test_source(source)
 
@@ -829,7 +888,7 @@ def test_javascript_runner_call_accepts_supported_inline_callbacks(
     tmp_path: Path, contents: str
 ) -> None:
     source = tmp_path / "supported-callback.test.js"
-    write_runner_source(source, contents)
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
 
     assert MODULE._is_runner_managed_test_source(source)
 
@@ -857,7 +916,7 @@ def test_javascript_parser_oracle_accepts_required_runner_shapes(
     tmp_path: Path, contents: str
 ) -> None:
     source = tmp_path / "required-shape.test.js"
-    write_runner_source(source, contents)
+    write_runner_source(source, TRUSTED_JS_BINDING + contents)
 
     assert MODULE._is_runner_managed_test_source(source)
 
@@ -867,7 +926,8 @@ def test_javascript_candidate_bound_allows_256_global_calls(tmp_path: Path) -> N
     source = tmp_path / "candidate-bound.test.js"
     write_runner_source(
         source,
-        "".join(f'test("{index}",()=>{{}});\n' for index in range(256)),
+        TRUSTED_JS_BINDING
+        + "".join(f'test("{index}",()=>{{}});\n' for index in range(256)),
     )
 
     assert MODULE._is_runner_managed_test_source(source)
@@ -880,7 +940,8 @@ def test_javascript_large_256_call_source_completes_with_one_parse(
     source = tmp_path / "large-boundary.test.js"
     write_runner_source(
         source,
-        "const payload = " + repr("x" * 28_000) + ";\n"
+        TRUSTED_JS_BINDING
+        + "const payload = " + repr("x" * 28_000) + ";\n"
         + "".join(f'test("{index}",()=>{{ void payload; }});\n' for index in range(256)),
     )
     real_run = subprocess.run
@@ -922,7 +983,7 @@ def test_duplicate_javascript_references_parse_once_per_verifier_run(
     repo = projects / "repo"
     repo.mkdir(parents=True)
     source = repo / "duplicate.test.js"
-    write_runner_source(source, 'test("one",()=>{});\n')
+    write_runner_source(source, TRUSTED_JS_BINDING + 'test("one",()=>{});\n')
     write_records(
         l1_dir,
         "sample",
@@ -953,7 +1014,8 @@ def test_javascript_runner_source_is_never_executed(tmp_path: Path) -> None:
     source = tmp_path / "inert.test.js"
     write_runner_source(
         source,
-        f'require("fs").writeFileSync("{sentinel}", "executed");\n'
+        TRUSTED_JS_BINDING
+        + f'require("fs").writeFileSync("{sentinel}", "executed");\n'
         'test("name", () => {});\n',
     )
 
@@ -1165,7 +1227,8 @@ def test_javascript_malformed_parser_output_fails_closed(
     [
         (
             "too-many.test.js",
-            "".join(
+            TRUSTED_JS_BINDING
+            + "".join(
                 f'test("{index}",()=>{{}});\n'
                 for index in range(MODULE.MAX_RUNNER_CANDIDATES + 1)
             ),
@@ -1288,7 +1351,10 @@ def test_runner_source_path_is_one_argv_element_without_a_shell(
     contents: str,
 ) -> None:
     source = tmp_path / filename
-    write_runner_source(source, contents)
+    trusted_contents = (
+        TRUSTED_JS_BINDING + contents if filename.endswith(".test.js") else contents
+    )
+    write_runner_source(source, trusted_contents)
     calls: list[tuple[list[str], dict[str, object]]] = []
     real_run = subprocess.run
 
@@ -1305,7 +1371,7 @@ def test_runner_source_path_is_one_argv_element_without_a_shell(
         assert len(calls) == 1
         argv, kwargs = calls[0]
         assert argv == MODULE.JAVASCRIPT_ACORN_ARGV
-        assert kwargs["input"] == contents
+        assert kwargs["input"] == trusted_contents
         assert all(str(source) not in argument for argument in argv)
     else:
         path_calls = [(argv, kwargs) for argv, kwargs in calls if str(source) in argv]
@@ -1406,7 +1472,11 @@ def test_source_aba_change_during_runner_parse_fails_closed(
 @pytest.mark.parametrize(
     ("filename", "contents", "invalid"),
     [
-        ("repeat.test.js", 'test("ok", () => {});\n', 'test("broken", () =>\n'),
+        (
+            "repeat.test.js",
+            TRUSTED_JS_BINDING + 'test("ok", () => {});\n',
+            TRUSTED_JS_BINDING + 'test("broken", () =>\n',
+        ),
         ("repeat.bats", '@test "ok" { true; }\n', "echo no-tests-remain\n"),
     ],
 )
@@ -1550,7 +1620,10 @@ def test_whole_file_runner_scan_retains_multiple_tests_and_harmless_trailing_sou
 ) -> None:
     """Scanning to EOF must retain ordinary multi-test runner sources."""
     source = tmp_path / filename
-    write_runner_source(source, contents)
+    trusted_contents = (
+        TRUSTED_JS_BINDING + contents if filename.endswith(".test.js") else contents
+    )
+    write_runner_source(source, trusted_contents)
 
     assert MODULE._is_runner_managed_test_source(source)
 
@@ -1570,7 +1643,7 @@ def test_javascript_runner_source_read_error_fails_closed(
     read_error: OSError,
 ) -> None:
     source = tmp_path / "read-error.test.js"
-    write_runner_source(source, 'test("ok", () => {});\n')
+    write_runner_source(source, TRUSTED_JS_BINDING + 'test("ok", () => {});\n')
     real_open = MODULE.os.open
 
     def fail_target_open(path: Path, *args: object, **kwargs: object) -> int:
@@ -1623,7 +1696,7 @@ def test_runner_plausibility_uses_stat_not_a_separate_exists_probe(
     repo = projects / "repo"
     repo.mkdir(parents=True)
     source = repo / "feature.test.js"
-    write_runner_source(source, 'test("ok", () => {});\n')
+    write_runner_source(source, TRUSTED_JS_BINDING + 'test("ok", () => {});\n')
     roots_path = tmp_path / "source-roots.conf"
     write_source_roots(roots_path, {"sample": "repo"})
     write_records(

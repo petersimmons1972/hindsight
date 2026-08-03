@@ -55,7 +55,8 @@ per-text endpoint only when the batch endpoint explicitly returns HTTP 404 or
 malformed responses and every other backend failure are final. Capture hashes
 L1 and cluster/config inputs before the request and rechecks them immediately
 before replacement. It writes and fsyncs a unique same-directory temporary
-file, then atomically replaces the destination and fsyncs the containing
+file and, when a prior snapshot exists, stages and fsyncs its recovery copy
+before atomically replacing the destination and fsyncing the containing
 directory. Backend, protocol, coverage,
 vector, provenance-drift, or pre-replacement write errors exit nonzero and
 preserve the prior snapshot. If both atomic rollback methods fail, capture

@@ -360,6 +360,80 @@ def test_capture_rolls_back_when_provenance_changes_inside_replace(
     assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
 
 
+@pytest.mark.parametrize("failure", ["create", "write", "fsync"])
+def test_capture_recovery_staging_failure_preserves_prior_snapshot(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+    monkeypatch.setattr(
+        CAPTURE,
+        "_request_vectors",
+        lambda base_url, texts, timeout: np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+
+    real_named_temporary_file = CAPTURE.tempfile.NamedTemporaryFile
+    temporary_calls = 0
+
+    class FailingWriteHandle:
+        def __init__(self, handle: object) -> None:
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.handle.__exit__(*args)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.handle, name)
+
+        def write(self, data: bytes) -> int:
+            raise OSError("recovery write failed")
+
+    def controlled_named_temporary_file(*args: object, **kwargs: object):
+        nonlocal temporary_calls
+        temporary_calls += 1
+        if temporary_calls == 2 and failure == "create":
+            raise OSError("recovery creation failed")
+        handle = real_named_temporary_file(*args, **kwargs)
+        if temporary_calls == 2 and failure == "write":
+            return FailingWriteHandle(handle)
+        return handle
+
+    monkeypatch.setattr(CAPTURE.tempfile, "NamedTemporaryFile", controlled_named_temporary_file)
+    if failure == "fsync":
+        real_fsync = CAPTURE.os.fsync
+        fsync_calls = 0
+
+        def fail_recovery_fsync(fd: int) -> None:
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 2:
+                raise OSError("recovery fsync failed")
+            real_fsync(fd)
+
+        monkeypatch.setattr(CAPTURE.os, "fsync", fail_recovery_fsync)
+
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    with pytest.raises(OSError, match=r"recovery"):
+        CAPTURE.capture(args)
+    assert output.read_bytes() == prior
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+    assert list(tmp_path.glob(".snapshot.json.*.recovery")) == []
+
+
 @pytest.mark.parametrize("rename_fails", [False, True])
 def test_capture_rollback_replace_failure_restores_or_retains_recovery_copy(
     tmp_path: Path, monkeypatch, rename_fails: bool

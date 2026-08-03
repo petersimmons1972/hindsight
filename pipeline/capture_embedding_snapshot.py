@@ -125,6 +125,7 @@ def _atomic_write_json(
     output.parent.mkdir(parents=True, exist_ok=True)
     prior_bytes = output.read_bytes() if output.is_file() else None
     temporary: Path | None = None
+    rollback: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=output.parent,
@@ -135,6 +136,15 @@ def _atomic_write_json(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        if prior_bytes is not None:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=output.parent,
+                prefix=f".{output.name}.", suffix=".recovery", delete=False,
+            ) as rollback_handle:
+                rollback = Path(rollback_handle.name)
+                rollback_handle.write(prior_bytes)
+                rollback_handle.flush()
+                os.fsync(rollback_handle.fileno())
         if before_replace is not None:
             before_replace()
         os.replace(temporary, output)
@@ -146,14 +156,7 @@ def _atomic_write_json(
             if prior_bytes is None:
                 output.unlink(missing_ok=True)
             else:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb", dir=output.parent,
-                    prefix=f".{output.name}.", suffix=".recovery", delete=False,
-                ) as rollback_handle:
-                    rollback = Path(rollback_handle.name)
-                    rollback_handle.write(prior_bytes)
-                    rollback_handle.flush()
-                    os.fsync(rollback_handle.fileno())
+                assert rollback is not None
                 restored = False
                 try:
                     os.replace(rollback, output)
@@ -171,12 +174,19 @@ def _atomic_write_json(
                 finally:
                     if restored:
                         rollback.unlink(missing_ok=True)
+                        rollback = None
             _fsync_directory(output.parent)
             raise
         _fsync_directory(output.parent)
+        if rollback is not None:
+            rollback.unlink(missing_ok=True)
+            rollback = None
+            _fsync_directory(output.parent)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+        if rollback is not None and output.is_file() and output.read_bytes() == prior_bytes:
+            rollback.unlink(missing_ok=True)
 
 
 def _parser() -> argparse.ArgumentParser:

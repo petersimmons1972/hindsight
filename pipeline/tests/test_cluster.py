@@ -9,6 +9,8 @@ import importlib.util
 import json
 import re
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Self
 
@@ -24,6 +26,13 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+CAPTURE_PATH = ROOT / "pipeline" / "capture_embedding_snapshot.py"
+CAPTURE_SPEC = importlib.util.spec_from_file_location("hindsight_capture", CAPTURE_PATH)
+assert CAPTURE_SPEC and CAPTURE_SPEC.loader
+CAPTURE = importlib.util.module_from_spec(CAPTURE_SPEC)
+sys.modules[CAPTURE_SPEC.name] = CAPTURE
+CAPTURE_SPEC.loader.exec_module(CAPTURE)
 
 
 def _corpus_marker_texts() -> list[str]:
@@ -97,11 +106,22 @@ def _snapshot_entries() -> list[MODULE.Entry]:
     ]
 
 
-def _write_snapshot(path: Path, *, backend: dict[str, object], vectors: dict[str, list[float]]) -> None:
+def _write_snapshot(
+    path: Path,
+    *,
+    backend: dict[str, object],
+    vectors: dict[str, list[float]],
+    l1_digest: str = "a" * 64,
+    cluster_digest: str = "b" * 64,
+) -> None:
     path.write_text(
         json.dumps(
             {
-                "schema": "hindsight.embedding-snapshot/v1",
+                "schema": "hindsight.embedding-snapshot/v2",
+                "provenance": {
+                    "l1_sha256": l1_digest,
+                    "cluster_sha256": cluster_digest,
+                },
                 "backend": backend,
                 "embeddings": vectors,
             }
@@ -136,7 +156,9 @@ def test_snapshot_matrix_reproduces_equivalent_live_vector_partition(tmp_path: P
         vectors={entry.id: live_matrix[index].tolist() for index, entry in enumerate(entries)},
     )
 
-    replay_matrix = MODULE.load_embedding_snapshot(snapshot, entries, identity)
+    replay_matrix = MODULE.load_embedding_snapshot(
+        snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="b" * 64
+    )
     live = MODULE.cluster_entries(entries, live_matrix, backend_name="test-dense", threshold=0.95)
     replay = MODULE.cluster_entries(entries, replay_matrix, backend_name="test-dense", threshold=0.95)
 
@@ -168,6 +190,8 @@ def test_snapshot_backend_identity_mismatch_is_rejected_loudly(tmp_path: Path) -
             snapshot,
             entries,
             {"name": "http", "model": "BAAI/bge-m3", "revision": "rev-b", "dimensions": 2},
+            expected_l1_digest="a" * 64,
+            expected_cluster_digest="b" * 64,
         )
 
 
@@ -182,7 +206,9 @@ def test_snapshot_id_mismatch_names_missing_and_unexpected_ids(tmp_path: Path) -
     )
 
     with pytest.raises(ValueError, match=r"missing.*snapshot-b.*unexpected.*snapshot-extra"):
-        MODULE.load_embedding_snapshot(snapshot, entries, identity)
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="b" * 64
+        )
 
 
 def test_snapshot_zero_overlap_alarms_and_names_both_id_sets(tmp_path: Path) -> None:
@@ -195,7 +221,9 @@ def test_snapshot_zero_overlap_alarms_and_names_both_id_sets(tmp_path: Path) -> 
         ValueError,
         match=r"ALARM: zero ID overlap.*snapshot-a.*snapshot-b.*snapshot-c.*foreign-a.*foreign-b",
     ):
-        MODULE.load_embedding_snapshot(snapshot, entries, identity)
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="b" * 64
+        )
 
 
 def test_committed_snapshot_covers_the_current_l1_corpus_exactly() -> None:
@@ -204,9 +232,229 @@ def test_committed_snapshot_covers_the_current_l1_corpus_exactly() -> None:
         ROOT / "pipeline" / "L2" / "embedding-snapshot.json",
         entries,
         MODULE.HTTP_BACKEND_IDENTITY,
+        expected_l1_digest=MODULE.l1_corpus_digest(ROOT / "pipeline" / "L1"),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(ROOT / "pipeline" / "cluster.py"),
     )
 
     assert matrix.shape == (len(entries), 1024)
+
+
+def test_snapshot_rejects_stale_declared_digests(tmp_path: Path) -> None:
+    entries = _snapshot_entries()
+    identity = {"name": "http", "model": "model", "revision": "rev", "dimensions": 2}
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(snapshot, backend=identity, vectors={entry.id: [1.0, 0.0] for entry in entries})
+
+    with pytest.raises(ValueError, match="L1 digest mismatch"):
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="c" * 64, expected_cluster_digest="b" * 64
+        )
+    with pytest.raises(ValueError, match="cluster code/config digest mismatch"):
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="c" * 64
+        )
+
+
+def _write_l1(directory: Path, record_id: str = "item-a", instance: str = "first") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": record_id, "source_path": "repo/file", "source_anchor": "line 1",
+        "instance": instance, "check": None, "enforcement": None,
+        "auto": "judgment", "first_seen": None,
+    }
+    (directory / "one.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+def test_provenance_digests_change_with_l1_and_cluster_inputs(tmp_path: Path) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    first_l1 = MODULE.l1_corpus_digest(l1)
+    _write_l1(l1, instance="changed")
+    assert MODULE.l1_corpus_digest(l1) != first_l1
+
+    cluster = tmp_path / "cluster.py"
+    cluster.write_text("code-a\n", encoding="utf-8")
+    first_cluster = MODULE.cluster_code_config_digest(cluster)
+    cluster.write_text("code-b\n", encoding="utf-8")
+    assert MODULE.cluster_code_config_digest(cluster) != first_cluster
+    code_b_digest = MODULE.cluster_code_config_digest(cluster)
+    original = MODULE.CLUSTER_CONFIG["http_dense_weight"]
+    MODULE.CLUSTER_CONFIG["http_dense_weight"] = 0.25
+    try:
+        assert MODULE.cluster_code_config_digest(cluster) != code_b_digest
+    finally:
+        MODULE.CLUSTER_CONFIG["http_dense_weight"] = original
+
+
+class _EmbeddingHandler(BaseHTTPRequestHandler):
+    response: object = {"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]}
+    status = 200
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.server.requests.append(json.loads(self.rfile.read(length)))  # type: ignore[attr-defined]
+        body = json.dumps(type(self).response).encode()
+        self.send_response(type(self).status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def _serve_embeddings(response: object, status: int = 200):
+    _EmbeddingHandler.response = response
+    _EmbeddingHandler.status = status
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _EmbeddingHandler)
+    server.requests = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, "item-a", "first")
+    record = json.loads((l1 / "one.jsonl").read_text())
+    record["id"], record["instance"] = "item-b", "second"
+    (l1 / "two.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    server, url = _serve_embeddings({"data": [{"embedding": [3.0, 0.0]}, {"embedding": [0.0, 4.0]}]})
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) == 0
+        first_bytes = output.read_bytes()
+        _EmbeddingHandler.response = {
+            "data": [{"embedding": [1.0, 1.0]}, {"embedding": [-1.0, 1.0]}]
+        }
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) == 0
+    finally:
+        server.shutdown()
+
+    entries = MODULE.load_entries(l1)
+    matrix = MODULE.load_embedding_snapshot(
+        output, entries, {"name": "http", "model": "fake", "revision": "r1", "dimensions": 2},
+        expected_l1_digest=MODULE.l1_corpus_digest(l1),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(MODULE_PATH),
+    )
+    np.testing.assert_allclose(
+        matrix,
+        [[2 ** -0.5, 2 ** -0.5], [-2 ** -0.5, 2 ** -0.5]],
+    )
+    assert output.read_bytes() != first_bytes
+    expected_request = {"input": [MODULE.similarity_text(entry) for entry in entries]}
+    assert server.requests == [expected_request, expected_request]
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
+@pytest.mark.parametrize(
+    "response,error",
+    [
+        ({"data": [{"embedding": [1.0, 0.0]}]}, "count"),
+        ({"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}, {"embedding": [1.0, 1.0]}]}, "count"),
+        ({"data": [{"embedding": [1.0, 0.0]}, {"embedding": [float("nan"), 1.0]}]}, "finite"),
+        ({"data": [{"embedding": ["1", 0.0]}, {"embedding": [0.0, 1.0]}]}, "numeric"),
+        ({"data": [{"embedding": [True, 0.0]}, {"embedding": [0.0, 1.0]}]}, "numeric"),
+        ({"data": [{"embedding": [1.0]}, {"embedding": [0.0, 1.0]}]}, "dimensions"),
+        ({"wrong": []}, "vectors"),
+    ],
+)
+def test_capture_protocol_errors_leave_existing_output_byte_identical(
+    tmp_path: Path, monkeypatch, capsys, response: object, error: str
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, "item-a", "first")
+    record = json.loads((l1 / "one.jsonl").read_text())
+    record["id"] = "item-b"
+    (l1 / "two.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"do-not-replace\x00"
+    output.write_bytes(prior)
+    server, url = _serve_embeddings(response)
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        result = CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ])
+    finally:
+        server.shutdown()
+    assert result != 0
+    assert error in capsys.readouterr().err
+    assert output.read_bytes() == prior
+
+
+def test_capture_backend_failure_and_write_failure_preserve_prior_output(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    assert CAPTURE.main([
+        "--input-dir", str(l1), "--output", str(output), "--backend-url", "http://127.0.0.1:1",
+        "--model", "fake", "--revision", "r1", "--dimensions", "2", "--cluster-code", str(MODULE_PATH),
+    ]) != 0
+    assert "error" in capsys.readouterr().err
+    assert output.read_bytes() == b"prior"
+
+    server, url = _serve_embeddings({"data": [{"embedding": [1.0, 0.0]}]})
+    monkeypatch.setattr(CAPTURE.os, "replace", lambda source, target: (_ for _ in ()).throw(OSError("replace denied")))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2", "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+    finally:
+        server.shutdown()
+    assert output.read_bytes() == b"prior"
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
+def test_capture_rejects_deceptive_or_non_http_backend_before_contact(tmp_path: Path, monkeypatch) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    for url in ("https://127.0.0.1/v1", "http://127.0.0.1.evil.invalid/v1"):
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(tmp_path / "out.json"), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2", "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+
+
+def test_capture_rejects_invalid_declared_backend_identity_without_replacing_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    server, url = _serve_embeddings({"data": [{"embedding": [1.0, 0.0]}]})
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+    finally:
+        server.shutdown()
+    assert output.read_bytes() == b"prior"
 
 
 def _assert_fixture_contract(clusters: list[object]) -> None:

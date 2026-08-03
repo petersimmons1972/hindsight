@@ -65,13 +65,20 @@ class EmbeddingProtocolError(ValueError):
     """The optional embedding service returned a response outside its contract."""
 
 
-SNAPSHOT_SCHEMA = "hindsight.embedding-snapshot/v1"
+SNAPSHOT_SCHEMA = "hindsight.embedding-snapshot/v2"
 SNAPSHOT_BACKEND_FIELDS = frozenset({"name", "model", "revision", "dimensions"})
+SNAPSHOT_PROVENANCE_FIELDS = frozenset({"l1_sha256", "cluster_sha256"})
 HTTP_BACKEND_IDENTITY: dict[str, object] = {
     "name": "http",
     "model": "BAAI/bge-m3",
     "revision": "bge-m3-Q8_0.gguf",
     "dimensions": 1024,
+}
+CLUSTER_CONFIG: dict[str, object] = {
+    "backend_default_thresholds": BACKEND_DEFAULT_THRESHOLDS,
+    "linkage": LINKAGE,
+    "http_dense_weight": HTTP_DENSE_WEIGHT,
+    "max_cluster_fraction": MAX_CLUSTER_FRACTION,
 }
 
 
@@ -182,6 +189,32 @@ def load_entries(directory: Path) -> list[Entry]:
     if not entries:
         raise ValueError(f"no L1 records found in {directory}")
     return sorted(entries, key=lambda entry: entry.id)
+
+
+def _digest_named_bytes(items: Sequence[tuple[str, bytes]]) -> str:
+    """Hash unambiguous path/content frames in caller-provided canonical order."""
+    digest = hashlib.sha256()
+    for name, content in items:
+        name_bytes = name.encode("utf-8")
+        digest.update(len(name_bytes).to_bytes(8, "big"))
+        digest.update(name_bytes)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def l1_corpus_digest(directory: Path) -> str:
+    """Digest every canonical on-disk L1 JSONL input, including its filename."""
+    files = sorted(directory.glob("*.jsonl"))
+    if not files:
+        raise ValueError(f"no JSONL inputs found in {directory}")
+    return _digest_named_bytes([(path.name, path.read_bytes()) for path in files])
+
+
+def cluster_code_config_digest(cluster_code: Path) -> str:
+    """Digest clustering implementation bytes and its explicit canonical config."""
+    config = json.dumps(CLUSTER_CONFIG, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    return _digest_named_bytes([("cluster.py", cluster_code.read_bytes()), ("cluster-config.json", config)])
 
 
 def similarity_text(entry: Entry) -> str:
@@ -468,6 +501,8 @@ class HttpEmbeddingBackend:
         for vector in raw_vectors:
             if not isinstance(vector, list) or not vector:
                 raise ValueError("embedding vector must be a non-empty list")
+            if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in vector):
+                raise ValueError("embedding vector must contain only numeric values")
             array = np.asarray(vector, dtype=np.float32)
             if array.ndim != 1 or not np.isfinite(array).all():
                 raise ValueError("embedding vector must be finite and one-dimensional")
@@ -525,7 +560,12 @@ def _validate_backend_identity(identity: object, *, source: str) -> dict[str, ob
 
 
 def load_embedding_snapshot(
-    path: Path, entries: Sequence[Entry], expected_backend: dict[str, object]
+    path: Path,
+    entries: Sequence[Entry],
+    expected_backend: dict[str, object],
+    *,
+    expected_l1_digest: str,
+    expected_cluster_digest: str,
 ) -> np.ndarray:
     """Load an ID-keyed snapshot only when provenance and corpus IDs match exactly."""
     try:
@@ -536,6 +576,30 @@ def load_embedding_snapshot(
         raise TypeError(f"{path}: snapshot must be an object")
     if payload.get("schema") != SNAPSHOT_SCHEMA:
         raise ValueError(f"{path}: unsupported snapshot schema {payload.get('schema')!r}")
+    expected_fields = {"schema", "provenance", "backend", "embeddings"}
+    if set(payload) != expected_fields:
+        raise ValueError(
+            f"{path}: snapshot fields do not match schema: "
+            f"missing={sorted(expected_fields.difference(payload))}, "
+            f"unexpected={sorted(set(payload).difference(expected_fields))}"
+        )
+
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, dict) or set(provenance) != SNAPSHOT_PROVENANCE_FIELDS:
+        raise ValueError(f"{path}: provenance must contain exactly {sorted(SNAPSHOT_PROVENANCE_FIELDS)}")
+    for field in SNAPSHOT_PROVENANCE_FIELDS:
+        value = provenance[field]
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError(f"{path}: provenance {field} must be a lowercase SHA-256 digest")
+    if provenance["l1_sha256"] != expected_l1_digest:
+        raise ValueError(
+            f"L1 digest mismatch: snapshot={provenance['l1_sha256']}, declared={expected_l1_digest}"
+        )
+    if provenance["cluster_sha256"] != expected_cluster_digest:
+        raise ValueError(
+            "cluster code/config digest mismatch: "
+            f"snapshot={provenance['cluster_sha256']}, declared={expected_cluster_digest}"
+        )
 
     actual_backend = _validate_backend_identity(payload.get("backend"), source="snapshot")
     declared_backend = _validate_backend_identity(expected_backend, source="declared")
@@ -569,6 +633,8 @@ def load_embedding_snapshot(
         vector = embeddings[entry_id]
         if not isinstance(vector, list):
             raise TypeError(f"embedding snapshot id {entry_id!r} vector must be a list")
+        if not vector or any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in vector):
+            raise ValueError(f"embedding snapshot id {entry_id!r} vector must contain only numbers")
         try:
             array = np.asarray(vector, dtype=np.float32)
         except (TypeError, ValueError) as exc:

@@ -71,14 +71,42 @@ EOF
 }
 
 @test "D5: a renamed and edited test is detected" {
+  git -C "$REPO" switch -q main
   cat > "$REPO/test_old.py" <<'EOF'
+# Deliberately long unchanged body: this fixture must remain a Git R* status
+# after its one-line edit, or it cannot exercise the historical AM filter.
+# 01
+# 02
+# 03
+# 04
+# 05
+# 06
+# 07
+# 08
+# 09
+# 10
+# 11
+# 12
+# 13
+# 14
+# 15
+# 16
+# 17
+# 18
+# 19
+# 20
 def test_value(): assert open("value.txt").read().strip() == "old"
 EOF
   git -C "$REPO" add test_old.py && git -C "$REPO" commit -qm old-test
+  git -C "$REPO" branch -f feature main
+  git -C "$REPO" switch -q feature
   git -C "$REPO" mv test_old.py test_renamed.py
   sed -i 's/"old"/"new"/' "$REPO/test_renamed.py"
   printf 'new\n' > "$REPO/value.txt"
   commit_fixture
+  run git -C "$REPO" diff --name-status -M main HEAD
+  [ "$status" -eq 0 ]
+  [[ "$output" == R*test_old.py$'\t'test_renamed.py* ]]
   run_verify
   [ "$status" -eq 0 ]
   [[ "$output" == *"test_renamed.py"* ]]

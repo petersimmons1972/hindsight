@@ -130,6 +130,11 @@ def _atomic_write_json(
             before_replace()
         os.replace(temporary, output)
         temporary = None
+        directory_fd = os.open(output.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import stat
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -398,6 +400,25 @@ def test_capture_falls_back_to_native_per_text_endpoint(monkeypatch) -> None:
         ("/embedding", {"content": "first"}),
         ("/embedding", {"content": "second"}),
     ]
+
+
+def test_atomic_snapshot_write_fsyncs_file_and_containing_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "snapshot.json"
+    real_fsync = os.fsync
+    synced_modes: list[int] = []
+
+    def recording_fsync(fd: int) -> None:
+        synced_modes.append(os.fstat(fd).st_mode)
+        real_fsync(fd)
+
+    monkeypatch.setattr(CAPTURE.os, "fsync", recording_fsync)
+    CAPTURE._atomic_write_json(output, {"ok": True})
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {"ok": True}
+    assert any(stat.S_ISREG(mode) for mode in synced_modes)
+    assert any(stat.S_ISDIR(mode) for mode in synced_modes)
 
 
 def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(

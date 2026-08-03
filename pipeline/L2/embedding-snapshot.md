@@ -48,15 +48,17 @@ an alarm. Vectors are reordered by sorted L1 ID before being passed to
 
 `pipeline/capture_embedding_snapshot.py` is the controlled release command. It
 accepts only a parsed plain-HTTP origin whose hostname exactly matches the
-authorized host allowlist, requests one vector per sorted L1 ID through the
-indexed OpenAI endpoint or the native per-text fallback, and validates the
-complete response. It binds OpenAI rows by their explicit indices, never by
-response order. Capture hashes L1 and cluster/config inputs before the request
-and rechecks them immediately before replacement. It writes and fsyncs a unique
-same-directory temporary file, atomically replaces the destination, then fsyncs
-the containing directory. Backend, protocol, coverage, vector, provenance-drift,
-or pre-replacement write errors exit nonzero and preserve the prior snapshot.
-Ordinary CI must never invoke this command.
+authorized host allowlist and refuses redirects. It requests one vector per
+sorted L1 ID through the indexed OpenAI endpoint, falling back to the native
+per-text endpoint only when the batch endpoint explicitly returns HTTP 404 or
+405. It binds OpenAI rows by their explicit indices, never by response order;
+malformed responses and every other backend failure are final. Capture hashes
+L1 and cluster/config inputs before the request and rechecks them immediately
+before replacement. It writes and fsyncs a unique same-directory temporary
+file, then atomically replaces the destination and fsyncs the containing
+directory. Backend, protocol, coverage,
+vector, provenance-drift, or pre-replacement write errors exit nonzero and
+preserve the prior snapshot. Ordinary CI must never invoke this command.
 
 Example release invocation:
 

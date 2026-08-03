@@ -7,10 +7,15 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import stat
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Self
+from urllib.error import HTTPError
 
 import numpy as np
 import pytest
@@ -24,6 +29,13 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+CAPTURE_PATH = ROOT / "pipeline" / "capture_embedding_snapshot.py"
+CAPTURE_SPEC = importlib.util.spec_from_file_location("hindsight_capture", CAPTURE_PATH)
+assert CAPTURE_SPEC and CAPTURE_SPEC.loader
+CAPTURE = importlib.util.module_from_spec(CAPTURE_SPEC)
+sys.modules[CAPTURE_SPEC.name] = CAPTURE
+CAPTURE_SPEC.loader.exec_module(CAPTURE)
 
 
 def _corpus_marker_texts() -> list[str]:
@@ -97,11 +109,22 @@ def _snapshot_entries() -> list[MODULE.Entry]:
     ]
 
 
-def _write_snapshot(path: Path, *, backend: dict[str, object], vectors: dict[str, list[float]]) -> None:
+def _write_snapshot(
+    path: Path,
+    *,
+    backend: dict[str, object],
+    vectors: dict[str, list[float]],
+    l1_digest: str = "a" * 64,
+    cluster_digest: str = "b" * 64,
+) -> None:
     path.write_text(
         json.dumps(
             {
-                "schema": "hindsight.embedding-snapshot/v1",
+                "schema": "hindsight.embedding-snapshot/v2",
+                "provenance": {
+                    "l1_sha256": l1_digest,
+                    "cluster_sha256": cluster_digest,
+                },
                 "backend": backend,
                 "embeddings": vectors,
             }
@@ -136,7 +159,9 @@ def test_snapshot_matrix_reproduces_equivalent_live_vector_partition(tmp_path: P
         vectors={entry.id: live_matrix[index].tolist() for index, entry in enumerate(entries)},
     )
 
-    replay_matrix = MODULE.load_embedding_snapshot(snapshot, entries, identity)
+    replay_matrix = MODULE.load_embedding_snapshot(
+        snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="b" * 64
+    )
     live = MODULE.cluster_entries(entries, live_matrix, backend_name="test-dense", threshold=0.95)
     replay = MODULE.cluster_entries(entries, replay_matrix, backend_name="test-dense", threshold=0.95)
 
@@ -168,6 +193,8 @@ def test_snapshot_backend_identity_mismatch_is_rejected_loudly(tmp_path: Path) -
             snapshot,
             entries,
             {"name": "http", "model": "BAAI/bge-m3", "revision": "rev-b", "dimensions": 2},
+            expected_l1_digest="a" * 64,
+            expected_cluster_digest="b" * 64,
         )
 
 
@@ -182,7 +209,9 @@ def test_snapshot_id_mismatch_names_missing_and_unexpected_ids(tmp_path: Path) -
     )
 
     with pytest.raises(ValueError, match=r"missing.*snapshot-b.*unexpected.*snapshot-extra"):
-        MODULE.load_embedding_snapshot(snapshot, entries, identity)
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="b" * 64
+        )
 
 
 def test_snapshot_zero_overlap_alarms_and_names_both_id_sets(tmp_path: Path) -> None:
@@ -195,7 +224,9 @@ def test_snapshot_zero_overlap_alarms_and_names_both_id_sets(tmp_path: Path) -> 
         ValueError,
         match=r"ALARM: zero ID overlap.*snapshot-a.*snapshot-b.*snapshot-c.*foreign-a.*foreign-b",
     ):
-        MODULE.load_embedding_snapshot(snapshot, entries, identity)
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="b" * 64
+        )
 
 
 def test_committed_snapshot_covers_the_current_l1_corpus_exactly() -> None:
@@ -204,9 +235,576 @@ def test_committed_snapshot_covers_the_current_l1_corpus_exactly() -> None:
         ROOT / "pipeline" / "L2" / "embedding-snapshot.json",
         entries,
         MODULE.HTTP_BACKEND_IDENTITY,
+        expected_l1_digest=MODULE.l1_corpus_digest(ROOT / "pipeline" / "L1"),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(ROOT / "pipeline" / "cluster.py"),
     )
 
     assert matrix.shape == (len(entries), 1024)
+
+
+def test_snapshot_rejects_stale_declared_digests(tmp_path: Path) -> None:
+    entries = _snapshot_entries()
+    identity = {"name": "http", "model": "model", "revision": "rev", "dimensions": 2}
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(snapshot, backend=identity, vectors={entry.id: [1.0, 0.0] for entry in entries})
+
+    with pytest.raises(ValueError, match="L1 digest mismatch"):
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="c" * 64, expected_cluster_digest="b" * 64
+        )
+    with pytest.raises(ValueError, match="cluster code/config digest mismatch"):
+        MODULE.load_embedding_snapshot(
+            snapshot, entries, identity, expected_l1_digest="a" * 64, expected_cluster_digest="c" * 64
+        )
+
+
+def _write_l1(directory: Path, record_id: str = "item-a", instance: str = "first") -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {
+        "id": record_id, "source_path": "repo/file", "source_anchor": "line 1",
+        "instance": instance, "check": None, "enforcement": None,
+        "auto": "judgment", "first_seen": None,
+    }
+    (directory / "one.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+
+def test_provenance_digests_change_with_l1_and_cluster_inputs(tmp_path: Path) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    first_l1 = MODULE.l1_corpus_digest(l1)
+    _write_l1(l1, instance="changed")
+    assert MODULE.l1_corpus_digest(l1) != first_l1
+
+    cluster = tmp_path / "cluster.py"
+    cluster.write_text("code-a\n", encoding="utf-8")
+    first_cluster = MODULE.cluster_code_config_digest(cluster)
+    cluster.write_text("code-b\n", encoding="utf-8")
+    assert MODULE.cluster_code_config_digest(cluster) != first_cluster
+    code_b_digest = MODULE.cluster_code_config_digest(cluster)
+    original = MODULE.CLUSTER_CONFIG["http_dense_weight"]
+    MODULE.CLUSTER_CONFIG["http_dense_weight"] = 0.25
+    try:
+        assert MODULE.cluster_code_config_digest(cluster) != code_b_digest
+    finally:
+        MODULE.CLUSTER_CONFIG["http_dense_weight"] = original
+
+
+@pytest.mark.parametrize("changed_input", ["l1", "cluster"])
+def test_capture_rejects_provenance_drift_during_request_and_preserves_output(
+    tmp_path: Path, monkeypatch, changed_input: str
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("old code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+
+    def mutate_during_request(base_url: str, texts: list[str], timeout: float) -> np.ndarray:
+        assert "old text" in texts[0]
+        if changed_input == "l1":
+            _write_l1(l1, instance="new text")
+        else:
+            cluster_code.write_text("new code\n", encoding="utf-8")
+        return np.asarray([[1.0, 0.0]], dtype=np.float32)
+
+    monkeypatch.setattr(CAPTURE, "_request_vectors", mutate_during_request)
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    with pytest.raises(ValueError, match=r"provenance changed during capture"):
+        CAPTURE.capture(args)
+    assert output.read_bytes() == prior
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
+def test_capture_rolls_back_when_provenance_changes_inside_replace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+    monkeypatch.setattr(
+        CAPTURE,
+        "_request_vectors",
+        lambda base_url, texts, timeout: np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    real_replace = os.replace
+    first_replace = True
+
+    def mutate_then_replace(source: Path, destination: Path) -> None:
+        nonlocal first_replace
+        if first_replace:
+            first_replace = False
+            _write_l1(l1, instance="changed inside replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(CAPTURE.os, "replace", mutate_then_replace)
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    with pytest.raises(ValueError, match=r"provenance changed during capture"):
+        CAPTURE.capture(args)
+    assert output.read_bytes() == prior
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
+@pytest.mark.parametrize("failure", ["create", "write", "fsync"])
+def test_capture_recovery_staging_failure_preserves_prior_snapshot(
+    tmp_path: Path, monkeypatch, failure: str
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+    monkeypatch.setattr(
+        CAPTURE,
+        "_request_vectors",
+        lambda base_url, texts, timeout: np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+
+    real_named_temporary_file = CAPTURE.tempfile.NamedTemporaryFile
+    temporary_calls = 0
+
+    class FailingWriteHandle:
+        def __init__(self, handle: object) -> None:
+            self.handle = handle
+
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.handle.__exit__(*args)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.handle, name)
+
+        def write(self, data: bytes) -> int:
+            raise OSError("recovery write failed")
+
+    def controlled_named_temporary_file(*args: object, **kwargs: object):
+        nonlocal temporary_calls
+        temporary_calls += 1
+        if temporary_calls == 2 and failure == "create":
+            raise OSError("recovery creation failed")
+        handle = real_named_temporary_file(*args, **kwargs)
+        if temporary_calls == 2 and failure == "write":
+            return FailingWriteHandle(handle)
+        return handle
+
+    monkeypatch.setattr(CAPTURE.tempfile, "NamedTemporaryFile", controlled_named_temporary_file)
+    if failure == "fsync":
+        real_fsync = CAPTURE.os.fsync
+        fsync_calls = 0
+
+        def fail_recovery_fsync(fd: int) -> None:
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == 2:
+                raise OSError("recovery fsync failed")
+            real_fsync(fd)
+
+        monkeypatch.setattr(CAPTURE.os, "fsync", fail_recovery_fsync)
+
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    with pytest.raises(OSError, match=r"recovery"):
+        CAPTURE.capture(args)
+    assert output.read_bytes() == prior
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+    assert list(tmp_path.glob(".snapshot.json.*.recovery")) == []
+
+
+@pytest.mark.parametrize("rename_fails", [False, True])
+def test_capture_rollback_replace_failure_restores_or_retains_recovery_copy(
+    tmp_path: Path, monkeypatch, rename_fails: bool
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, instance="old text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"trusted-prior-snapshot\n"
+    output.write_bytes(prior)
+    monkeypatch.setattr(
+        CAPTURE,
+        "_request_vectors",
+        lambda base_url, texts, timeout: np.asarray([[1.0, 0.0]], dtype=np.float32),
+    )
+    real_replace = os.replace
+    replace_calls = 0
+
+    def fail_rollback_replace(source: Path, destination: Path) -> None:
+        nonlocal replace_calls
+        replace_calls += 1
+        if replace_calls == 1:
+            _write_l1(l1, instance="changed inside replace")
+            real_replace(source, destination)
+            return
+        raise OSError("rollback replace failed")
+
+    monkeypatch.setattr(CAPTURE.os, "replace", fail_rollback_replace)
+    if rename_fails:
+        monkeypatch.setattr(CAPTURE.os, "rename", lambda source, destination: (_ for _ in ()).throw(OSError("rename failed")))
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    if rename_fails:
+        with pytest.raises(RuntimeError, match=r"prior snapshot preserved at"):
+            CAPTURE.capture(args)
+        assert not output.exists()
+        recovery = list(tmp_path.glob(".snapshot.json.*.recovery"))
+        assert len(recovery) == 1
+        assert recovery[0].read_bytes() == prior
+    else:
+        with pytest.raises(ValueError, match=r"provenance changed during capture"):
+            CAPTURE.capture(args)
+        assert output.read_bytes() == prior
+        assert list(tmp_path.glob(".snapshot.json.*.recovery")) == []
+
+
+class _EmbeddingHandler(BaseHTTPRequestHandler):
+    response: object = {"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}]}
+    status = 200
+
+    def do_POST(self) -> None:
+        length = int(self.headers["Content-Length"])
+        self.server.requests.append(json.loads(self.rfile.read(length)))  # type: ignore[attr-defined]
+        response = type(self).response
+        if self.path == "/v1/embeddings" and isinstance(response, dict) and isinstance(response.get("data"), list):
+            response = dict(response)
+            response["data"] = [
+                ({**item, "index": index} if isinstance(item, dict) and "index" not in item else item)
+                for index, item in enumerate(response["data"])
+            ]
+        body = json.dumps(response).encode()
+        self.send_response(type(self).status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+def _serve_embeddings(response: object, status: int = 200):
+    _EmbeddingHandler.response = response
+    _EmbeddingHandler.status = status
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _EmbeddingHandler)
+    server.requests = []
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def test_openai_response_indices_bind_vectors_to_request_order() -> None:
+    payload = {
+        "data": [
+            {"index": 1, "embedding": [0.0, 1.0]},
+            {"index": 0, "embedding": [1.0, 0.0]},
+        ]
+    }
+    vectors = CAPTURE._indexed_openai_vectors(payload, 2)
+    np.testing.assert_array_equal(vectors, [[1.0, 0.0], [0.0, 1.0]])
+
+
+@pytest.mark.parametrize(
+    "data,error",
+    [
+        ([{"embedding": [1.0, 0.0]}], "missing or invalid index"),
+        ([{"index": True, "embedding": [1.0, 0.0]}], "missing or invalid index"),
+        ([{"index": 0, "embedding": [1.0, 0.0]}, {"index": 0, "embedding": [0.0, 1.0]}], "duplicate index"),
+        ([{"index": 1, "embedding": [1.0, 0.0]}], "coverage mismatch"),
+    ],
+)
+def test_openai_response_rejects_ambiguous_indices(data: list[object], error: str) -> None:
+    with pytest.raises(ValueError, match=error):
+        CAPTURE._indexed_openai_vectors({"data": data}, 1)
+
+
+def test_capture_falls_back_to_native_per_text_endpoint(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def post(base_url: str, endpoint: str, payload: dict[str, object], timeout: float) -> object:
+        calls.append((endpoint, payload))
+        if endpoint == "/v1/embeddings":
+            raise HTTPError(base_url + endpoint, 404, "not supported", None, None)
+        content = payload["content"]
+        return {"embedding": [1.0, 0.0] if content == "first" else [0.0, 1.0]}
+
+    monkeypatch.setattr(CAPTURE, "_post_json", post)
+    matrix = CAPTURE._request_vectors("http://192.168.0.98:8004", ["first", "second"], 1.0)
+    np.testing.assert_array_equal(matrix, [[1.0, 0.0], [0.0, 1.0]])
+    assert calls == [
+        ("/v1/embeddings", {"input": ["first", "second"]}),
+        ("/embedding", {"content": "first"}),
+        ("/embedding", {"content": "second"}),
+    ]
+
+
+def test_atomic_snapshot_write_fsyncs_file_and_containing_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "snapshot.json"
+    real_fsync = os.fsync
+    synced_modes: list[int] = []
+
+    def recording_fsync(fd: int) -> None:
+        synced_modes.append(os.fstat(fd).st_mode)
+        real_fsync(fd)
+
+    monkeypatch.setattr(CAPTURE.os, "fsync", recording_fsync)
+    CAPTURE._atomic_write_json(output, {"ok": True})
+
+    assert json.loads(output.read_text(encoding="utf-8")) == {"ok": True}
+    assert any(stat.S_ISREG(mode) for mode in synced_modes)
+    assert any(stat.S_ISDIR(mode) for mode in synced_modes)
+
+
+def test_atomic_snapshot_write_persists_recovery_name_before_replacement(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"trusted prior\n")
+    events: list[str] = []
+    real_replace = os.replace
+
+    monkeypatch.setattr(
+        CAPTURE, "_fsync_directory", lambda directory: events.append("directory-fsync")
+    )
+
+    def recording_replace(source: Path, destination: Path) -> None:
+        events.append("replace")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(CAPTURE.os, "replace", recording_replace)
+    CAPTURE._atomic_write_json(output, {"ok": True})
+
+    assert events[0:2] == ["directory-fsync", "replace"]
+    assert json.loads(output.read_text(encoding="utf-8")) == {"ok": True}
+
+
+def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, "item-a", "first")
+    record = json.loads((l1 / "one.jsonl").read_text())
+    record["id"], record["instance"] = "item-b", "second"
+    (l1 / "two.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    server, url = _serve_embeddings({"data": [{"embedding": [3.0, 0.0]}, {"embedding": [0.0, 4.0]}]})
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) == 0
+        first_bytes = output.read_bytes()
+        _EmbeddingHandler.response = {
+            "data": [{"embedding": [1.0, 1.0]}, {"embedding": [-1.0, 1.0]}]
+        }
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) == 0
+    finally:
+        server.shutdown()
+
+    entries = MODULE.load_entries(l1)
+    matrix = MODULE.load_embedding_snapshot(
+        output, entries, {"name": "http", "model": "fake", "revision": "r1", "dimensions": 2},
+        expected_l1_digest=MODULE.l1_corpus_digest(l1),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(MODULE_PATH),
+    )
+    np.testing.assert_allclose(
+        matrix,
+        [[2 ** -0.5, 2 ** -0.5], [-2 ** -0.5, 2 ** -0.5]],
+    )
+    assert output.read_bytes() != first_bytes
+    expected_request = {"input": [MODULE.similarity_text(entry) for entry in entries]}
+    assert server.requests == [expected_request, expected_request]
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
+@pytest.mark.parametrize(
+    "response,error",
+    [
+        ({"data": [{"embedding": [1.0, 0.0]}]}, "count"),
+        ({"data": [{"embedding": [1.0, 0.0]}, {"embedding": [0.0, 1.0]}, {"embedding": [1.0, 1.0]}]}, "count"),
+        ({"data": [{"embedding": [1.0, 0.0]}, {"embedding": [float("nan"), 1.0]}]}, "finite"),
+        ({"data": [{"embedding": ["1", 0.0]}, {"embedding": [0.0, 1.0]}]}, "numeric"),
+        ({"data": [{"embedding": [True, 0.0]}, {"embedding": [0.0, 1.0]}]}, "numeric"),
+        ({"data": [{"embedding": [1.0]}, {"embedding": [0.0, 1.0]}]}, "dimensions"),
+        ({"wrong": []}, "vectors"),
+    ],
+)
+def test_capture_protocol_errors_leave_existing_output_byte_identical(
+    tmp_path: Path, monkeypatch, capsys, response: object, error: str
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1, "item-a", "first")
+    record = json.loads((l1 / "one.jsonl").read_text())
+    record["id"] = "item-b"
+    (l1 / "two.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    prior = b"do-not-replace\x00"
+    output.write_bytes(prior)
+    server, url = _serve_embeddings(response)
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        result = CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ])
+    finally:
+        server.shutdown()
+    assert result != 0
+    assert error in capsys.readouterr().err
+    assert output.read_bytes() == prior
+
+
+def test_capture_backend_failure_and_write_failure_preserve_prior_output(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    assert CAPTURE.main([
+        "--input-dir", str(l1), "--output", str(output), "--backend-url", "http://127.0.0.1:1",
+        "--model", "fake", "--revision", "r1", "--dimensions", "2", "--cluster-code", str(MODULE_PATH),
+    ]) != 0
+    assert "error" in capsys.readouterr().err
+    assert output.read_bytes() == b"prior"
+
+    server, url = _serve_embeddings({"data": [{"embedding": [1.0, 0.0]}]})
+    monkeypatch.setattr(CAPTURE.os, "replace", lambda source, target: (_ for _ in ()).throw(OSError("replace denied")))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2", "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+    finally:
+        server.shutdown()
+    assert output.read_bytes() == b"prior"
+    assert list(tmp_path.glob(".snapshot.json.*.tmp")) == []
+
+
+def test_capture_rejects_deceptive_or_non_http_backend_before_contact(tmp_path: Path, monkeypatch) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    for url in ("https://127.0.0.1/v1", "http://127.0.0.1.evil.invalid/v1"):
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(tmp_path / "out.json"), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2", "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+
+
+def test_capture_rejects_invalid_declared_backend_identity_without_replacing_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    server, url = _serve_embeddings({"data": [{"embedding": [1.0, 0.0]}]})
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+    finally:
+        server.shutdown()
+    assert output.read_bytes() == b"prior"
+
+
+def test_capture_refuses_redirect_without_contacting_unauthorized_destination(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class DestinationHandler(BaseHTTPRequestHandler):
+        hits = 0
+
+        def _respond(self) -> None:
+            type(self).hits += 1
+            self.send_response(200)
+            body = json.dumps({"data": [{"embedding": [1.0, 0.0]}]}).encode()
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = _respond
+        do_POST = _respond
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    destination = ThreadingHTTPServer(("127.0.0.1", 0), DestinationHandler)
+    destination_thread = threading.Thread(target=destination.serve_forever, daemon=True)
+    destination_thread.start()
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(302)
+            self.send_header(
+                "Location", f"http://localhost:{destination.server_port}/stolen"
+            )
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    l1 = tmp_path / "L1"
+    _write_l1(l1)
+    output = tmp_path / "snapshot.json"
+    output.write_bytes(b"prior")
+    monkeypatch.setattr(CAPTURE, "AUTHORIZED_HTTP_HOSTS", frozenset({"127.0.0.1"}))
+    try:
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output),
+            "--backend-url", f"http://127.0.0.1:{redirect.server_port}",
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH),
+        ]) != 0
+    finally:
+        redirect.shutdown()
+        destination.shutdown()
+    assert DestinationHandler.hits == 0
+    assert output.read_bytes() == b"prior"
 
 
 def _assert_fixture_contract(clusters: list[object]) -> None:

@@ -224,11 +224,28 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _print_differential(clusters_path: Path, l1_dir: Path) -> None:
-    """Report the DATED% split between the Arm B intervention families and
-    the comparator pool. Reporting only -- this packet does not fix the gap,
-    it makes it visible so downstream normalisation can account for it.
+def _print_differential(clusters_path: Path, l1_dir: Path, *, is_real_corpus: bool) -> None:
+    """Report the PROVENANCE-QUALITY split between the Arm B intervention
+    families and the comparator pool. Reporting only -- this packet does not
+    fix the gap, it makes it visible so downstream normalisation can account
+    for it.
+
+    Measures pre-existing / git-anchor / l1-ingest-fallback shares, not mere
+    "first_seen is not None" (D-3): that flag goes to 100% once repair
+    finishes and can never again surface the bias it exists to surface.
+
+    Computed ONLY when the run's actual target is the real corpus directory
+    (D-1): a directory inferred from an arbitrary --l1 argument could hold
+    unrelated files and would print a fabricated, undetectable-as-fake
+    number in the same machine-readable format as a genuine measurement.
     """
+    if not is_real_corpus:
+        print(
+            "date-repair: DIFFERENTIAL: NOT MEASURED (target is not the corpus)",
+            file=sys.stderr,
+        )
+        return
+
     try:
         clusters_text = clusters_path.read_text(encoding="utf-8")
     except OSError:
@@ -254,7 +271,7 @@ def _print_differential(clusters_path: Path, l1_dir: Path) -> None:
         if cid in COMPARATOR_CLUSTERS:
             comparator_ids.update(members)
 
-    id_dated: dict[str, bool] = {}
+    id_provenance: dict[str, str] = {}
     if l1_dir.is_dir():
         for jf in sorted(l1_dir.glob("*.jsonl")):
             for line in jf.read_text(encoding="utf-8").splitlines():
@@ -265,21 +282,49 @@ def _print_differential(clusters_path: Path, l1_dir: Path) -> None:
                 rid = rec.get("id")
                 if rid is None:
                     continue
-                id_dated[rid] = rec.get("first_seen") is not None
+                prov = rec.get("first_seen_provenance")
+                if prov == "git-anchor":
+                    id_provenance[rid] = "git-anchor"
+                elif prov == "l1-ingest-fallback":
+                    id_provenance[rid] = "l1-ingest-fallback"
+                elif rec.get("first_seen") is not None:
+                    id_provenance[rid] = "pre-existing"
+                else:
+                    id_provenance[rid] = "undated"
 
-    def pct(ids: set[str]) -> float | None:
-        known = [id_dated[i] for i in ids if i in id_dated]
-        if not known:
-            return None
-        return sum(known) / len(known) * 100
+    def summarize(ids: set[str]) -> tuple[int, int, int, int]:
+        pre = anchor = fallback = undated = 0
+        for i in ids:
+            p = id_provenance.get(i)
+            if p == "pre-existing":
+                pre += 1
+            elif p == "git-anchor":
+                anchor += 1
+            elif p == "l1-ingest-fallback":
+                fallback += 1
+            elif p == "undated":
+                undated += 1
+            # ids absent from l1_dir entirely are silently excluded, same as
+            # the prior "known" filter -- there is no measurement for them.
+        return pre, anchor, fallback, undated
 
-    p, q = pct(arm_b_ids), pct(comparator_ids)
-    p_s = f"{p:.1f}%" if p is not None else "n/a"
-    q_s = f"{q:.1f}%" if q is not None else "n/a"
-    print(
-        f"date-repair: DIFFERENTIAL: intervention-family dated {p_s}, comparator-pool dated {q_s}",
-        file=sys.stderr,
-    )
+    def pct_pre_dated(pre: int, anchor: int, fallback: int) -> str:
+        total = pre + anchor + fallback
+        if total == 0:
+            return "n/a"
+        return f"{pre / total * 100:.1f}%"
+
+    for label, ids in (
+        ("intervention-family", arm_b_ids),
+        ("comparator-pool", comparator_ids),
+    ):
+        pre, anchor, fallback, undated = summarize(ids)
+        print(
+            f"date-repair: DIFFERENTIAL: {label} (n={len(ids)}) "
+            f"pre-existing={pre} git-anchor={anchor} l1-ingest-fallback={fallback} "
+            f"undated={undated} -> {pct_pre_dated(pre, anchor, fallback)} pre-dated",
+            file=sys.stderr,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -318,10 +363,16 @@ def main(argv: list[str] | None = None) -> int:
         if not files:
             print(f"date-repair: ERROR: no .jsonl files found in {l1_target}", file=sys.stderr)
             return 1
-        l1_dir_for_differential = l1_target
     else:
         files = [l1_target]
-        l1_dir_for_differential = l1_target.parent
+
+    # D-1: the differential is ALWAYS computed over the real corpus
+    # directory, never a directory inferred from --l1. Only run the
+    # measurement when this invocation's own target IS that real corpus --
+    # otherwise print NOT MEASURED rather than a number about a directory
+    # nobody asked to be measured.
+    real_corpus_dir = self_dir / "pipeline" / "L1"
+    is_real_corpus = l1_target.resolve() == real_corpus_dir.resolve()
 
     total = RepairStats()
     had_error = False
@@ -336,12 +387,32 @@ def main(argv: list[str] | None = None) -> int:
         total.dated_by_fallback += stats.dated_by_fallback
         total.still_undated += stats.still_undated
 
+    if had_error:
+        # D-2 / R4: a fail-loud path must never print counts, not even
+        # zeros -- a zero is indistinguishable from a genuine all-zero run.
+        print("date-repair: NOT MEASURED", file=sys.stderr)
+        return 1
+
     print(f"date-repair: DATED-BY-ANCHOR: {total.dated_by_anchor}", file=sys.stderr)
     print(f"date-repair: DATED-BY-FALLBACK: {total.dated_by_fallback}", file=sys.stderr)
     print(f"date-repair: STILL-UNDATED: {total.still_undated}", file=sys.stderr)
-    _print_differential(clusters_path, l1_dir_for_differential)
+    _print_differential(clusters_path, real_corpus_dir, is_real_corpus=is_real_corpus)
 
-    return 1 if had_error else 0
+    # D-4: ~90% of the real corpus's repaired rows fell back to when the row
+    # entered HINDSIGHT rather than a recovered logging date -- that is an
+    # honest outcome of ruling R-c, not a defect, but it must be stated
+    # loudly wherever these dates get consumed.
+    dated_this_run = total.dated_by_anchor + total.dated_by_fallback
+    if dated_this_run > 0:
+        fallback_share = total.dated_by_fallback / dated_this_run
+        if fallback_share > 0.5:
+            print(
+                f"date-repair: WARNING: {fallback_share * 100:.1f}% of rows dated this run used "
+                "l1-ingest-fallback (entered HINDSIGHT, not the true logging date)",
+                file=sys.stderr,
+            )
+
+    return 0
 
 
 if __name__ == "__main__":

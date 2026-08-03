@@ -353,3 +353,176 @@ def test_prints_the_three_counts_on_stderr(tmp_path: Path, capsys: pytest.Captur
     assert "first_seen_provenance" not in rows["fixture-existing-1"]
     assert "first_seen" not in rows["fixture-undatable-1"]
     assert "first_seen_provenance" not in rows["fixture-undatable-1"]
+
+
+# --------------------------------------------------------------------------
+# D-1: FABRICATED STATISTIC -- the differential must be computed over the
+# real corpus directory, never a directory inferred from --l1. If the run's
+# target isn't the real corpus, print NOT MEASURED, never a number.
+# --------------------------------------------------------------------------
+
+def test_differential_not_measured_when_target_is_not_the_real_corpus(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = Env(tmp_path)
+
+    # The real corpus (self_dir/pipeline/L1): a1 IS dated, via git-anchor.
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    (l2_dir / "clusters.jsonl").write_text(
+        json.dumps({"cluster_id": "c-043", "members": ["a1"]}) + "\n", encoding="utf-8"
+    )
+    (corpus_dir / "sample.jsonl").write_text(
+        json.dumps({"id": "a1", "first_seen": "2020-01-01",
+                     "first_seen_provenance": "git-anchor"}) + "\n",
+        encoding="utf-8",
+    )
+
+    # This run's actual TARGET is an unrelated scratch file whose parent dir
+    # happens to contain a same-id row that is UNDATED. If the differential's
+    # directory is inferred from the target's parent (the bug), it reports
+    # a1 as 0% dated -- the opposite of the real corpus's 100%. Either number
+    # is a fabrication here; the only honest output is "not measured".
+    scratch_dir = tmp_path / "scratch"
+    scratch_dir.mkdir()
+    (scratch_dir / "unrelated-noise.jsonl").write_text(
+        json.dumps({"id": "a1"}) + "\n", encoding="utf-8"
+    )
+    row = _load_fixture_row("fixture-existing-1")
+    target_file = scratch_dir / "sample.jsonl"
+    target_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    exit_code = repair_first_seen.main(env.main_args("--l1", str(target_file)))
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    diff_lines = [ln for ln in captured.err.splitlines() if "DIFFERENTIAL" in ln]
+    assert len(diff_lines) == 1
+    assert diff_lines[0] == "date-repair: DIFFERENTIAL: NOT MEASURED (target is not the corpus)"
+
+
+# --------------------------------------------------------------------------
+# D-2: R4 VIOLATION -- on a fail-loud path, no counts (not even zeros) may
+# be printed. A zero must never look like "wasn't measured".
+# --------------------------------------------------------------------------
+
+def test_fail_loud_path_prints_not_measured_never_zero_counts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = Env(tmp_path)
+    empty = env.l1_dir / "sample.jsonl"
+    empty.write_text("", encoding="utf-8")
+
+    exit_code = repair_first_seen.main(env.main_args("--l1", str(empty)))
+
+    captured = capsys.readouterr()
+    assert exit_code != 0
+    assert "date-repair: ERROR:" in captured.err
+    assert "date-repair: NOT MEASURED" in captured.err
+    # A zero count must never be emitted on this path -- it is
+    # indistinguishable from a genuine all-zero successful run.
+    assert "DATED-BY-ANCHOR" not in captured.err
+    assert "DATED-BY-FALLBACK" not in captured.err
+    assert "STILL-UNDATED" not in captured.err
+
+
+# --------------------------------------------------------------------------
+# D-3: DEGENERATE METRIC -- the differential must report the split across
+# pre-existing / git-anchor / l1-ingest-fallback provenance, not just
+# "first_seen is not None", which goes to 100%/100% once repair finishes
+# and can never again surface the bias it exists to surface.
+# --------------------------------------------------------------------------
+
+def test_differential_reports_provenance_split_not_just_dated_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = Env(tmp_path)
+    corpus_dir = env.hindsight_repo / "pipeline" / "L1"
+    corpus_dir.mkdir(parents=True)
+    l2_dir = env.hindsight_repo / "pipeline" / "L2"
+    l2_dir.mkdir(parents=True)
+    (l2_dir / "clusters.jsonl").write_text(
+        json.dumps({"cluster_id": "c-043", "members": ["a1", "a2", "a3", "a4"]}) + "\n"
+        + json.dumps({"cluster_id": "c-003", "members": ["b1", "b2"]}) + "\n",
+        encoding="utf-8",
+    )
+    # Every one of these six rows already carries first_seen -- the old
+    # "is not None" metric would read 100.0%/100.0% and hide the skew below.
+    (corpus_dir / "sample.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in [
+            {"id": "a1", "first_seen": "2020-01-01"},
+            {"id": "a2", "first_seen": "2020-01-01", "first_seen_provenance": "git-anchor"},
+            {"id": "a3", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+            {"id": "a4", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+            {"id": "b1", "first_seen": "2020-01-01"},
+            {"id": "b2", "first_seen": "2020-01-01", "first_seen_provenance": "l1-ingest-fallback"},
+        ]),
+        encoding="utf-8",
+    )
+
+    exit_code = repair_first_seen.main(env.main_args())
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "100.0%" not in captured.err
+    assert (
+        "date-repair: DIFFERENTIAL: intervention-family (n=4) "
+        "pre-existing=1 git-anchor=1 l1-ingest-fallback=2 undated=0 -> 25.0% pre-dated"
+    ) in captured.err
+    assert (
+        "date-repair: DIFFERENTIAL: comparator-pool (n=2) "
+        "pre-existing=1 git-anchor=0 l1-ingest-fallback=1 undated=0 -> 50.0% pre-dated"
+    ) in captured.err
+
+
+# --------------------------------------------------------------------------
+# D-4: the fallback share (l1-ingest-fallback dates entered HINDSIGHT, not
+# the true logging moment) must trigger a named WARNING once it exceeds half
+# of everything dated this run.
+# --------------------------------------------------------------------------
+
+def test_warns_when_fallback_share_exceeds_half(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = Env(tmp_path)
+
+    _commit(env.sample_root, "docs/anchor.md",
+            "# Doc\n\n## Anchor Heading One\nOriginal text.\n",
+            "2026-01-08T09:00:00+00:00", "add anchor heading")
+    _commit(env.hindsight_repo, "pipeline/L1/sample.jsonl",
+            '{"id": "sample-fb-1"}\n{"id": "sample-fb-2"}\n{"id": "sample-fb-3"}\n',
+            "2026-03-03T12:00:00+00:00", "ingest fallback rows")
+
+    anchor_row = {
+        "id": "sample-anchor-1",
+        "source_path": "sampleroot/docs/anchor.md",
+        "source_anchor": "Anchor Heading One",
+        "instance": "An anchor-dateable entry.",
+        "check": "n/a",
+        "enforcement": None,
+        "auto": "machine",
+    }
+
+    def fb_row(n: int) -> dict:
+        return {
+            "id": f"sample-fb-{n}",
+            "source_path": "sampleroot/docs/missing.md",
+            "source_anchor": "Never Existed Heading",
+            "instance": "A fallback-dateable entry.",
+            "check": "n/a",
+            "enforcement": None,
+            "auto": "machine",
+        }
+
+    target = env.target(anchor_row, fb_row(1), fb_row(2), fb_row(3))
+
+    exit_code = repair_first_seen.main(env.main_args("--l1", str(target)))
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "date-repair: DATED-BY-ANCHOR: 1" in captured.err
+    assert "date-repair: DATED-BY-FALLBACK: 3" in captured.err
+    assert "date-repair: WARNING:" in captured.err
+    assert "75.0%" in captured.err

@@ -59,3 +59,31 @@ git add pipeline/L1/homelab-canon.jsonl \
 
 Retry the commit after staging them. Other commits run the guard without
 rewriting derived artifacts.
+
+## `first_seen` and its provenance
+
+Every L1 row carries a `first_seen` field (issue #32). It is dated one of two
+ways, in priority order, by `pipeline/repair_first_seen.py`:
+
+- **`git-anchor`** -- the row's `source_anchor` text was found, via
+  `conf/source-roots.conf`, in the commit that first introduced it into the
+  source repo's file (`git log --reverse -S<anchor>`, oldest match). This
+  dates the moment the lesson entered its *source*.
+- **`l1-ingest-fallback`** -- used only when the anchor lookup can't resolve
+  (source root absent, path never existed, or the anchor text isn't literally
+  present, e.g. a paraphrased or synthesized label). Falls back to the first
+  commit, in this checkout, that introduced the row's own id into its
+  `pipeline/L1/<source>.jsonl`. This dates when the entry entered *hindsight*,
+  which can be considerably later than the source event -- never conflate the
+  two provenances when reasoning about corpus timing.
+
+A row that resolves under neither path is left with no `first_seen` and no
+`first_seen_provenance` key -- an honest gap, never a fabricated date. Rows
+that already carried `first_seen` before a repair run are left byte-for-byte
+untouched and gain no provenance key.
+
+Re-run with `python3 pipeline/repair_first_seen.py` after adding sources whose
+roots weren't previously checked out; it only touches rows still missing
+`first_seen`. It reports four `date-repair:` lines on stderr every run,
+including a fairness DIFFERENTIAL between the Arm B intervention-family
+clusters and the comparator-pool clusters -- report only, not a fix.

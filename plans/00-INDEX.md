@@ -25,11 +25,11 @@ have produced the defect.
 | # | file | issue | status | blocked-by | blocks |
 |---|---|---|---|---|---|
 | 01 | `01-enforcement-disclosure.md` | #18 | COMPLETE — PR #27 merged; main guard green | — | — |
-| 02 | `02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green | — | 03, 06 |
+| 02 | `02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green | — | 03 |
 | 03 | `03-recurrence-trend-instrument.md` | #29 | **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok); `docs/DECISIONS.md` rows 22–26 | 02 | — |
 | 04 | `04-sync-repair-and-distribute.md` | #22 (closes #24) | FOUNDER-BLOCKED — push-vs-pull decision; #24 must select this path or C6c | — | 05 |
 | 05 | `05-enforcement-locality.md` | PR #12 | BLOCKED — issue #20 closed with packet 20-1 / PR #52; remaining locality work is held behind 04 | 04 | — |
-| 06 | `06-l3-invariant-ledger.md` | #21 | FOUNDER-BLOCKED — coordinator fixture is merged (#63); W1/W2 artifact contract unresolved | 02 | — |
+| 06 | `06-l3-invariant-ledger.md` | #21 | FOUNDER-BLOCKED — coordinator fixture is merged (#63); W1/W2 artifact contract unresolved | — | — |
 | 07 | `07-discriminating-rebuild.md` | #23 | FOUNDER-BLOCKED — PR #48 rejected; discriminator design choice unresolved | — | — |
 | 08 | `08-reconcile-partial-is-not-pass.md` | #25 | COMPLETE — PR #26 merged, main green | — | X2 |
 

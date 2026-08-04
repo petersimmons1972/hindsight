@@ -1235,9 +1235,12 @@ EOF
   grep -qiE 'never|do not|don.t' "$conf"
 }
 
-@test "C3 — the shipped baseline is what the checker reads when no override is set" {
-  # No PLAN_INDEX_EXPECTED_IDS here: the eight pinned ids must be exactly what
-  # a clean run accounts for, so the default path is wired to a real file.
+@test "C3 — a fixture index with no override is not measured against the shipped baseline" {
+  # Renamed in round 2. The body is unchanged and still passes, but its old
+  # title ("the shipped baseline is what the checker reads when no override is
+  # set") asserts the exact rule round 1 shipped and round 2 rejects: a fixture
+  # in BATS_TEST_TMPDIR is NOT the canonical index, so the shipped baseline
+  # must not be applied to it. The canonical branch is exercised by the E group.
   local n
   for n in 100 101 102 103 104 105 106 107; do api_state "$n" open issue; done
   write_decisions
@@ -1255,4 +1258,595 @@ EOF
   run_checker
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK — every"* ]]
+}
+
+# ==========================================================================
+# ROUND 2 — the pinned baseline is CONDITIONAL, and the two checks must stay
+# independent.
+#
+# Round 1 made Check B unconditional. Every synthetic fixture above builds an
+# index whose plan ids are whatever that test needs (01/02, 07/09, 03 alone),
+# so a baseline pinning 01..08 rejected all of them and 42 cases regressed.
+# The checker is legitimately run against non-canonical indices — fixtures,
+# copies, a candidate index in a worktree — and on those the pinned id set is
+# meaningless. So:
+#
+#   * PLAN_INDEX_EXPECTED_IDS explicitly set  -> Check B runs against that file
+#   * else index resolves to the canonical    -> Check B runs against conf/
+#   * else                                    -> Check B is SKIPPED, LOUDLY
+#
+# "Loudly" is not decoration. A check that silently does not run is the same
+# c-001 shape as a check that silently passes; the only difference is where the
+# silence lives. And the skip must never rescue Check A, which is what the D/E
+# pairs below pin from both sides.
+# ==========================================================================
+
+# stderr only — the skip warning is a stderr contract, and merging it into
+# stdout would let a "warning" printed into the report body satisfy the test.
+run_checker_stderr() {
+  run bash -c 'bash "$1" "$2" "$3" 2>&1 1>/dev/null' _ \
+      "$BIN" "$BATS_TEST_TMPDIR/00-INDEX.md" "$BATS_TEST_TMPDIR/DECISIONS.md"
+}
+
+# Assert $output (captured from stderr) carries the Check-B-skipped warning.
+# Matched by meaning, not by one literal sentence: it has to name the thing
+# that did not run, say that it did not run, and not read as a verification.
+assert_skip_warning() {
+  grep -qiE 'pinn|expected id|baseline'            <<<"$output"
+  grep -qiE 'skip|not run|did not run|no baseline' <<<"$output"
+  grep -qiE 'check a|region|integrity|structur'    <<<"$output"
+  ! grep -qiE '\bverified\b'                       <<<"$output"
+}
+
+assert_no_skip_warning() {
+  ! grep -qiE '(pinn|expected id|baseline).*(skip|not run|did not run)' <<<"$output"
+  ! grep -qiE '(skip|did not run).*(pinn|expected id|baseline)'         <<<"$output"
+}
+
+# A self-contained fake repo, so the CANONICAL branch can be exercised without
+# reading the live plans/00-INDEX.md. Reading the live file would make these
+# tests go green the moment the real index is edited — a tautology, not a test.
+# REPO_ROOT is derived from the script's own location, so a copy under
+# $tmp/bin makes $tmp/plans/00-INDEX.md canonical for that copy.
+make_fake_repo() {
+  FAKE="$BATS_TEST_TMPDIR/fakerepo"
+  mkdir -p "$FAKE/bin" "$FAKE/plans" "$FAKE/conf" "$FAKE/docs"
+  cp "$BIN" "$FAKE/bin/check-plan-index-truth.sh"
+  chmod +x "$FAKE/bin/check-plan-index-truth.sh"
+  FAKE_BIN="$FAKE/bin/check-plan-index-truth.sh"
+  cat >"$FAKE/docs/DECISIONS.md" <<'EOF'
+# DECISIONS
+| # | date | ruling | state | evidence / next |
+|---|---|---|---|---|
+| 1 | 2026-01-01 | something unrelated | OPEN | nothing |
+EOF
+}
+
+fake_baseline() {  # ids... -> $FAKE/conf/plan-index-expected-ids.conf
+  local id
+  { echo '# PINNED BASELINE — never regenerate from plans/00-INDEX.md'
+    for id in "$@"; do echo "$id"; done
+  } >"$FAKE/conf/plan-index-expected-ids.conf"
+}
+
+fake_index() { cat >"$FAKE/plans/00-INDEX.md"; }   # verbatim, line numbers intact
+
+fake_index_table() {  # rows on stdin, wrapped in a well-formed plans table
+  { echo '# plans — index'
+    echo
+    echo '| # | file | issue | status | blocked-by | blocks |'
+    echo '|---|---|---|---|---|---|'
+    cat
+  } >"$FAKE/plans/00-INDEX.md"
+}
+
+# No index argument: the checker must resolve its own canonical default.
+run_fake() { run bash "$FAKE_BIN" "$@"; }
+run_fake_stderr() { run bash -c 'bash "$1" 2>&1 1>/dev/null' _ "$FAKE_BIN"; }
+
+# --------------------------------------------------------------------------
+# D — a non-canonical index with no override: Check B skips, and says so
+# --------------------------------------------------------------------------
+
+@test "D1 — a fixture whose ids are nowhere near the shipped baseline still passes" {
+  # THE round-1 regression, stated as a test. These ids (07, 09) are exactly
+  # the shape the older fixtures use; an unconditional 01..08 baseline rejects
+  # them and the suite collapses. The index is well formed, so it must pass.
+  api_state 107 open issue
+  api_state 109 open issue
+  write_decisions
+  write_index "$(cat <<'EOF'
+| 07 | `g.md` | #107 | IN-PROGRESS — packet in flight | — | 09 |
+| 09 | `i.md` | #109 | BLOCKED — held behind 07 | 07 | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "D2 — a single-row fixture with an id the shipped baseline does not carry passes" {
+  # Deliberately an id (42) that can never be in conf/. If this goes red the
+  # baseline is being applied unconditionally again.
+  api_state 142 open issue
+  write_decisions
+  write_index '| 42 | `z.md` | #142 | IN-PROGRESS — packet in flight | — | — |'
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "D3 — the skipped pinned-id check is announced on stderr" {
+  # A check that silently does not run is indistinguishable, to a reader of the
+  # exit code, from a check that ran and passed. The skip must be visible.
+  api_state 107 open issue
+  write_decisions
+  write_index '| 07 | `g.md` | #107 | IN-PROGRESS — packet in flight | — | — |'
+  run_checker_stderr
+  [ "$status" -eq 0 ]
+  assert_skip_warning
+}
+
+@test "D4 — the skip notice never reads as a verification" {
+  api_state 107 open issue
+  write_decisions
+  write_index '| 07 | `g.md` | #107 | IN-PROGRESS — packet in flight | — | — |'
+  run_checker_stderr
+  [ "$status" -eq 0 ]
+  assert_skip_warning
+  ! grep -qiE 'OK — every|\bverified\b|all rows accounted' <<<"$output"
+}
+
+@test "D5 — Check A still fires on a fixture index with no baseline at all" {
+  # The primary reason Check A takes no baseline: a skipped Check B must not
+  # leave the row-drop hole open on every non-canonical index.
+  api_state 100 closed issue
+  write_decisions
+  raw_two_row_index '<!--x-->02'
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'<!--x-->02'* ]]
+  grep -qi 'silent' <<<"$output"
+}
+
+@test "D6 — the same fixture also announces that only Check A applied" {
+  api_state 100 closed issue
+  write_decisions
+  raw_two_row_index '<!--x-->02'
+  run_checker_stderr
+  [ "$status" -eq 2 ]
+  assert_skip_warning
+}
+
+@test "D7 — a too-short row on a fixture with no baseline is fatal, not skipped" {
+  api_state 100 closed issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qi 'silent' <<<"$output"
+}
+
+@test "D8 — an explicit override on a fixture makes Check B run, and prints no skip notice" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker_stderr
+  [ "$status" -eq 0 ]
+  assert_no_skip_warning
+}
+
+# --------------------------------------------------------------------------
+# E — the canonical index: Check B is mandatory there
+#
+# Exercised against a throwaway repo tree rather than the live plans/00-INDEX.md
+# on purpose. What is under test is the RESOLUTION rule, not today's content.
+# --------------------------------------------------------------------------
+
+@test "E1 — a canonical index matching its shipped baseline passes and skips nothing" {
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+  run_fake_stderr
+  [ "$status" -eq 0 ]
+  assert_no_skip_warning
+}
+
+@test "E2 — a canonical index with NO baseline file is FATAL, never a silent skip" {
+  # The whole point of pinning: on the canonical index the baseline is not
+  # optional. Deleting it must not be a way to switch the check off.
+  make_fake_repo
+  rm -f "$FAKE/conf/plan-index-expected-ids.conf"
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'baseline|expected id' <<<"$output"
+}
+
+@test "E3 — a canonical index whose baseline holds no ids is FATAL and says why" {
+  make_fake_repo
+  { echo '# PINNED BASELINE — never regenerate from plans/00-INDEX.md'
+    echo
+    echo '   '
+  } >"$FAKE/conf/plan-index-expected-ids.conf"
+  api_state 100 closed issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qi 'vacuous' <<<"$output"
+}
+
+@test "E4 — a row deleted outright from the canonical table is FATAL via Check B" {
+  # Check A has nothing to say here: every line left in the region parses
+  # perfectly. Only the pinned set knows a row is gone.
+  make_fake_repo
+  fake_baseline 01 02 03
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"03"* ]]
+}
+
+@test "E5 — a row moved out of the canonical table region is FATAL via Check B" {
+  # The subtler deletion: the text is still in the file, so a reviewer skimming
+  # the diff sees the row present. It is outside the region, so it is not a row.
+  make_fake_repo
+  fake_baseline 01 02 03
+  api_state 100 closed issue
+  api_state 101 open   issue
+  api_state 102 open   issue
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+parked below the table for now:
+
+| 03 | `c.md` | #102 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"03"* ]]
+}
+
+@test "E6 — a duplicated canonical row is FATAL even though the id SET still matches" {
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| 02 | `b-copy.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'duplicat|twice|more than once' <<<"$output"
+}
+
+@test "E7 — an id in the canonical table but absent from the baseline is FATAL" {
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  api_state 109 open   issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| 09 | `i.md` | #109 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"09"* ]]
+}
+
+@test "E8 — canonicality is decided by the resolved path, not by the string passed in" {
+  # Same file, spelled through a parent directory. A string compare would call
+  # this a foreign index and skip the pinned check — which is a one-character
+  # way to switch Check B off on the real index.
+  make_fake_repo
+  fake_baseline 01 02 03
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run bash "$FAKE_BIN" "$FAKE/bin/../plans/00-INDEX.md" "$FAKE/docs/DECISIONS.md"
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"03"* ]]
+}
+
+@test "E9 — a copy of the canonical index somewhere else is NOT canonical" {
+  # The other direction of E8. A candidate index under review is not the
+  # canonical one, so its arbitrary ids must not be graded against conf/ —
+  # and the skip has to be announced.
+  make_fake_repo
+  fake_baseline 01 02 03
+  api_state 107 open issue
+  mkdir -p "$FAKE/tmp"
+  { echo '# plans — index'
+    echo
+    echo '| # | file | issue | status | blocked-by | blocks |'
+    echo '|---|---|---|---|---|---|'
+    echo '| 07 | `g.md` | #107 | IN-PROGRESS — packet in flight | — | — |'
+  } >"$FAKE/tmp/candidate.md"
+  run bash "$FAKE_BIN" "$FAKE/tmp/candidate.md" "$FAKE/docs/DECISIONS.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+  run bash -c 'bash "$1" "$2" "$3" 2>&1 1>/dev/null' _ \
+      "$FAKE_BIN" "$FAKE/tmp/candidate.md" "$FAKE/docs/DECISIONS.md"
+  [ "$status" -eq 0 ]
+  assert_skip_warning
+}
+
+@test "E10 — an explicit override beats the shipped baseline on the canonical index" {
+  # conf/ alone would pass this table. The override names an id that is not
+  # there, so the run must fail — proving which file was actually read.
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  pin_ids 01 02 03
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"03"* ]]
+}
+
+@test "E11 — an override pointing at nothing is FATAL, never a fallback to conf/" {
+  # Falling back would make a typo'd override silently grade against a file the
+  # caller did not ask for, and a deliberate override silently ignorable.
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  export PLAN_INDEX_EXPECTED_IDS="$BATS_TEST_TMPDIR/there-is-no-such-baseline.conf"
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'baseline|expected id' <<<"$output"
+}
+
+@test "E12 — the canonical baseline check runs before any evidence is fetched" {
+  make_fake_repo
+  fake_baseline 01 02 03
+  arm_gh_marker
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [ ! -e "$MARKER" ]
+}
+
+# --------------------------------------------------------------------------
+# F — THE PROPERTY. The two checks are independent, so neither can be
+# laundered using the other.
+#
+# The founder named this as the likely failure mode of this exact patch: fix
+# the region check, then "repair" the baseline until the run goes green, and
+# the row-drop hole is open again behind a check that reports clean.
+# --------------------------------------------------------------------------
+
+@test "F1 — a perturbed canonical row is FATAL even when the baseline was tuned to hide it" {
+  # `03` is perturbed out of the parse AND deleted from the baseline, so the
+  # parsed id set and the pinned id set agree exactly: Check B is satisfied.
+  # Only Check A can catch this, and it must.
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| <!--x-->03 | `c.md` | #102 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*7([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'<!--x-->03'* ]]
+  grep -qi 'silent' <<<"$output"
+}
+
+@test "F2 — the same laundering attempt fails for every perturbation shape" {
+  # Boundary sweep of F1: each cell defeats the id regex or the field count,
+  # and in each case the baseline is pre-tuned to the surviving two rows.
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  local cell
+  for cell in '<!--x-->03' '03&nbsp;' '**03.**' '03[^a]' '`03`.' '03 (held)' 'O3'; do
+    { echo '# plans — index'
+      echo
+      echo '| # | file | issue | status | blocked-by | blocks |'
+      echo '|---|---|---|---|---|---|'
+      echo '| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |'
+      echo '| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |'
+      printf '| %s | `c.md` | #102 | IN-PROGRESS — packet in flight | — | — |\n' "$cell"
+    } >"$FAKE/plans/00-INDEX.md"
+    run_fake
+    [ "$status" -eq 2 ]
+    [[ "$output" != *"OK — every"* ]]
+  done
+}
+
+@test "F3 — a dropped COLUMN on the canonical index cannot be laundered either" {
+  # The other silent skip: NF < 7. The row keeps its id, so a naive Check B
+  # that read ids with a looser regex would still see 03 and pass.
+  make_fake_repo
+  fake_baseline 01 02 03
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| 03 | `c.md` | #102 | IN-PROGRESS — packet in flight |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*7([^0-9]|$)" <<<"$output"
+  grep -qi 'silent' <<<"$output"
+}
+
+@test "F4 — Check A does not need a baseline to exist at all" {
+  # Stated as its own case because it is the load-bearing half of the
+  # independence claim: if Check A ever consults the baseline, a canonical run
+  # with a deleted conf/ could report the wrong failure, and a fixture run
+  # could report none.
+  make_fake_repo
+  rm -f "$FAKE/conf/plan-index-expected-ids.conf"
+  api_state 100 closed issue
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| <!--x-->02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *'<!--x-->02'* ]]
+}
+
+@test "F5 — a dead evidence source does not stand in for the region failure" {
+  # Two failures at once must not net out to a pass, and the region failure has
+  # to be the one reported: an operator told only "the API is down" reruns the
+  # check tomorrow and never learns a row was dropped.
+  make_fake_repo
+  fake_baseline 01 02
+  printf '#!/usr/bin/env bash\necho "gh: dial tcp: lookup api.github.com: no such host" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| <!--x-->03 | `c.md` | #102 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *'<!--x-->03'* ]]
+}
+
+@test "F6 — a dead evidence source does not stand in for the baseline failure either" {
+  make_fake_repo
+  fake_baseline 01 02 03
+  printf '#!/usr/bin/env bash\necho "gh: Bad credentials (HTTP 401)" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"03"* ]]
+}
+
+@test "F7 — an unreachable evidence source is still fatal on a canonical index that satisfies both checks" {
+  # MUST NOT REGRESS: neither new check may become a reason to stop caring
+  # about the evidence source. Both are satisfied here; the API is dead; the
+  # run must still refuse to say OK.
+  make_fake_repo
+  fake_baseline 01 02
+  printf '#!/usr/bin/env bash\necho "gh: dial tcp: lookup api.github.com: no such host" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | BLOCKED — held behind 01; see #101 | — | — |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"THIS RUN DID NOT VERIFY THE INDEX"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "F8 — a canonical index that satisfies both new checks can still fail on stale claims" {
+  # The last independence direction. Check A and Check B are preconditions, not
+  # a verdict: a well-formed, fully-accounted-for table whose claims are stale
+  # must still land in the exit-1 lane rather than being waved through.
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 closed issue
+  fake_index_table <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | COMPLETE — PR merged; main green | — | 01 |
+EOF
+  run_fake
+  [ "$status" -eq 1 ]
+  [[ "$output" == *STALE* ]]
+  [[ "$output" != *"OK — every"* ]]
 }

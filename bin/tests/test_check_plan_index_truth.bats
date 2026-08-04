@@ -669,3 +669,120 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK — every"* ]]
 }
+
+# --------------------------------------------------------------------------
+# GAP 3 — a citation must be BOUND to the row that cites it. Round 2 made
+# citability structural (the artifact is fetched, not keyword-matched) but left
+# it unbound: any real-looking reference rescued any row. Three laundering
+# routes survived an independent mutation round against that build —
+#
+#   S1  cite an APPLIED DECISIONS row that is about a DIFFERENT plan
+#   S2  cite the real ruling on an issue that governs a DIFFERENT row
+#   S3  describe a ruling on your OWN artifact that the artifact does not carry
+#       ("the ruling was withdrawn" — a word the negation list did not know)
+#
+# S3 is why the negation word-list is gone. A blacklist of negation vocabulary
+# is unbounded and the next unlisted word reopens the hole. What replaces it is
+# a rule about WHO may settle a row: a clause naming the row's own governing
+# artifact never certifies that row — discharge comes from the artifact's
+# FETCHED state — and a clause naming anything else is not about this row at
+# all. The index may describe its own blocker; it may not discharge it.
+# --------------------------------------------------------------------------
+
+@test "S1 — an APPLIED DECISIONS row about another plan does not discharge this row" {
+  api_state 100 open issue
+  EXTRA_DECISION='| 22 | 2026-08-03 | plan 03 is WITHDRAWN, mechanize first | APPLIED | `plans/03-recurrence.md` status line and §12; issue #29 |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — W1/W2 contract unresolved per #100; scope set by docs/DECISIONS.md row 22 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *UNVERIFIABLE* ]]
+  [[ "$output" == *"row 22"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "S2 — a ruling on an issue that is not this row's own artifact does not discharge it" {
+  api_state 100 open issue
+  api_state 102 open issue
+  ruling_on 102 2026-08-04T03:27:31Z
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — founder ruling on #102 (2026-08-04) sets dry-run-only scope; tracked at #100 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not this row's governing artifact"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "S3 — a row may not cite a ruling on its own artifact that the artifact does not carry" {
+  # The word "withdrawn" was not in the negation list, so the row cited the very
+  # ruling it declared dead. No word-list fixes this; the fetched state does.
+  api_state 100 open   issue
+  api_state 101 closed pr
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — coordinator fixture is merged (#101); the founder ruling on #100 was withdrawn | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"#100 carries none"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "S4 — a canonically-formed citation of a ruling never handed down is caught" {
+  # The fourth laundering route, invented here rather than found: defeat the
+  # binding rules by binding CORRECTLY. The clause names this row's own issue
+  # in exactly the shape a legitimate citation uses, with a plausible date.
+  # Only the fetched state refutes it.
+  api_state 100 open issue
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — founder ruling on #100 (2026-08-04) sets the W1/W2 artifact contract | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"#100 carries none"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "S4b — a citation dated differently from the ruling the artifact carries is caught" {
+  api_state 100 open issue
+  ruling_on 100 2026-08-04T03:27:31Z
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — founder ruling on #100 (2026-07-01) sets dry-run-only scope | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"dated 2026-07-01"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "S5 — a plan flipped live against an APPLIED withdrawal is still caught" {
+  api_state 100 open issue
+  EXTRA_DECISION='| 22 | 2026-08-03 | plan 03 is **WITHDRAWN**. Mechanize first, measure later | APPLIED | `plans/03-recurrence.md` status line and §12; issue #29 |'
+  write_decisions
+  write_index '| 03 | `c.md` | #100 | READY — packet queued for dispatch | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"row 03"* ]]
+  [[ "$output" == *"terminal"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "S6 — an unreachable evidence source says NOT VERIFIED rather than OK" {
+  write_clean_world
+  printf '#!/usr/bin/env bash\necho "gh: dial tcp: lookup api.github.com: no such host" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  run_checker
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"THIS RUN DID NOT VERIFY THE INDEX"* ]]
+  [[ "$output" == *"could not be read"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "the honest FOUNDER-BLOCKED row passes on fetched state, not on its own sentence" {
+  # plans/06's real situation: its issue is open and carries no ruling, so the
+  # block is true. It must pass because the artifact says so — the same cell
+  # against an artifact that DOES carry a ruling goes red (see the M2 case).
+  api_state 100 open   issue
+  api_state 101 closed pr
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — coordinator fixture is merged (#101); W1/W2 artifact contract unresolved per #100; no founder ruling recorded on #100 yet | — | — |'
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}

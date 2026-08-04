@@ -268,27 +268,62 @@ edge_targets() {
 refs_in() { grep -oE '#[0-9]+' <<<"$1" | tr -d '#' | sort -un; }
 
 # ---------------------------------------------------------------- citability ---
-# A blocker is citable only when the citation resolves to something this script
-# can actually fetch and grade: an issue/PR that is fetched and FOUND to carry a
-# founder ruling, or a row of docs/DECISIONS.md that exists and is APPLIED.
+# A blocker is citable only when the citation (1) resolves to something this
+# script can fetch and grade AND (2) is demonstrably ABOUT the row that cites it.
 #
-# The previous rule was `grep -qi 'ruling'` against the status cell, which the
-# guarded text could satisfy by talking about itself: row 06's own wording — "no
-# founder ruling recorded on #21 yet" — permanently disabled the detector that
-# was meant to police it. A detector a row can switch off by describing its own
-# situation is decoration. Two consequences of doing it structurally:
+# Round 1 graded `grep -qi 'ruling'` against the status cell, so row 06's own
+# wording — "no founder ruling recorded on #21 yet" — switched off the detector
+# meant to police it. Round 2 made resolution structural (the artifact is
+# fetched, never keyword-matched) and an independent mutation round then walked
+# through the gap that was left: resolution was never BOUND. Any real-looking
+# reference rescued any row — an APPLIED DECISIONS row about plan 03, the real
+# ruling on the issue that governs plan 04, or a sentence about the row's own
+# blocker carrying a negation word ("withdrawn") the list did not know.
 #
-#   * keyword presence proves nothing. "ruling", "decision", any synonym — all
-#     prose. The artifact is fetched or the citation does not count.
-#   * a NEGATIVE statement is never a citation. "no ruling on #21 yet" names #21
-#     but ASSERTS THE ABSENCE of the very thing a citation would supply, so the
-#     clause is discarded before the reference in it is ever followed.
+# The negation word-list is deleted rather than extended. A blacklist of
+# negation vocabulary is unbounded by construction and the next unlisted word
+# reopens the hole; that is a maintenance treadmill masquerading as a check.
+# What replaces it is a rule about WHO may settle a row:
+#
+#   * BINDING (a) — a docs/DECISIONS.md citation counts only if the cited row
+#     itself names this plan (`plans/<id>`) or this row's own governing issue.
+#     A ruling about another plan cannot discharge this one, however APPLIED.
+#   * BINDING (b) — a cited ruling counts only if it sits on the row's OWN
+#     governing artifact, derived from the row's issue column, never from the
+#     prose. An issue that happens to carry a ruling settles the row it governs
+#     and no other.
+#   * NO SELF-CERTIFICATION (c) — a clause naming the row's own artifact can
+#     never discharge that row on its own say-so. Whether the ruling exists is
+#     read from the FETCHED artifact; the sentence is graded AGAINST that state,
+#     never accepted as it. So a row may describe its own blocker, and a
+#     description the artifact refutes is a failure — in either direction.
+#
+# Consequence worth stating plainly: a citation that is unbound or unbacked is
+# not merely "does not count". It is reported UNVERIFIABLE, because a citation
+# pointing at something it is not about reads as backing and is how a stale row
+# survives a reviewer.
 
 CITE_UNKNOWN_WHY=""
+CITE_BAD=()
 
-is_negated_clause() {
-  grep -qiE '\b(no|not|never|none|nor|without|absent|unrecorded|missing|awaiting|await|pending|unresolved|undecided|tbd|yet)\b' <<<"$1"
+# The one sanctioned way for a row to state the ABSENCE of a ruling on its own
+# artifact. A fixed phrase is a whitelist and therefore bounded; it never
+# certifies anything — it only keeps a truthful row from being read as claiming
+# a ruling exists. If the artifact does carry one, S6 below refutes it.
+is_absence_form() {  # $1 = clause, $2 = own issue number
+  grep -qiE "no (founder )?ruling ([a-z]+ )?(on|at|against) #$2([^0-9]|$)" <<<"$1"
 }
+
+# A `#N` is a ruling LOCUS only where the clause places a ruling AT it —
+# "founder ruling on #22", "the ruling at #102". A `#N` that merely shares a
+# clause with the word ("#24 closed, superseded by the ruling") is not a locus
+# and is not read as a citation of anything.
+ruling_loci() {  # $1 = clause -> one issue number per line
+  grep -oiE 'ruling[^#;]{0,40}#[0-9]+' <<<"$1" \
+    | grep -oE '#[0-9]+' | tr -d '#' | sort -un
+}
+
+clause_date() { grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' <<<"$1" | head -1; }
 
 # "`docs/DECISIONS.md` rows 22–26" -> 22 23 24 25 26. Ranges and comma lists.
 decisions_row_refs() {  # $1 = text -> one row id per line
@@ -320,29 +355,75 @@ decisions_row_state() {  # $1 = row id -> its state cell, or empty if no such ro
     }' "$DECISIONS"
 }
 
+# Does DECISIONS row $1 name plan $2 or plan $2's own governing issue $3?
+# Read from the ruling text and the evidence cell, the same two fields
+# applied_rows_naming reads, so "binds" and "names" cannot drift apart.
+decisions_row_binds() {  # $1 = decisions row, $2 = plan id, $3 = own issue or ""
+  awk -F'|' -v want="$1" -v id="$2" -v own="$3" '
+    /^[[:space:]]*\|/ {
+      if (NF < 6) next
+      n = $2; gsub(/[[:space:]*`]/, "", n); if (n !~ /^[0-9]+$/) next
+      if (n != want) next
+      body = $4 $6
+      if (body ~ ("plans/" id)) { print "bound"; exit }
+      if (own != "" && body ~ ("#" own "([^0-9]|$)")) { print "bound"; exit }
+      exit
+    }' "$DECISIONS"
+}
+
 # NOTE: calls fetch_ruling, so it must run in the CURRENT shell — never inside
 # a `$(...)`, which would throw the cache away and re-hit the API.
-cites_live_ruling() {  # $1 = plan id; 0 iff a citation resolved to a real ruling
-  local id="$1" status="${R_STATUS[$id]}" clause n r st
-  CITE_UNKNOWN_WHY=""
+cites_live_ruling() {  # $1 = plan id, $2 = own issue; 0 iff a BOUND citation
+  local id="$1" own="$2" status="${R_STATUS[$id]}" clause n r st ok=1 d when
+  CITE_UNKNOWN_WHY=""; CITE_BAD=()
+
+  # (a) DECISIONS citations, bound to this plan.
   while read -r r; do
     [[ -n "$r" ]] || continue
     st="$(decisions_row_state "$r")"
-    [[ "$st" == APPLIED ]] && return 0
+    [[ -n "$st" ]] || continue          # does not resolve at all — S8 reports it
+    if [[ -z "$(decisions_row_binds "$r" "$id" "$own")" ]]; then
+      CITE_BAD+=("cites $(basename "$DECISIONS") row $r, which names neither \
+plans/$id nor this row's own #$own; a ruling about another plan cannot discharge this one")
+      continue
+    fi
+    [[ "$st" == APPLIED ]] && ok=0
   done < <(decisions_row_refs "$status")
+
+  # (b)/(c) ruling citations, bound to this row's own artifact and graded
+  # against that artifact's fetched state.
   while read -r clause; do
     [[ -n "$clause" ]] || continue
-    is_negated_clause "$clause" && continue
     while read -r n; do
       [[ -n "$n" ]] || continue
-      if fetch_ruling "$n"; then
-        [[ -n "${RULING_ON[$n]:-}" ]] && return 0
-      else
-        CITE_UNKNOWN_WHY="${ISSUE_WHY[ruling-$n]:-unreadable}"
+      if [[ "$n" != "$own" ]]; then
+        CITE_BAD+=("cites a founder ruling on #$n, which is not this row's \
+governing artifact (#$own); an issue that happens to carry a ruling settles the row it governs, not this one")
+        continue
       fi
-    done < <(refs_in "$clause")
+      # Its own artifact. The sentence never settles the question; the fetched
+      # state does, and the sentence is graded against it.
+      is_absence_form "$clause" "$own" && continue
+      if ! fetch_ruling "$n"; then
+        CITE_UNKNOWN_WHY="${ISSUE_WHY[ruling-$n]:-unreadable}"
+        continue
+      fi
+      when="${RULING_ON[$n]:-}"
+      if [[ -z "$when" ]]; then
+        CITE_BAD+=("cites a founder ruling on its own #$n and #$n carries none; \
+the index is describing a ruling rather than pointing at an artifact that holds one")
+        continue
+      fi
+      d="$(clause_date "$clause")"
+      if [[ -n "$d" && "${when%%T*}" != "$d" ]]; then
+        CITE_BAD+=("cites a founder ruling on #$n dated $d; the ruling #$n \
+actually carries is dated ${when%%T*}")
+        continue
+      fi
+      ok=0
+    done < <(ruling_loci "$clause")
   done < <(tr ';' '\n' <<<"$status")
-  return 1
+  return $ok
 }
 
 # ------------------------------------------------------------------- grading ---
@@ -460,11 +541,18 @@ whether this blocker is still live is unknown" ;;
     fi
 
     # S6 — a FOUNDER-BLOCKED row whose own issue already carries a founder
-    # ruling. The escape hatch is a STRUCTURAL citation of that ruling (see
-    # cites_live_ruling): a fetched artifact that carries one, or an APPLIED
-    # DECISIONS row. Mentioning the word "ruling" buys nothing.
+    # ruling. The escape hatch is a STRUCTURAL and BOUND citation of that ruling
+    # (see cites_live_ruling): a fetched artifact that carries one and is this
+    # row's own, or an APPLIED DECISIONS row that names this plan. Mentioning
+    # the word "ruling" buys nothing, and neither does citing someone else's.
     if [[ "$cls" == *FOUNDER-BLOCKED* && -n "$own" ]]; then
-      if cites_live_ruling "$id"; then
+      cites_live_ruling "$id" "$own"; cited=$?
+      # An unbound or unbacked citation is a failure in its own right, whether
+      # or not some other clause in the same cell happens to resolve.
+      if ((${#CITE_BAD[@]})); then
+        for bad in "${CITE_BAD[@]}"; do unver "$id" "status $cls" "$bad"; done
+      fi
+      if ((cited == 0)); then
         : # a citation resolved to an artifact that really does carry a ruling
       elif [[ -n "$CITE_UNKNOWN_WHY" ]]; then
         unknown "$id" "status $cls" \

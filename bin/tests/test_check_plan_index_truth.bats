@@ -786,3 +786,473 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK — every"* ]]
 }
+
+# ==========================================================================
+# plan-index-no-silent-row-drop — the parser must not be able to drop a row
+# and still report a clean index (issue #69).
+#
+# Two INDEPENDENT checks, and the tests below are written so that each one is
+# exercised with the other satisfied. That is the point of the pair:
+#
+#   * Check A (table-region integrity) catches a row that is still THERE but
+#     no longer parses — even when the pinned id set is tuned to the rows that
+#     survived the perturbation, which is the shape a "fix the baseline until
+#     it goes green" habit produces.
+#   * Check B (pinned expected id set) catches a row that is GONE from the
+#     table entirely — which leaves a perfectly well-formed region that
+#     Check A has nothing to complain about.
+#
+# Neither check can see the other's failure. Both must exist.
+# ==========================================================================
+
+# Writes the index verbatim from stdin, so line numbers in the fixture are the
+# line numbers the checker must report. Deliberately NOT write_index, which
+# prepends a known-good header and would hide the header-matching cases.
+write_raw_index() { cat >"$BATS_TEST_TMPDIR/00-INDEX.md"; }
+
+# Point the checker at a baseline fixture holding exactly the ids named.
+pin_ids() {
+  local f="$BATS_TEST_TMPDIR/expected-ids.conf" id
+  { echo '# pinned baseline — never regenerate from the index'
+    for id in "$@"; do echo "$id"; done
+  } >"$f"
+  export PLAN_INDEX_EXPECTED_IDS="$f"
+}
+
+# Replace the stub with one that records the fact it ran at all. Used to prove
+# both checks fire BEFORE any evidence is fetched: `command -v gh` does not
+# execute the file, so an existing marker means a real API call was attempted.
+arm_gh_marker() {
+  MARKER="$BATS_TEST_TMPDIR/gh-was-called"
+  { echo '#!/usr/bin/env bash'
+    printf ': >%q\n' "$MARKER"
+    echo 'echo "gh stub: no call should have happened" >&2'
+    echo 'exit 1'
+  } >"$STUB/gh"
+  chmod +x "$STUB/gh"
+}
+
+# The canonical two-row table, with $1 substituted as the SECOND row's id cell.
+# Line numbers are fixed: 3 = header, 4 = separator, 5 = row 01, 6 = row two.
+raw_two_row_index() {
+  { echo '# plans — index'
+    echo
+    echo '| # | file | issue | status | blocked-by | blocks |'
+    echo '|---|---|---|---|---|---|'
+    echo '| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |'
+    printf '| %s | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |\n' "$1"
+  } >"$BATS_TEST_TMPDIR/00-INDEX.md"
+}
+
+# --------------------------------------------------------------------------
+# CHECK A — table-region integrity
+# --------------------------------------------------------------------------
+
+@test "A1 — a row inside the table region that does not parse is FATAL, and names its line and its text" {
+  # The reproduction from issue #69: perturb the id cell and the row vanishes
+  # from the parse. The baseline is pinned to the SURVIVING id on purpose, so
+  # Check B is satisfied and only Check A can be what fires.
+  api_state 100 closed issue
+  write_decisions
+  pin_ids 01
+  raw_two_row_index '<!--x-->02'
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  # the 1-based line number of the offending line
+  grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
+  # the raw offending line, so a reader can see what was skipped
+  [[ "$output" == *'<!--x-->02'* ]]
+  # and it must say what the rule is
+  grep -qi 'silent' <<<"$output"
+}
+
+@test "A2 — every id-cell perturbation that defeats the parser is fatal, not silent" {
+  # Boundary sweep. Each of these is a real markdown edit a human might make;
+  # each one used to take the row out of the parse and leave the run green.
+  api_state 100 closed issue
+  write_decisions
+  pin_ids 01
+  for cell in '<!--x-->02' '02&nbsp;' '**02.**' '02[^a]' '`02`.' '02 (held)'; do
+    raw_two_row_index "$cell"
+    run_checker
+    [ "$status" -eq 2 ]
+    [[ "$output" != *"OK — every"* ]]
+  done
+}
+
+@test "A3 — a row in the region with too few cells is fatal rather than skipped" {
+  api_state 100 closed issue
+  write_decisions
+  pin_ids 01
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
+  grep -qi 'silent' <<<"$output"
+}
+
+@test "A4 — the second (3-column) table in the index is still excluded" {
+  # Load-bearing: 00-INDEX.md carries a '14 sections' table whose rows have
+  # NF=5. Making the old skips fatal wholesale would fail on it. It sits
+  # outside the plans-table region, so it must not be graded.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+## the 14 sections
+
+| § | section | what it defends against |
+|---|---|---|
+| 1 | CONTEXT YOU DO NOT HAVE | the conversation the executor never had |
+| 2 | REPO FACTS | a mid-tier model that explores and then guesses |
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "A5 — the region ends at the first non-pipe line, so later junk is not graded" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+prose about the table
+
+| not | a | plan | row |
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "A6 — a separator row using alignment colons is allowed" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|:--|:-:|---:|---|:---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "A7 — the header is matched structurally, not by the literal line it happens to be today" {
+  # Same six column names, different case and spacing. A checker that greps for
+  # one exact string would refuse a table that is perfectly well formed.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_raw_index <<'EOF'
+# plans — index
+
+|  #  |  File  |  Issue  |  Status  |  Blocked-By  |  Blocks  |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "A8 — no plans-table header at all is FATAL, never a clean report" {
+  # A checker that cannot find its own table must refuse. Rows here still parse
+  # under the old awk block, so the old code would have graded them and gone
+  # green off a table it never actually located.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_raw_index <<'EOF'
+# plans — index
+
+| plan | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'header|table' <<<"$output"
+}
+
+@test "A9 — two plans-table headers is FATAL: the checker must not pick one" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  api_state 107 open   issue
+  api_state 108 open   issue
+  write_decisions
+  pin_ids 01 02 07 08
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+## and again, pasted below by a bad merge
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 07 | `g.md` | #107 | IN-PROGRESS — packet in flight | — | — |
+| 08 | `h.md` | #108 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'header|table' <<<"$output"
+}
+
+@test "A10 — the region check runs before any evidence is fetched" {
+  # Ordering matters: a malformed region must be reported as a malformed
+  # region, not swallowed by whatever the API happened to say (or fail to say).
+  api_state 100 closed issue
+  write_decisions
+  pin_ids 01
+  raw_two_row_index '<!--x-->02'
+  arm_gh_marker
+  run_checker
+  [ "$status" -eq 2 ]
+  [ ! -e "$MARKER" ]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "A11 — a malformed region is still fatal when the evidence source is also dead" {
+  # Belt and braces on the c-001 family: two failures at once must not net out
+  # to a pass, and must not be downgraded to the exit-1 'index is wrong' lane.
+  write_decisions
+  pin_ids 01
+  raw_two_row_index '<!--x-->02'
+  printf '#!/usr/bin/env bash\necho "gh: dial tcp: lookup api.github.com: no such host" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  # and the region failure is still the thing reported — a dead API must not
+  # be allowed to stand in for it, or the malformed row is never seen at all.
+  grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'<!--x-->02'* ]]
+}
+
+# --------------------------------------------------------------------------
+# CHECK B — pinned expected id set
+# --------------------------------------------------------------------------
+
+@test "B1 — an expected row missing from the table is FATAL" {
+  # Check A cannot see this one: the row is gone, so the region is flawless.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02 04
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"04"* ]]
+}
+
+@test "B2 — a parsed row that is not in the pinned baseline is FATAL" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  api_state 109 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| 09 | `i.md` | #109 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *"09"* ]]
+}
+
+@test "B3 — a duplicated id is FATAL even though the id SET still matches" {
+  # Set equality alone is blind here, which is why the count is explicit.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  pin_ids 01 02
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| 02 | `b-copy.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'duplicat|twice|more than once' <<<"$output"
+  [[ "$output" == *"02"* ]]
+}
+
+@test "B4 — a missing baseline file is FATAL, never an empty set that passes" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  export PLAN_INDEX_EXPECTED_IDS="$BATS_TEST_TMPDIR/there-is-no-such-baseline.conf"
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qiE 'baseline|expected' <<<"$output"
+}
+
+@test "B5 — a baseline with no ids in it is FATAL and says why" {
+  # An empty baseline makes 'every expected row was checked' vacuously true —
+  # the same shape as an empty catalog/id-ledger.txt.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  { echo '# pinned baseline — never regenerate from the index'
+    echo
+    echo '   '
+  } >"$BATS_TEST_TMPDIR/empty-ids.conf"
+  export PLAN_INDEX_EXPECTED_IDS="$BATS_TEST_TMPDIR/empty-ids.conf"
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -qi 'vacuous' <<<"$output"
+}
+
+@test "B6 — comments and blank lines in the baseline are ignored" {
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  { echo '# pinned baseline — never regenerate from the index'
+    echo
+    echo '01'
+    echo '# 09 was never a plan'
+    echo '02'
+    echo
+  } >"$BATS_TEST_TMPDIR/commented-ids.conf"
+  export PLAN_INDEX_EXPECTED_IDS="$BATS_TEST_TMPDIR/commented-ids.conf"
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "B7 — the baseline check runs before any evidence is fetched" {
+  write_decisions
+  pin_ids 01 02 04
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  arm_gh_marker
+  run_checker
+  [ "$status" -eq 2 ]
+  [ ! -e "$MARKER" ]
+}
+
+@test "B8 — a baseline mismatch exits 2, not the exit-1 'index is wrong' lane" {
+  # Explicit because exit 1 is the lane a reviewer reads as 'stale row',
+  # recoverable by editing prose. A checker that cannot account for its own
+  # rows has not graded anything and must say so in the hard-failure lane.
+  api_state 100 closed issue
+  write_decisions
+  pin_ids 01 02
+  write_index '| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |'
+  run_checker
+  [ "$status" -ne 0 ]
+  [ "$status" -ne 1 ]
+  [ "$status" -eq 2 ]
+}
+
+# --------------------------------------------------------------------------
+# The shipped baseline itself
+# --------------------------------------------------------------------------
+
+@test "C1 — conf/plan-index-expected-ids.conf exists and pins a non-empty id set" {
+  conf="$BATS_TEST_DIRNAME/../../conf/plan-index-expected-ids.conf"
+  [ -r "$conf" ]
+  run bash -c "grep -vE '^[[:space:]]*(#|\$)' '$conf' | sed 's/[[:space:]]//g' | sed '/^\$/d' | sort -u | paste -sd, -"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ "$output" = "01,02,03,04,05,06,07,08" ]
+}
+
+@test "C2 — the shipped baseline says in the file that it is never regenerated" {
+  conf="$BATS_TEST_DIRNAME/../../conf/plan-index-expected-ids.conf"
+  [ -r "$conf" ]
+  grep -qi 'regenerat' "$conf"
+  grep -qiE 'never|do not|don.t' "$conf"
+}
+
+@test "C3 — the shipped baseline is what the checker reads when no override is set" {
+  # No PLAN_INDEX_EXPECTED_IDS here: the eight pinned ids must be exactly what
+  # a clean run accounts for, so the default path is wired to a real file.
+  local n
+  for n in 100 101 102 103 104 105 106 107; do api_state "$n" open issue; done
+  write_decisions
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | IN-PROGRESS — packet in flight | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+| 03 | `c.md` | #102 | IN-PROGRESS — packet in flight | — | — |
+| 04 | `d.md` | #103 | IN-PROGRESS — packet in flight | — | — |
+| 05 | `e.md` | #104 | IN-PROGRESS — packet in flight | — | — |
+| 06 | `f.md` | #105 | IN-PROGRESS — packet in flight | — | — |
+| 07 | `g.md` | #106 | IN-PROGRESS — packet in flight | — | — |
+| 08 | `h.md` | #107 | IN-PROGRESS — packet in flight | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}

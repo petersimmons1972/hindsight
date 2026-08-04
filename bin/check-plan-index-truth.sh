@@ -79,6 +79,36 @@ command -v gh >/dev/null 2>&1 || die2 \
   "EVIDENCE SOURCE UNREACHABLE: \`gh\` is not installed. Refusing to grade
   claims with no way to check them. This is a hard failure, not a skip."
 
+# ------------------------------------------------------- the caller's cred ---
+# Rule 3 says this script runs on the CALLER's credential and never substitutes
+# another. Anything that rewrites GH_TOKEN between exec and line 1 defeats that
+# silently — a BASH_ENV that re-exports a freshly minted installation token is
+# measured doing exactly this. The result is the c-001 shape this repo exists to
+# kill: hand the checker a DEAD credential and it returns green off a live one
+# the caller never supplied, so a broken credential path cannot be observed by
+# anyone running this check, and the auth-failure test above silently passes.
+#
+# /proc/$$/environ still holds the environment as it was at exec — the only
+# place the caller's own value survives the rewrite. Two deliberate narrowings:
+# if the caller set no GH_TOKEN at all, an ambient one is legitimately theirs
+# and is left alone; and where /proc is unavailable nothing is claimed and
+# nothing is changed, because a guess here would be worse than the gap.
+if [[ -r "/proc/$$/environ" ]]; then
+  if tr '\0' '\n' <"/proc/$$/environ" | grep -q '^GH_TOKEN='; then
+    caller_tok="$(tr '\0' '\n' <"/proc/$$/environ" | sed -n 's/^GH_TOKEN=//p' | head -1)"
+    if [[ "$caller_tok" != "${GH_TOKEN:-}" ]]; then
+      printf '%s: GH_TOKEN was rewritten between exec and start (BASH_ENV or similar).\n' "$PROG" >&2
+      printf '%s: running on the credential the CALLER supplied, not the substituted one.\n' "$PROG" >&2
+      export GH_TOKEN="$caller_tok"
+      # ...and it must not follow us into the processes we spawn to gather the
+      # evidence, or the substitution simply happens one level down and the
+      # restore above buys nothing. Any shell-script `gh` wrapper would be
+      # re-clobbered exactly the way this script was.
+      unset BASH_ENV
+    fi
+  fi
+fi
+
 # ------------------------------------------------------------------ parsing ---
 # Driven by the table's own structure, never by the strings that happen to be
 # stale today. A row is any pipe table line whose first cell is a plan id.
@@ -237,6 +267,84 @@ edge_targets() {
 
 refs_in() { grep -oE '#[0-9]+' <<<"$1" | tr -d '#' | sort -un; }
 
+# ---------------------------------------------------------------- citability ---
+# A blocker is citable only when the citation resolves to something this script
+# can actually fetch and grade: an issue/PR that is fetched and FOUND to carry a
+# founder ruling, or a row of docs/DECISIONS.md that exists and is APPLIED.
+#
+# The previous rule was `grep -qi 'ruling'` against the status cell, which the
+# guarded text could satisfy by talking about itself: row 06's own wording — "no
+# founder ruling recorded on #21 yet" — permanently disabled the detector that
+# was meant to police it. A detector a row can switch off by describing its own
+# situation is decoration. Two consequences of doing it structurally:
+#
+#   * keyword presence proves nothing. "ruling", "decision", any synonym — all
+#     prose. The artifact is fetched or the citation does not count.
+#   * a NEGATIVE statement is never a citation. "no ruling on #21 yet" names #21
+#     but ASSERTS THE ABSENCE of the very thing a citation would supply, so the
+#     clause is discarded before the reference in it is ever followed.
+
+CITE_UNKNOWN_WHY=""
+
+is_negated_clause() {
+  grep -qiE '\b(no|not|never|none|nor|without|absent|unrecorded|missing|awaiting|await|pending|unresolved|undecided|tbd|yet)\b' <<<"$1"
+}
+
+# "`docs/DECISIONS.md` rows 22–26" -> 22 23 24 25 26. Ranges and comma lists.
+decisions_row_refs() {  # $1 = text -> one row id per line
+  local t="${1//–/-}" seg part k
+  t="${t//—/-}"
+  while read -r seg; do
+    [[ -n "$seg" ]] || continue
+    seg="${seg#*[Rr][Oo][Ww]}"
+    local -a parts=()
+    IFS=',' read -ra parts <<<"$seg"
+    for part in "${parts[@]}"; do
+      part="$(tr -cd '0-9-' <<<"$part")"
+      if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        for ((k=BASH_REMATCH[1]; k<=BASH_REMATCH[2]; k++)); do echo "$k"; done
+      elif [[ "$part" =~ ^[0-9]+$ ]]; then
+        echo "$part"
+      fi
+    done
+  done < <(grep -oiE 'DECISIONS(\.md)?.{0,3}rows?[[:space:]]*[0-9]+([[:space:]]*[,-][[:space:]]*[0-9]+)*' <<<"$t")
+}
+
+decisions_row_state() {  # $1 = row id -> its state cell, or empty if no such row
+  awk -F'|' -v want="$1" '
+    /^[[:space:]]*\|/ {
+      if (NF < 6) next
+      n = $2; gsub(/[[:space:]*`]/, "", n); if (n !~ /^[0-9]+$/) next
+      if (n != want) next
+      s = $5; gsub(/[[:space:]*`]/, "", s); print s; exit
+    }' "$DECISIONS"
+}
+
+# NOTE: calls fetch_ruling, so it must run in the CURRENT shell — never inside
+# a `$(...)`, which would throw the cache away and re-hit the API.
+cites_live_ruling() {  # $1 = plan id; 0 iff a citation resolved to a real ruling
+  local id="$1" status="${R_STATUS[$id]}" clause n r st
+  CITE_UNKNOWN_WHY=""
+  while read -r r; do
+    [[ -n "$r" ]] || continue
+    st="$(decisions_row_state "$r")"
+    [[ "$st" == APPLIED ]] && return 0
+  done < <(decisions_row_refs "$status")
+  while read -r clause; do
+    [[ -n "$clause" ]] || continue
+    is_negated_clause "$clause" && continue
+    while read -r n; do
+      [[ -n "$n" ]] || continue
+      if fetch_ruling "$n"; then
+        [[ -n "${RULING_ON[$n]:-}" ]] && return 0
+      else
+        CITE_UNKNOWN_WHY="${ISSUE_WHY[ruling-$n]:-unreadable}"
+      fi
+    done < <(refs_in "$clause")
+  done < <(tr ';' '\n' <<<"$status")
+  return 1
+}
+
 # ------------------------------------------------------------------- grading ---
 STALE=(); UNVER=()
 stale()   { STALE+=("row $1 · $2 · $3"); }
@@ -352,13 +460,21 @@ whether this blocker is still live is unknown" ;;
     fi
 
     # S6 — a FOUNDER-BLOCKED row whose own issue already carries a founder
-    # ruling. The escape hatch is to cite the ruling in the status cell.
-    if [[ "$cls" == *FOUNDER-BLOCKED* && -n "$own" ]] \
-       && ! grep -qi 'ruling' <<<"$status"; then
-      if fetch_ruling "$own"; then
+    # ruling. The escape hatch is a STRUCTURAL citation of that ruling (see
+    # cites_live_ruling): a fetched artifact that carries one, or an APPLIED
+    # DECISIONS row. Mentioning the word "ruling" buys nothing.
+    if [[ "$cls" == *FOUNDER-BLOCKED* && -n "$own" ]]; then
+      if cites_live_ruling "$id"; then
+        : # a citation resolved to an artifact that really does carry a ruling
+      elif [[ -n "$CITE_UNKNOWN_WHY" ]]; then
+        unknown "$id" "status $cls" \
+          "an artifact this row cites could not be read from $SOURCE_LABEL ($CITE_UNKNOWN_WHY); \
+whether its citation resolves to a real ruling is unknown"
+      elif fetch_ruling "$own"; then
         when="${RULING_ON[$own]:-}"
         [[ -n "$when" ]] && stale "$id" "status $cls" \
-          "a founder ruling was recorded on #$own at $when and this row does not cite it"
+          "a founder ruling was recorded on #$own at $when and this row cites no artifact that \
+carries one (the word \"ruling\" in the cell is prose, not a citation)"
       else
         unknown "$id" "status $cls" \
           "comments on #$own could not be read from $SOURCE_LABEL (${ISSUE_WHY[ruling-$own]}); \
@@ -366,6 +482,16 @@ a founder ruling may already have been handed down"
       fi
     fi
   fi
+
+  # --- S8: a DECISIONS.md row citation must resolve to a real row ----------
+  # A citation that points at nothing is worse than no citation: it reads as
+  # backing. Graded off the file, so it stands even when the API is down.
+  while read -r dr; do
+    [[ -n "$dr" ]] || continue
+    [[ -n "$(decisions_row_state "$dr")" ]] || \
+      unver "$id" "cites $(basename "$DECISIONS") row $dr" \
+            "there is no row $dr in $(basename "$DECISIONS"); the citation does not resolve"
+  done < <(decisions_row_refs "$status")
 done
 
 # --- S4/S5: docs/DECISIONS.md rows ------------------------------------------
@@ -383,9 +509,60 @@ applied_rows_naming() {  # $1 = plan id
     }' "$DECISIONS"
 }
 
+# S7 — the same rows, read as a CONSTRAINT rather than as backing. An APPLIED
+# ruling that withdraws / supersedes / completes a named plan does not merely
+# license that plan's terminal status: it REQUIRES it. The check used to run one
+# way only — it noticed a stale edge aimed at a withdrawn plan, and let the
+# withdrawn plan's own status cell claim anything it liked. Disposition is read
+# from the ruling text alone ($4), never from the evidence column, so "supersedes
+# rulings 10, 14–21" in an evidence cell cannot be misread as superseding a plan.
+applied_dispositions_naming() {  # $1 = plan id -> "<row>\t<WITHDRAWN|SUPERSEDED|CANCELLED|COMPLETE>"
+  awk -F'|' -v id="$1" '
+    /^[[:space:]]*\|/ {
+      if (NF < 6) next
+      n = $2; gsub(/[[:space:]*`]/, "", n); if (n !~ /^[0-9]+$/) next
+      state = $5; gsub(/[[:space:]*`]/, "", state)
+      if (state != "APPLIED") next
+      if (($4 $6) !~ ("plans/" id)) next
+      r = toupper($4); d = ""
+      if      (r ~ /WITHDRAW/)                 d = "WITHDRAWN"
+      else if (r ~ /SUPERSED/)                 d = "SUPERSEDED"
+      else if (r ~ /CANCELL|CANCELED|CANCEL /) d = "CANCELLED"
+      else if (r ~ /COMPLETED|COMPLETE|DONE/)  d = "COMPLETE"
+      if (d == "") next
+      printf "%s\t%s\n", n, d
+    }' "$DECISIONS"
+}
+
+# Terminal is necessary but not sufficient: a plan the founder WITHDREW is not a
+# plan that COMPLETED, and the index must not launder one into the other.
+term_family() { case "$1" in COMPLETE|COMPLETED|DONE) echo complete;; WITHDRAWN|CANCELLED|CANCELED|SUPERSEDED) echo retired;; *) echo "";; esac; }
+
 for id in "${IDS[@]}"; do
   cls="${R_CLASS[$id]}"
   hits="$(applied_rows_naming "$id" | paste -sd, -)"
+
+  wrows=""; wdisp=""
+  while IFS=$'\t' read -r wr wd; do
+    [[ -n "$wr" ]] || continue
+    wrows="${wrows:+$wrows,}$wr"
+    [[ -z "$wdisp" ]] && wdisp="$wd"
+  done < <(applied_dispositions_naming "$id")
+  if [[ -n "$wrows" ]]; then
+    if ! is_terminal "$cls"; then
+      stale "$id" "status $cls" \
+        "$(basename "$DECISIONS") row(s) $wrows are APPLIED and record plans/$id as $wdisp; \
+that forces a terminal status here, and this row says $cls"
+    else
+      want="$(term_family "$wdisp")"; got="$(term_family "$cls")"
+      if [[ -n "$want" && -n "$got" && "$want" != "$got" ]]; then
+        stale "$id" "status $cls" \
+          "$(basename "$DECISIONS") row(s) $wrows are APPLIED and record plans/$id as $wdisp, \
+which is not what $cls claims"
+      fi
+    fi
+  fi
+
   case "$cls" in
     WITHDRAWN|CANCELLED|CANCELED|SUPERSEDED)
       [[ -z "$hits" ]] && unver "$id" "status $cls" \

@@ -11,6 +11,13 @@
 
 setup() {
   BIN="$BATS_TEST_DIRNAME/../check-plan-index-truth.sh"
+  # BASH_ENV is sourced by EVERY non-interactive bash — the checker, and every
+  # stub below. On this machine it re-exports a live GH_TOKEN, which silently
+  # overwrote the credential these tests inject, so the credential-gated stub
+  # answered 401 no matter what the test asked for and the happy-path case
+  # failed for a reason that had nothing to do with the checker. A fixture the
+  # ambient environment can overwrite is not a fixture.
+  unset BASH_ENV
   export PLAN_INDEX_REPO="acme/testrepo"
   STUB="$BATS_TEST_TMPDIR/stubbin"
   mkdir -p "$STUB"
@@ -489,4 +496,176 @@ EOF
   [[ "$output" == *UNKNOWN* ]]
   [[ "$output" == *malformed* ]]
   [[ "$output" != *"OK — every"* ]]
+}
+
+# --------------------------------------------------------------------------
+# GAP 1 — an APPLIED withdrawal in DECISIONS.md binds the plan's own STATUS,
+# not just the edges that point at it. The checker used to notice a stale edge
+# aimed at a withdrawn plan while letting the withdrawn plan itself claim any
+# live status it liked: the decision was read as evidence ABOUT other rows and
+# never as a constraint on its own.
+# --------------------------------------------------------------------------
+
+@test "an APPLIED withdrawal forces the named plan's status terminal" {
+  # M1: flipping a withdrawn plan back to a live status must not pass.
+  api_state 100 open issue
+  EXTRA_DECISION='| 2 | 2026-08-03 | plan 01 is **WITHDRAWN**, mechanize first | APPLIED | `plans/01` status line and §12 |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | READY — packet queued for dispatch | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *STALE* ]]
+  [[ "$output" == *"row 01"* ]]
+  [[ "$output" == *"DECISIONS.md row(s) 2"* ]]
+  [[ "$output" == *"terminal"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "an APPLIED withdrawal is contradicted by a COMPLETE status" {
+  # Terminal is necessary but not sufficient: a plan the founder WITHDREW is
+  # not a plan that COMPLETED, and the index must not launder one into the
+  # other.
+  api_state 100 closed issue
+  EXTRA_DECISION='| 2 | 2026-08-03 | plan 01 is **WITHDRAWN** — rejected on validity | APPLIED | `plans/01` status line |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"row 01"* ]]
+  [[ "$output" == *"DECISIONS.md row(s) 2"* ]]
+  [[ "$output" == *WITHDRAWN* ]]
+}
+
+@test "an APPLIED withdrawal satisfied by a SUPERSEDED status passes" {
+  api_state 100 open issue
+  EXTRA_DECISION='| 2 | 2026-08-03 | plan 01 is SUPERSEDED by the new approach | APPLIED | `plans/01` status line |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | SUPERSEDED 2026-08-04 — replaced | — | — |'
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+# --------------------------------------------------------------------------
+# GAP 2 — citability must be STRUCTURAL. The escape hatch used to be a bare
+# keyword match for "ruling" against the status cell, so a row whose own prose
+# said "no founder ruling recorded on #21 yet" permanently satisfied the
+# detector that was supposed to police it: the guarded text disabled the
+# guard. A citation now has to resolve to a real artifact — an issue/PR that
+# is fetched and found to carry a ruling, or a DECISIONS.md row that exists
+# and is APPLIED — and a NEGATIVE statement about a ruling's absence can never
+# read as a citation of one.
+# --------------------------------------------------------------------------
+
+@test "prose denying a ruling does not satisfy citability when a ruling exists" {
+  # M2: the row's own wording contains the word "ruling" and nothing else. A
+  # ruling lands on its issue; the row must go red, not be rescued by its own
+  # sentence.
+  api_state 100 open   issue
+  api_state 101 closed pr
+  ruling_on 100 2026-08-04T03:27:31Z
+  write_decisions
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | FOUNDER-BLOCKED — coordinator fixture is merged (#101); W1/W2 artifact contract unresolved per #100; no founder ruling recorded on #100 yet | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"founder ruling was recorded on #100"* ]]
+  [[ "$output" == *"2026-08-04T03:27:31Z"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "the same row passes while its stated absence of a ruling is TRUE" {
+  # The honest version of the row above. It must pass on a structural basis —
+  # #100 fetched, no ruling found — not because it says the word "ruling".
+  api_state 100 open   issue
+  api_state 101 closed pr
+  write_decisions
+  write_index "$(cat <<'EOF'
+| 01 | `a.md` | #100 | FOUNDER-BLOCKED — coordinator fixture is merged (#101); W1/W2 artifact contract unresolved per #100; no founder ruling recorded on #100 yet | — | — |
+EOF
+)"
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "an affirmative citation of an issue that carries the ruling passes" {
+  api_state 100 open issue
+  ruling_on 100 2026-08-04T03:27:31Z
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — founder ruling on #100 (2026-08-04) sets dry-run-only scope | — | — |'
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "citing an artifact that carries no ruling does not satisfy citability" {
+  # The cell names a specific artifact and calls it a ruling. The artifact is
+  # fetched and carries none, so the citation does not resolve — while the
+  # row's own issue has in fact been ruled on.
+  api_state 100 open issue
+  api_state 102 open issue
+  ruling_on 100 2026-08-04T03:27:31Z
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — the founder ruling at #102 sets scope; held pending #100 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"founder ruling was recorded on #100"* ]]
+}
+
+@test "a DECISIONS row citation that does not resolve is UNVERIFIABLE" {
+  api_state 100 open issue
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — scope settled by docs/DECISIONS.md row 99; tracked at #100 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *UNVERIFIABLE* ]]
+  [[ "$output" == *"row 01"* ]]
+  [[ "$output" == *"DECISIONS.md row 99"* ]]
+}
+
+@test "citing an APPLIED DECISIONS row satisfies citability structurally" {
+  api_state 100 open issue
+  ruling_on 100 2026-08-04T03:27:31Z
+  EXTRA_DECISION='| 2 | 2026-08-04 | dry-run-only scope for the sync channel | APPLIED | issue #100, review thread |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — scope set by docs/DECISIONS.md row 2; tracked at #100 | — | — |'
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+# --------------------------------------------------------------------------
+# The credential is the CALLER's. Anything that rewrites GH_TOKEN between exec
+# and the script's first line — a BASH_ENV that re-exports a freshly minted
+# installation token is the measured case — silently substitutes a working
+# credential for the one the caller handed over. The whole auth-failure
+# contract above becomes untestable if that substitution is honoured: a run
+# given a DEAD credential comes back green off a live one.
+# --------------------------------------------------------------------------
+
+@test "a credential rewritten between exec and start does not rescue the run" {
+  write_clean_world
+  write_cred_gated_gh_stub
+  printf 'export GH_TOKEN=good\n' >"$BATS_TEST_TMPDIR/env.sh"
+  run env BASH_ENV="$BATS_TEST_TMPDIR/env.sh" GH_TOKEN=ghs_bogus bash "$BIN" \
+      "$BATS_TEST_TMPDIR/00-INDEX.md" "$BATS_TEST_TMPDIR/DECISIONS.md"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"EVIDENCE SOURCE UNREACHABLE"* ]]
+  [[ "$output" == *401* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "an ambient credential the caller never set is left alone" {
+  # The narrowing that keeps the rule honest: if the caller exported nothing,
+  # the environment's own credential IS theirs and must not be stripped.
+  write_clean_world
+  write_cred_gated_gh_stub
+  printf 'export GH_TOKEN=good\n' >"$BATS_TEST_TMPDIR/env.sh"
+  run env -u GH_TOKEN BASH_ENV="$BATS_TEST_TMPDIR/env.sh" bash "$BIN" \
+      "$BATS_TEST_TMPDIR/00-INDEX.md" "$BATS_TEST_TMPDIR/DECISIONS.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
 }

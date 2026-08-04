@@ -64,14 +64,16 @@ Use `/home/linuxbrew/.linuxbrew/bin/python3` for your own commands only.
 
 ## Ordered queue
 
-| # | Packet | Issue | Ready | Brief |
-|---|---|---|---|---|
-| 1 | `32-land-dated-corpus` | #32 | **YES** | `plans/briefs/32-land-dated-corpus.md` |
-| 2 | `20-1-decoy-disposition` | #20 | **YES** | `plans/briefs/20-1-decoy-disposition.md` |
-| 3 | `33-A-stale-paths` | #33 | after #2 | `plans/briefs/33-A-stale-paths.md` |
-| 4 | `33-C-malformed-enforcement` | #33 | after #3 | `plans/briefs/33-C-malformed-enforcement.md` |
-| 5 | `33-B2-homelab-phantoms` | #33 | **YES** | `plans/briefs/33-B2-homelab-phantoms.md` |
-| 6 | `30-1-snapshot-format` | #30 | **YES** | `plans/briefs/30-1-snapshot-format.md` |
+**No packet in this file is currently dispatchable.** This is a historical packet record, not an
+automatic resume queue. Reconcile with `PLAN.md`, `plans/00-INDEX.md`, and `/home/psimmons/HANDOFF.md`
+before changing any status:
+
+| Former packet | Current state |
+|---|---|
+| `32-land-dated-corpus` | PR #51 is green but founder-held on the `l1-ingest-fallback` date policy. |
+| `20-1-decoy-disposition` | Merged as PR #52; it closed issue #20. |
+| `33-A-stale-paths`, `33-B2-homelab-phantoms`, `33-C-malformed-enforcement` | Merged as PRs #55, #54, and #57. |
+| `30-1-snapshot-format` | Merged as PR #58; the five-packet #30 sequence completed through PR #62. |
 
 **Not automatable — do not dispatch:**
 
@@ -80,13 +82,15 @@ Use `/home/linuxbrew/.linuxbrew/bin/python3` for your own commands only.
   tested (`cfc0ebb`, PR #76) and was retired with its host subsystem — so these are not "never
   mechanized" gaps. Building tests at the claimed paths would be hollow coverage the issues
   themselves forbid.
-- **#21** — the coordinator must author and commit
-  `pipeline/tests/fixtures/l3_ground_truth.jsonl` **before** any synthesis dispatch. The synthesizing
-  agent may not author its own grading fixture (plan 06 D7/R3).
-- **#20-2/3/4** — blocked behind the `plans/04` chain landing.
+- **#21** — the coordinator-owned fixture is merged in PR #63. W1/W2 remain founder-blocked because
+  the required disk-spooled artifacts have no permitted path under Plan 06 §7/§14; do not invent a
+  scratch or outside-repo spool.
+- **Plan 05 remaining locality work** — its original tracker (#20) closed with PR #52; the remaining
+  capability is still represented by PR #12 and blocked behind the `plans/04` chain landing.
 - **`plans/04` chain (PRs #40 ← #41 ← #43 ← #44 ← #46)** — round 4 verification returned
   DO_NOT_MERGE on three reproduced blockers. **Do not dispatch round 6 until the push-vs-pull design
-  question is ruled on** (see `docs/DECISIONS.md` and `~/HANDOFF.md`).
+  question is ruled on** (see `/home/psimmons/HANDOFF.md`; it is not recorded in
+  `docs/DECISIONS.md`).
 
 ## Dispatch invocation
 

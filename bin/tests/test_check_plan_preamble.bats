@@ -14,6 +14,12 @@
 #
 # The pre-existing lint baseline (3 failures, plans 03 and 05) is pinned as-is: this change must
 # neither fix nor add one. Never claim a green plan lint in this repo.
+#
+# KNOWN, UNFIXED, and deliberately not pinned by any test here: the checker's §7 counter matches
+# only lines that BEGIN with the absolute repo prefix, so an indented path, a #-commented path, a
+# `~/`-relative path and a repo-relative path are all uncounted -- a §7 with 6 counted plus 4
+# uncounted entries lints as 6. That weakness predates this round. No case below depends on it,
+# and none of them makes it worse; closing it is a separate change with its own red.
 
 setup() {
   REPO="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"

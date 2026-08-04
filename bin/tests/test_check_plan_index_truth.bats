@@ -2084,7 +2084,13 @@ EOF
   run_checker
   [ "$status" -eq 2 ]
   [[ "$output" != *"OK — every"* ]]
-  grep -Eq "(line|:)[[:space:]]*15([^0-9]|$)" <<<"$output"
+  # The expected line number is READ OUT OF THE FIXTURE, not hardcoded: this
+  # assertion previously said 15 while the ghost row sat at 14, so the test
+  # failed on its own arithmetic and not on the checker. Computing it means
+  # editing the fixture above can never silently desynchronise the expectation.
+  ghost_line="$(grep -n '09-ghost\.md' "$BATS_TEST_TMPDIR/00-INDEX.md" | cut -d: -f1)"
+  [[ "$ghost_line" =~ ^[0-9]+$ ]]   # a missing/empty match must not pass vacuously
+  grep -Eq "(line|:)[[:space:]]*${ghost_line}([^0-9]|$)" <<<"$output"
   [[ "$output" == *'09-ghost.md'* ]]
   # the EXAMPLE must not be what got reported — that would be G4 regressing
   [[ "$output" != *'an example, not a plan'* ]]
@@ -2291,4 +2297,44 @@ EOF
   [[ "$output" != *"OK — every"* ]]
   grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
   grep -qi 'silent' <<<"$output"
+}
+
+@test "H4 — Check C's NF == 7 boundary: a ghost row with no trailing pipe is still a ghost" {
+  # H2/H3 pin the NF boundary for Check A (lines INSIDE the region). Check C's
+  # own `NF >= 7` had no such pin: every containment fixture (G1..G9) writes
+  # the closing `|` and lands on NF == 8, so tightening Check C to `NF >= 8`
+  # killed nothing. Under that mutant a 7-field plan row parked outside the
+  # table region is not even a candidate — it is never graded by A (outside the
+  # region), never compared by B (not parsed into the id set), and no longer
+  # seen by C. That is exactly the ghost row C exists to catch, one absent
+  # character away from being invisible. A trailing pipe is optional markdown;
+  # a check must not depend on the author having typed it.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+| 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01
+EOF
+  ghost_line="$(grep -n '09-ghost\.md' "$BATS_TEST_TMPDIR/00-INDEX.md" | cut -d: -f1)"
+  [[ "$ghost_line" =~ ^[0-9]+$ ]]
+  # The fixture's own precondition, asserted rather than assumed: if a later
+  # edit restores the trailing `|` this row becomes NF == 8 and the test stops
+  # discriminating while still passing. Fail loudly instead.
+  ghost_nf="$(awk -F'|' -v n="$ghost_line" 'NR == n { print NF }' \
+    "$BATS_TEST_TMPDIR/00-INDEX.md")"
+  [ "$ghost_nf" -eq 7 ]
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*${ghost_line}([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'09-ghost.md'* ]]
+  # and it failed as CONTAINMENT, not as some incidental parse error
+  grep -qi 'outside the plans-table' <<<"$output"
 }

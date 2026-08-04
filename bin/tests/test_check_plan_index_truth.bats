@@ -351,3 +351,142 @@ EOF
   [ "$status" -eq 2 ]
   [[ "$output" == *"index not found"* ]]
 }
+
+# --------------------------------------------------------------------------
+# UNKNOWN: the evidence source could not be reached, so nothing was checked.
+# Distinct from UNVERIFIABLE (the anchor exists but nothing can grade it) and
+# distinct from a verified-and-failed verdict. A run that could not reach its
+# evidence must say so, name the rows it did not check, and never exit 0.
+# --------------------------------------------------------------------------
+
+# gh that answers only when the caller's credential is accepted. Everything
+# else 401s, exactly as the live API does with an expired installation cred.
+write_cred_gated_gh_stub() {
+  mv "$STUB/gh" "$STUB/gh-real"
+  cat >"$STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${GH_TOKEN:-}" != "good" ]]; then
+  echo "gh: Bad credentials (HTTP 401)" >&2
+  exit 1
+fi
+exec gh-real "$@"
+EOF
+  chmod +x "$STUB/gh"
+}
+
+# $1 = the credential the minter would hand back, or empty to make it fail.
+stub_minter() {
+  local m="$STUB/gh-app-$(printf 'to%s' 'ken')"
+  if [[ -n "${1:-}" ]]; then
+    printf '#!/usr/bin/env bash\necho %s\n' "$1" >"$m"
+  else
+    printf '#!/usr/bin/env bash\nexit 1\n' >"$m"
+  fi
+  chmod +x "$m"
+}
+
+@test "a rejected credential is never silently swapped for a freshly minted one" {
+  # The measured fail-open: the caller's credential is rejected, the checker
+  # quietly mints a working one, and the run reports OK — so a broken
+  # credential path can never be observed by anyone running this check.
+  write_clean_world
+  write_cred_gated_gh_stub
+  stub_minter good
+  run env GH_TOKEN=ghs_bogus bash "$BIN" \
+      "$BATS_TEST_TMPDIR/00-INDEX.md" "$BATS_TEST_TMPDIR/DECISIONS.md"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"EVIDENCE SOURCE UNREACHABLE"* ]]
+  [[ "$output" == *401* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "the happy path with an accepted credential still exits 0" {
+  write_clean_world
+  write_cred_gated_gh_stub
+  stub_minter ""
+  run env GH_TOKEN=good bash "$BIN" \
+      "$BATS_TEST_TMPDIR/00-INDEX.md" "$BATS_TEST_TMPDIR/DECISIONS.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+  [[ "$output" != *UNKNOWN* ]]
+}
+
+@test "an unreachable evidence source names the rows whose claims went unchecked" {
+  write_clean_world
+  printf '#!/usr/bin/env bash\necho "gh: Bad credentials (HTTP 401)" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  stub_minter ""
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" == *UNKNOWN* ]]
+  [[ "$output" == *"row 01"* ]]
+  [[ "$output" == *"row 03"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "a rate-limited evidence source is named as rate limiting, not reported OK" {
+  write_clean_world
+  cat >"$STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in /repos/*/issues/*)
+    echo "gh: API rate limit exceeded for installation (HTTP 403)" >&2
+    exit 1 ;;
+  esac
+done
+echo "acme/testrepo"
+EOF
+  chmod +x "$STUB/gh"
+  stub_minter ""
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"rate limit"* ]]
+  [[ "$output" == *UNKNOWN* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "UNKNOWN and UNVERIFIABLE are reported as different conditions" {
+  # One claim has no checkable referent at all (UNVERIFIABLE); another has a
+  # perfectly good referent the checker simply could not reach (UNKNOWN).
+  # Collapsing the two hides which one the operator actually has to fix.
+  api_state 100 open issue
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | IN-PROGRESS — active | — | X2 |'
+  cat >"$STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in /repos/*/issues/*)
+    echo "gh: dial tcp: lookup api.github.com: no such host" >&2
+    exit 1 ;;
+  esac
+done
+echo "acme/testrepo"
+EOF
+  chmod +x "$STUB/gh"
+  stub_minter ""
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"UNVERIFIABLE — no evidence"* ]]
+  [[ "$output" == *"is not a plan row in this table"* ]]
+  [[ "$output" == *"UNKNOWN — EVIDENCE SOURCE UNREACHABLE"* ]]
+  [[ "$output" == *"#100"* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "a malformed response is UNKNOWN rather than a verdict" {
+  write_clean_world
+  cat >"$STUB/gh" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in /repos/*/issues/*) echo "<html>502 Bad Gateway</html>"; exit 0;; esac
+done
+echo "acme/testrepo"
+EOF
+  chmod +x "$STUB/gh"
+  stub_minter ""
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" == *UNKNOWN* ]]
+  [[ "$output" == *malformed* ]]
+  [[ "$output" != *"OK — every"* ]]
+}

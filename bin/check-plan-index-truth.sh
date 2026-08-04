@@ -15,26 +15,49 @@
 # plan's own status cell, founder-ruling comments on the plan's own issue, and
 # `docs/DECISIONS.md` rows. Nothing is graded on prose.
 #
-# Two rules that make this a gate rather than decoration:
+# Every cited artifact lands in exactly one of THREE states, never two:
+#
+#   verified-open / verified-closed — the API answered, and the answer is
+#       graded against the row's claim.
+#   UNKNOWN — the API did not answer, or answered with something this script
+#       cannot read: no credentials, rejected credentials, rate limit, network
+#       failure, malformed body. UNKNOWN is NEVER folded into "the claim
+#       holds". It is reported, the rows that depend on it are named, and the
+#       run exits 2.
+#
+# Three rules that make this a gate rather than decoration:
 #
 #   1. A claim this script cannot verify is reported UNVERIFIABLE and counted
 #      as a failure. It is never silently assumed true. (An unverifiable
 #      blocker is exactly how a stale row survives a reviewer.)
 #   2. If the evidence source is unreachable — no `gh`, no network, bad
-#      credentials — this script exits 2. It never goes green on absent
-#      evidence. That is the c-001 family (a terminal signal treated as
-#      success) this repo exists to kill.
+#      credentials, rate limited — this script exits 2 and prints which rows
+#      went unchecked. It never goes green on absent evidence. That is the
+#      c-001 family (a terminal signal treated as success) this repo exists
+#      to kill.
+#   3. The credential is the CALLER's. This script will not mint, refresh or
+#      fall back to another one, and will not retry: silently repairing a
+#      rejected credential means a broken credential path can never be
+#      observed by anyone running this check, and a retry loop hides a rate
+#      limit behind a delay. Export a working GH_TOKEN and run it again.
+#
+# UNKNOWN and UNVERIFIABLE are deliberately separate buckets and are printed
+# separately. UNVERIFIABLE = the anchor itself is missing, so no evidence
+# source could settle it; the index must be fixed. UNKNOWN = the anchor is
+# fine and the evidence source could not be reached; the run must be repeated.
 #
 # Usage:
 #   check-plan-index-truth.sh [index-path] [decisions-path]
 #
 # Env:
 #   PLAN_INDEX_REPO   owner/repo to query (default petersimmons1972/hindsight)
+#   GH_TOKEN          the credential `gh` will use; supplied by the caller
 #
 # Exit codes:
 #   0  every claim in the table is verified live
 #   1  one or more claims are STALE or UNVERIFIABLE (each is printed)
-#   2  the evidence source is unreachable, or the index could not be parsed
+#   2  the evidence source was unreachable for at least one claim (UNKNOWN),
+#      or the index could not be parsed
 
 set -uo pipefail
 
@@ -45,69 +68,22 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INDEX="${1:-$REPO_ROOT/plans/00-INDEX.md}"
 DECISIONS="${2:-$REPO_ROOT/docs/DECISIONS.md}"
 REPO="${PLAN_INDEX_REPO:-petersimmons1972/hindsight}"
+SOURCE_LABEL="$REPO via \`gh\`"
 
 die2() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 2; }
 
 [[ -f "$INDEX" ]] || die2 "index not found: $INDEX"
 [[ -f "$DECISIONS" ]] || die2 "decisions file not found: $DECISIONS"
 
-# ---------------------------------------------------------------- evidence ---
-# The evidence source must be proven reachable BEFORE any claim is graded.
-# A checker that grades claims against a dead API is a checker that passes.
-
 command -v gh >/dev/null 2>&1 || die2 \
   "EVIDENCE SOURCE UNREACHABLE: \`gh\` is not installed. Refusing to grade
   claims with no way to check them. This is a hard failure, not a skip."
 
-gh_probe() { gh api "/repos/$REPO" --jq '.full_name' >/dev/null 2>&1; }
-
-if ! gh_probe; then
-  # Ambient App installation tokens expire in long-lived sessions; refresh once
-  # (same treatment as bin/dispatch-wave.sh) before declaring the source dead.
-  if command -v gh-app-token >/dev/null 2>&1; then
-    GH_TOKEN="$(gh-app-token claude 2>/dev/null | tr -d '[:space:]')" && export GH_TOKEN
-  fi
-  gh_probe || die2 \
-    "EVIDENCE SOURCE UNREACHABLE: cannot query $REPO via \`gh\` (offline, or
-  credentials rejected). Every blocker claim in $INDEX is therefore
-  UNCHECKED. Refusing to exit 0 on absent evidence."
-fi
-
-declare -A ISSUE_STATE=()   # N -> open|closed
-declare -A ISSUE_KIND=()    # N -> issue|pr
-declare -A ISSUE_TITLE=()
-declare -A RULING_ON=()     # N -> first founder-ruling comment date, if any
-declare -A RULING_QUERIED=()
-
-# NOTE: these populate globals and are called in the CURRENT shell, never in a
-# `$(...)` substitution. Two reasons, both load-bearing: a subshell would throw
-# away the cache, and — far worse — a `die2` raised inside one would kill only
-# the subshell, turning an unreachable evidence source into a silent skip.
-fetch_issue() {  # $1 = number; fills ISSUE_STATE/KIND/TITLE or exits 2
-  local n="$1" raw
-  [[ -n "${ISSUE_STATE[$n]:-}" ]] && return 0
-  raw="$(gh api "/repos/$REPO/issues/$n" \
-           --jq '[.state,(if .pull_request then "pr" else "issue" end),(.title//"")]|@tsv' 2>/dev/null)" \
-    || die2 "EVIDENCE SOURCE UNREACHABLE: could not fetch #$n from $REPO"
-  [[ -n "$raw" ]] || die2 "EVIDENCE SOURCE UNREACHABLE: empty response for #$n"
-  ISSUE_STATE["$n"]="${raw%%$'\t'*}"
-  ISSUE_KIND["$n"]="$(cut -f2 <<<"$raw")"
-  ISSUE_TITLE["$n"]="$(cut -f3 <<<"$raw")"
-}
-
-fetch_ruling() {  # $1 = number; fills RULING_ON[n] with a date, or empty
-  local n="$1" bodies
-  [[ -n "${RULING_QUERIED[$n]:-}" ]] && return 0
-  RULING_QUERIED["$n"]=1
-  bodies="$(gh api --paginate "/repos/$REPO/issues/$n/comments" \
-              --jq '.[]|[.created_at,(.body|gsub("[\n\r]";" "))]|@tsv' 2>/dev/null)" \
-    || die2 "EVIDENCE SOURCE UNREACHABLE: could not fetch comments for #$n"
-  RULING_ON["$n"]="$(grep -iE 'founder ruling|ruling:' <<<"$bodies" | head -1 | cut -f1)"
-}
-
 # ------------------------------------------------------------------ parsing ---
 # Driven by the table's own structure, never by the strings that happen to be
 # stale today. A row is any pipe table line whose first cell is a plan id.
+# Parsed BEFORE the evidence source is probed, so that a dead source can name
+# the specific rows whose claims it left unchecked.
 
 mapfile -t ROWS < <(awk -F'|' '
   /^[[:space:]]*\|/ {
@@ -139,6 +115,114 @@ for row in "${ROWS[@]}"; do
   R_CLASS["$id"]="$(tr '[:lower:]' '[:upper:]' <<<"$cls")"
 done
 
+# ---------------------------------------------------------------- evidence ---
+# The evidence source is probed BEFORE any claim is graded. A checker that
+# grades claims against a dead API is a checker that passes.
+
+declare -A ISSUE_STATE=()   # N -> open|closed|unknown
+declare -A ISSUE_KIND=()    # N -> issue|pr|?
+declare -A ISSUE_TITLE=()
+declare -A ISSUE_WHY=()     # N -> why it is unknown, when it is
+declare -A RULING_ON=()     # N -> first founder-ruling comment date, if any
+declare -A RULING_QUERIED=()
+
+UNKNOWN=()                  # rows whose claims could not be checked
+SOURCE_DEAD=0
+SOURCE_WHY=""
+
+# Turn gh's own failure text into a named condition. Reported verbatim in the
+# UNKNOWN block so "did not verify" can never be mistaken for "verified false".
+classify_gh_failure() {  # $1 = gh stderr, $2 = exit status
+  local err="$1" rc="$2"
+  case "$err" in
+    *"rate limit"*|*"secondary rate"*|*"abuse detection"*)
+      echo "API rate limit / throttling refused the request (rc=$rc)" ;;
+    *"Bad credentials"*|*"401"*)
+      echo "credentials rejected: HTTP 401 Bad credentials (rc=$rc)" ;;
+    *"gh auth login"*|*"authentication"*|*"not logged"*|*"GH_TOKEN"*)
+      echo "no usable credentials available to \`gh\` (rc=$rc)" ;;
+    *"403"*)
+      echo "access refused: HTTP 403 (rc=$rc)" ;;
+    *"404"*)
+      echo "HTTP 404 — the cited artifact is not readable with this credential (rc=$rc)" ;;
+    *"no such host"*|*"dial tcp"*|*"connection refused"*|*"i/o timeout"*|\
+    *"timeout"*|*"network is unreachable"*|*"TLS"*|*"EOF"*|*"temporary failure"*)
+      echo "network failure reaching the API (rc=$rc)" ;;
+    "")
+      echo "no response and no diagnostic from \`gh\` (rc=$rc)" ;;
+    *)
+      echo "unclassified \`gh\` failure (rc=$rc): $(head -c 160 <<<"$err" | tr '\n' ' ')" ;;
+  esac
+}
+
+probe_err="$(gh api "/repos/$REPO" --jq '.full_name' 2>&1 >/dev/null)"
+probe_rc=$?
+if ((probe_rc != 0)); then
+  # No refresh, no retry, no fallback credential. See rule 3 in the header.
+  SOURCE_DEAD=1
+  SOURCE_WHY="$(classify_gh_failure "$probe_err" "$probe_rc")"
+  UNKNOWN+=("run-wide · EVIDENCE SOURCE UNREACHABLE · $SOURCE_LABEL — $SOURCE_WHY; \
+no claim below was checked against live evidence")
+fi
+
+# NOTE: these populate globals and are called in the CURRENT shell, never in a
+# `$(...)` substitution — a subshell would throw away the cache.
+fetch_issue() {  # $1 = number; fills ISSUE_STATE/KIND/TITLE, or marks unknown
+  local n="$1" raw err rc st
+  [[ -n "${ISSUE_STATE[$n]:-}" ]] && return 0
+  if ((SOURCE_DEAD)); then
+    ISSUE_STATE["$n"]=unknown; ISSUE_KIND["$n"]="?"; ISSUE_TITLE["$n"]=""
+    ISSUE_WHY["$n"]="$SOURCE_WHY"
+    return 0
+  fi
+  err="$(gh api "/repos/$REPO/issues/$n" \
+           --jq '[.state,(if .pull_request then "pr" else "issue" end),(.title//"")]|@tsv' \
+           2>"$TMP_ERR" >"$TMP_OUT")" ; rc=$?
+  raw="$(cat "$TMP_OUT")"; err="$(cat "$TMP_ERR")"
+  if ((rc != 0)); then
+    ISSUE_STATE["$n"]=unknown; ISSUE_KIND["$n"]="?"; ISSUE_TITLE["$n"]=""
+    ISSUE_WHY["$n"]="$(classify_gh_failure "$err" "$rc")"
+    return 0
+  fi
+  st="${raw%%$'\t'*}"
+  if [[ -z "$raw" ]]; then
+    ISSUE_STATE["$n"]=unknown; ISSUE_KIND["$n"]="?"; ISSUE_TITLE["$n"]=""
+    ISSUE_WHY["$n"]="empty response body — malformed, not a state"
+    return 0
+  fi
+  if [[ "$st" != open && "$st" != closed ]]; then
+    ISSUE_STATE["$n"]=unknown; ISSUE_KIND["$n"]="?"; ISSUE_TITLE["$n"]=""
+    ISSUE_WHY["$n"]="malformed response: no open/closed state in \"$(head -c 60 <<<"$raw")\""
+    return 0
+  fi
+  ISSUE_STATE["$n"]="$st"
+  ISSUE_KIND["$n"]="$(cut -f2 <<<"$raw")"
+  ISSUE_TITLE["$n"]="$(cut -f3 <<<"$raw")"
+}
+
+fetch_ruling() {  # $1 = number; fills RULING_ON[n] with a date, or empty
+  local n="$1" bodies rc err
+  [[ -n "${RULING_QUERIED[$n]:-}" ]] && return 0
+  RULING_QUERIED["$n"]=1
+  if ((SOURCE_DEAD)); then
+    RULING_ON["$n"]=""; ISSUE_WHY["ruling-$n"]="$SOURCE_WHY"; return 1
+  fi
+  gh api --paginate "/repos/$REPO/issues/$n/comments" \
+    --jq '.[]|[.created_at,(.body|gsub("[\n\r]";" "))]|@tsv' \
+    2>"$TMP_ERR" >"$TMP_OUT"; rc=$?
+  bodies="$(cat "$TMP_OUT")"; err="$(cat "$TMP_ERR")"
+  if ((rc != 0)); then
+    RULING_ON["$n"]=""
+    ISSUE_WHY["ruling-$n"]="$(classify_gh_failure "$err" "$rc")"
+    return 1
+  fi
+  RULING_ON["$n"]="$(grep -iE 'founder ruling|ruling:' <<<"$bodies" | head -1 | cut -f1)"
+  return 0
+}
+
+TMP_ERR="$(mktemp)"; TMP_OUT="$(mktemp)"
+trap 'rm -f "$TMP_ERR" "$TMP_OUT"' EXIT
+
 is_terminal() { case "$1" in COMPLETE|COMPLETED|DONE|WITHDRAWN|CANCELLED|CANCELED|SUPERSEDED) return 0;; *) return 1;; esac; }
 is_complete() { case "$1" in COMPLETE|COMPLETED|DONE) return 0;; *) return 1;; esac; }
 is_blocked()  { [[ "$1" == *BLOCKED* ]]; }
@@ -155,13 +239,16 @@ refs_in() { grep -oE '#[0-9]+' <<<"$1" | tr -d '#' | sort -un; }
 
 # ------------------------------------------------------------------- grading ---
 STALE=(); UNVER=()
-stale() { STALE+=("row $1 · $2 · $3"); }
-unver() { UNVER+=("row $1 · $2 · $3"); }
+stale()   { STALE+=("row $1 · $2 · $3"); }
+unver()   { UNVER+=("row $1 · $2 · $3"); }
+unknown() { UNKNOWN+=("row $1 · $2 · NOT CHECKED — $3"); }
 
 for id in "${IDS[@]}"; do
   cls="${R_CLASS[$id]}"; status="${R_STATUS[$id]}"
 
   # --- E: edge claims ------------------------------------------------------
+  # Graded entirely off the table itself; no evidence source is involved, so
+  # these verdicts stand even when the API is down.
   for col in blocked-by blocks; do
     cell="${R_BBY[$id]}"; [[ "$col" == blocks ]] && cell="${R_BLK[$id]}"
     while read -r tgt; do
@@ -197,14 +284,20 @@ for id in "${IDS[@]}"; do
   own="$(refs_in "${R_ISSUE[$id]}" | head -1)"
   if [[ -n "$own" ]]; then
     fetch_issue "$own"; st="${ISSUE_STATE[$own]}"
-    # COMPLETE-family only. A WITHDRAWN plan's issue may legitimately stay open
-    # (it is often a parent tracker that outlives the withdrawn approach), so
-    # widening this to every terminal status buys a known false positive.
-    if is_complete "$cls" && [[ "$st" == open ]]; then
-      stale "$id" "status $cls" "its own #$own (${ISSUE_KIND[$own]}) is still OPEN"
-    fi
-    if is_blocked "$cls" && [[ "$st" == closed ]]; then
-      stale "$id" "status $cls" "its own #$own (${ISSUE_KIND[$own]}) is CLOSED"
+    if [[ "$st" == unknown ]]; then
+      unknown "$id" "status $cls" \
+        "its own #$own could not be read from $SOURCE_LABEL (${ISSUE_WHY[$own]}); \
+this row's status was neither confirmed nor refuted"
+    else
+      # COMPLETE-family only. A WITHDRAWN plan's issue may legitimately stay open
+      # (it is often a parent tracker that outlives the withdrawn approach), so
+      # widening this to every terminal status buys a known false positive.
+      if is_complete "$cls" && [[ "$st" == open ]]; then
+        stale "$id" "status $cls" "its own #$own (${ISSUE_KIND[$own]}) is still OPEN"
+      fi
+      if is_blocked "$cls" && [[ "$st" == closed ]]; then
+        stale "$id" "status $cls" "its own #$own (${ISSUE_KIND[$own]}) is CLOSED"
+      fi
     fi
   else
     is_blocked "$cls" && unver "$id" "status $cls" "the issue column names no #ref, so the row's own state cannot be checked"
@@ -219,7 +312,11 @@ for id in "${IDS[@]}"; do
     while read -r n; do
       [[ -n "$n" ]] || continue
       fetch_issue "$n"
-      if [[ "${ISSUE_STATE[$n]}" == closed ]]; then
+      if [[ "${ISSUE_STATE[$n]}" == unknown ]]; then
+        unknown "$id" "status clause \"$(sed 's/^ *//' <<<"$clause")\"" \
+          "#$n could not be read from $SOURCE_LABEL (${ISSUE_WHY[$n]}); \
+the obligation it names may or may not be discharged"
+      elif [[ "${ISSUE_STATE[$n]}" == closed ]]; then
         stale "$id" "status clause \"$(sed 's/^ *//' <<<"$clause")\"" \
               "#$n (${ISSUE_KIND[$n]}) is CLOSED — the obligation it names is discharged"
       fi
@@ -228,18 +325,28 @@ for id in "${IDS[@]}"; do
 
   # --- S3/S6: BLOCKED rows must point at something live --------------------
   if is_blocked "$cls"; then
-    live_anchor=0
+    live_anchor=0; unknown_anchor=0
     while read -r n; do
       [[ -n "$n" ]] || continue
       fetch_issue "$n"
-      [[ "${ISSUE_STATE[$n]}" == open ]] && live_anchor=1
+      case "${ISSUE_STATE[$n]}" in
+        open)    live_anchor=1 ;;
+        unknown) unknown_anchor=1
+                 unknown "$id" "status $cls" \
+                   "cited #$n could not be read from $SOURCE_LABEL (${ISSUE_WHY[$n]}); \
+whether this blocker is still live is unknown" ;;
+      esac
     done < <(refs_in "$status")
     while read -r tgt; do
       [[ -n "$tgt" ]] || continue
       [[ -n "${R_CLASS[$tgt]:-}" ]] && ! is_terminal "${R_CLASS[$tgt]}" && live_anchor=1
     done < <(edge_targets "${R_BBY[$id]}")
 
-    if ((live_anchor == 0)); then
+    # UNVERIFIABLE only when the evidence actually answered. If a cited
+    # artifact is UNKNOWN we do not know whether an anchor is live, and
+    # calling that "prose with no checkable anchor" would blame the index for
+    # the API being down. The two conditions stay separate on purpose.
+    if ((live_anchor == 0 && unknown_anchor == 0)); then
       unver "$id" "status $cls" \
             "every artifact this row cites is closed and its blocked-by column names no live plan; the stated blocker is prose with no checkable anchor"
     fi
@@ -248,9 +355,15 @@ for id in "${IDS[@]}"; do
     # ruling. The escape hatch is to cite the ruling in the status cell.
     if [[ "$cls" == *FOUNDER-BLOCKED* && -n "$own" ]] \
        && ! grep -qi 'ruling' <<<"$status"; then
-      fetch_ruling "$own"; when="${RULING_ON[$own]:-}"
-      [[ -n "$when" ]] && stale "$id" "status $cls" \
-        "a founder ruling was recorded on #$own at $when and this row does not cite it"
+      if fetch_ruling "$own"; then
+        when="${RULING_ON[$own]:-}"
+        [[ -n "$when" ]] && stale "$id" "status $cls" \
+          "a founder ruling was recorded on #$own at $when and this row does not cite it"
+      else
+        unknown "$id" "status $cls" \
+          "comments on #$own could not be read from $SOURCE_LABEL (${ISSUE_WHY[ruling-$own]}); \
+a founder ruling may already have been handed down"
+      fi
     fi
   fi
 done
@@ -296,8 +409,27 @@ fi
 if ((${#UNVER[@]})); then
   printf 'UNVERIFIABLE — no evidence this checker can reach either way (%d):\n' "${#UNVER[@]}"
   printf '  (counted as failures on purpose: an unverifiable blocker is how a stale row survives)\n'
+  printf '  (the anchor itself is missing — fix the index, not the network)\n'
   for f in "${UNVER[@]}"; do printf '  ? %s\n' "$f"; done
   echo
+fi
+if ((${#UNKNOWN[@]})); then
+  printf 'UNKNOWN — EVIDENCE SOURCE UNREACHABLE, so these claims were NOT checked (%d):\n' \
+    "${#UNKNOWN[@]}"
+  printf '  source: %s\n' "$SOURCE_LABEL"
+  printf '  THIS RUN DID NOT VERIFY THE INDEX. This is not "checked and wrong";\n'
+  printf '  it is "not checked at all". Distinct from the block above: there the\n'
+  printf '  anchor is missing, here the anchor is fine and the evidence was not\n'
+  printf '  reachable. No credential was minted and nothing was retried — supply\n'
+  printf '  a working GH_TOKEN for %s and run this again.\n' "$REPO"
+  for f in "${UNKNOWN[@]}"; do printf '  ! %s\n' "$f"; done
+  echo
+fi
+
+if ((${#UNKNOWN[@]})); then
+  printf '%d stale, %d unverifiable, %d UNCHECKED. The evidence source was unreachable; no verdict was reached.\n' \
+    "${#STALE[@]}" "${#UNVER[@]}" "${#UNKNOWN[@]}" >&2
+  exit 2
 fi
 
 total=$(( ${#STALE[@]} + ${#UNVER[@]} ))

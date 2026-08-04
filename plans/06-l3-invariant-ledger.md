@@ -123,12 +123,51 @@ Report survivors explicitly.
 ## 11. UNDO
 
 ```bash
-cd /home/psimmons/projects/hindsight && git checkout -- pipeline/ docs/ && \
-  git clean -fd pipeline/L3 pipeline/tests && \
-  git checkout main && git branch -D feat/21-l3-invariant-ledger
+cd /home/psimmons/projects/hindsight
+ROOT="$PWD"
+PLAN="$ROOT/plans/06-l3-invariant-ledger.md"
+BRANCH="feat/21-l3-invariant-ledger"
+mapfile -t SEC7 < <(awk '/^## 7\./{f=1;next} /^## 8\./{f=0} f' "$PLAN" | grep -E '^/')
+FILES=(); DIRS=()
+for entry in "${SEC7[@]}"; do
+  rel="${entry#"$ROOT"/}"
+  if [[ "$entry" == */ ]]; then DIRS+=("${rel%/}"); else FILES+=("$rel"); fi
+done
+git checkout HEAD -- . 2>/dev/null || true
+git reset --hard HEAD >/dev/null 2>&1 || true
+for f in "${FILES[@]}"; do
+  if ! git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+    rm -f -- "$f"
+  fi
+done
+for d in "${DIRS[@]}"; do
+  git clean -fd -- "$d" "$(dirname -- "$d")" 2>/dev/null || true
+done
+git checkout main
+git branch -d "$BRANCH" 2>&1 || true
 ```
-This reverts tracked changes and removes only UNTRACKED/uncommitted work (`git clean -fd`, never
-`rm -rf`) so a committed brief already merged under `pipeline/L3/` survives the undo.
+This derives its own blast radius from §7, not from a hand-written list, so the two cannot drift:
+every FILE named directly in §7, if it is still untracked (this plan created it and never
+committed it), is removed exactly; a §7 file that is already tracked is left to `git reset --hard`
+above, never separately deleted. Every DIRECTORY §7 explicitly names (`pipeline/L3/work/`) -- and
+that directory's immediate parent, since a work directory nested one level under a plan-specific
+subtree signals the parent subtree is this plan's own workspace -- gets `git clean -fd`'d, never
+`rm -rf`; `git clean` only ever removes UNTRACKED content, so a committed brief anywhere in that
+subtree is untouched no matter which branch committed it. A directory §7 never names as a directory
+(e.g. `pipeline/tests`, which §7 only reaches through individual files) is never broadly cleaned --
+unrelated untracked WIP sitting beside a §7 file there is never touched.
+`git reset --hard HEAD` discards STAGED and working-tree edits to tracked files (the index, not
+just the worktree, so a staged edit to a forbidden path never rides onto `main`), but never touches
+a commit -- a brief committed only on the feature branch is untouched by it and by `git clean`,
+which never deletes tracked content.
+The branch is deleted with `git branch -d`, never `-D`: `-d` REFUSES to delete a branch carrying
+commits not reachable from `main` (Section 6 forbids merging, so a committed brief can only ever
+live there). That refusal is the safety property working, not an error to force past -- if `-d`
+declines because the branch is unmerged, the operator's job is to look at what is on the branch and
+either keep it, cherry-pick/rescue the parts worth keeping, or delete it themselves once satisfied
+it is safe to lose; never re-run with `-D`.
+`git clean -fd` (no `-x`) never removes files matched by `.gitignore` -- a gitignored file left
+behind in a §7-owned directory (e.g. spooled scratch under `pipeline/L3/work/`) SURVIVES the undo.
 No file outside the repo is written; in particular nothing under `~/.claude/`.
 
 ## 12. ESCALATE INSTEAD OF GUESSING

@@ -66,7 +66,8 @@ for p in "$PLANS"/[0-9][0-9]-*.md; do
   fi
 
   # ---- §7 file count
-  n_files=$(awk '/^## 7\./{f=1;next} /^## 8\./{f=0} f' "$p" | grep -cE '^/home/psimmons/' || true)
+  sec7=$(awk '/^## 7\./{f=1;next} /^## 8\./{f=0} f' "$p")
+  n_files=$(printf '%s\n' "$sec7" | grep -cE '^/home/psimmons/' || true)
   if [ "$n_files" -ge 1 ] && [ "$n_files" -le "$MAX_FILES" ]; then
     pass "$name §7 names $n_files file(s)"
   elif [ "$n_files" -eq 0 ]; then
@@ -74,6 +75,29 @@ for p in "$PLANS"/[0-9][0-9]-*.md; do
   else
     fail "$name §7 names $n_files files > $MAX_FILES"
   fi
+
+  # ---- §7 directory entries must not grant sweeping authority.
+  # A directory entry (a §7 line ending in "/") authorises everything beneath it, recursively.
+  # Counting LINES therefore cannot bound it -- a single line naming a shallow directory (the
+  # repo root, or a top-level source directory) authorises the whole repository while still
+  # linting as "names 1 file(s)". Bound it on PATH SHAPE instead: a directory entry must sit at
+  # least two levels below a plausible project root, i.e. carry at least 6 non-empty path
+  # segments (`/home/psimmons/projects/<repo>/` alone is 4; `<repo>/pipeline/` is 5; a real work
+  # directory like `<repo>/pipeline/L3/work/` is 7 or more). Anything shallower reads as
+  # "the repo" or "a top-level source directory", not a work directory.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      */) : ;;
+      *) continue ;;
+    esac
+    case "$line" in /home/psimmons/*) : ;; *) continue ;; esac
+    trimmed="${line%/}"
+    segs=$(printf '%s' "$trimmed" | tr '/' '\n' | grep -c . || true)
+    if [ "$segs" -lt 6 ]; then
+      fail "$name §7 directory entry '$line' is too shallow (root or top-level directory) -- a directory entry must be at least 6 path segments deep, must not be the repo root, and must not be a top-level source directory"
+    fi
+  done <<<"$sec7"
 
   # ---- §5/§6 carry the canonical rule ids verbatim, not paraphrased
   pre=$(awk '/^## 5\./{f=1} /^## 7\./{f=0} f' "$p")

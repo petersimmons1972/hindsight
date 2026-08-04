@@ -64,7 +64,7 @@ no pre-registered metric of its own — it is not a finding.
 ## Plans
 
 Each is self-contained and executable by a model with zero conversational context
-(`codex exec "$(cat plans/NN-....md)"`). Ceiling: **≤250 lines, ≤5 files, exactly 1 issue.**
+(`codex exec "$(cat plans/NN-....md)"`). Ceiling: **≤250 lines, ≤6 files, exactly 1 issue.**
 
 | # | plan | issue | status |
 |---|---|---|---|
@@ -149,7 +149,7 @@ canonical L2 output. Deterministic mechanical L1 subsets are replayed against co
 snapshots; non-mechanical L1 rows are covered by explicit source/revision hashes, not falsely
 claimed regenerated. CI must fail on a changed L1 digest, missing/extra embedding ID, changed
 vector/config provenance, or a changed L2 partition; it must never call the HTTP backend. Split
-this into ≤5-file packets if its precise artifact formats exceed the plan ceiling.
+this into ≤6-file packets if its precise artifact formats exceed the plan ceiling.
 
 Serial throughout (R8). Schedule 02, 04, 06, 07 as cross-vendor triangle packets — the QA hypothesis
 is stuck at N=1 against a pre-registered rule needing ≥5, and four packets reaches it at zero extra

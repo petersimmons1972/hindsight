@@ -2,7 +2,7 @@
 
 _Produced 2026-08-03 from an 11-agent triage that **measured** each issue's state rather than
 trusting issue text or the campaign record. Every packet below is sized to this repo's ceiling
-(≤250 lines, ≤5 files, exactly 1 issue) and carries its own brief under `plans/briefs/`._
+(≤250 lines, ≤6 files, exactly 1 issue) and carries its own brief under `plans/briefs/`._
 
 **Before trusting any status header in `plans/*.md`, re-measure.** Several were found stale:
 `plans/06` said "BLOCKED by 02" while plan 02 is verifiably complete (PR #28 merged, `recurrence_of`

@@ -1011,6 +1011,19 @@ EOF
 }
 
 @test "A9 — two plans-table headers is FATAL: the checker must not pick one" {
+  # ROUND 3 — this case used to pass for the wrong reason. Its only assertions
+  # were `status -eq 2` plus `grep -qiE 'header|table'`, and with the
+  # header-count branch disabled the very same fixture still exits 2 through
+  # Check B ("... is missing from the parsed plans table"), whose message
+  # happens to contain the word `table`. So the test could not tell the branch
+  # it names from the branch next door.
+  #
+  # The fix is the assertion, not the fixture: the baseline covers BOTH header
+  # groups, and the message is now matched on what is unique to the
+  # header-count branch — it must report HOW MANY headers it found and say that
+  # this is not the one it requires. Check B never counts headers, Check C
+  # never counts headers, and the zero-header branch reports zero, so nothing
+  # else in the script can satisfy all three greps below.
   api_state 100 closed issue
   api_state 101 open   issue
   api_state 107 open   issue
@@ -1035,7 +1048,16 @@ EOF
   run_checker
   [ "$status" -eq 2 ]
   [[ "$output" != *"OK — every"* ]]
-  grep -qiE 'header|table' <<<"$output"
+  # (1) it is talking about headers at all
+  grep -qiE 'header' <<<"$output"
+  # (2) it reports the COUNT it actually found, and the count is two — the one
+  #     fact only the header-count branch has
+  grep -qiE '(\b2\b|\btwo\b)[^.]{0,40}header|header[^.]{0,40}(\b2\b|\btwo\b)' <<<"$output"
+  # (3) and it says two is not the number it can work with
+  grep -qiE 'not exactly one|more than one|exactly one|ambiguous|unambiguous' <<<"$output"
+  # and it must NOT be reporting a dropped/missing row: that is Check B's lane,
+  # and if this fixture ever lands there again the branch under test is dead.
+  ! grep -qiE 'missing from the parsed|is missing|was dropped' <<<"$output"
 }
 
 @test "A10 — the region check runs before any evidence is fetched" {
@@ -1236,28 +1258,38 @@ EOF
 }
 
 @test "C3 — a fixture index with no override is not measured against the shipped baseline" {
-  # Renamed in round 2. The body is unchanged and still passes, but its old
-  # title ("the shipped baseline is what the checker reads when no override is
-  # set") asserts the exact rule round 1 shipped and round 2 rejects: a fixture
-  # in BATS_TEST_TMPDIR is NOT the canonical index, so the shipped baseline
-  # must not be applied to it. The canonical branch is exercised by the E group.
-  local n
-  for n in 100 101 102 103 104 105 106 107; do api_state "$n" open issue; done
+  # ROUND 3 — rewritten, because the old body could not fail. It was carried
+  # over verbatim from a round-1 test whose title asserted the OPPOSITE rule,
+  # and it pinned ids 01..08 — which are EXACTLY the ids conf/ ships. So the
+  # fixture passed whether or not the shipped baseline was applied to it, and
+  # it survived every mutation in the 16-mutant round, including M13 (the
+  # canonicality comparison forced always-true) which is the one mutant it
+  # existed to kill. A test that cannot fail reads as coverage and is worse
+  # than no test.
+  #
+  # What it now asserts: the id set is DISJOINT from conf/ (21, 22 can never be
+  # in the shipped baseline), so if the shipped baseline were consulted for a
+  # fixture path the run would die on "expected id 01 ... is missing". Passing
+  # is therefore only possible when the canonicality comparison really did
+  # decide this file is not the canonical index — and the skip must be
+  # announced, or the check went quiet rather than conditional.
+  api_state 121 open issue
+  api_state 122 open issue
   write_decisions
   write_index "$(cat <<'EOF'
-| 01 | `a.md` | #100 | IN-PROGRESS — packet in flight | — | — |
-| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
-| 03 | `c.md` | #102 | IN-PROGRESS — packet in flight | — | — |
-| 04 | `d.md` | #103 | IN-PROGRESS — packet in flight | — | — |
-| 05 | `e.md` | #104 | IN-PROGRESS — packet in flight | — | — |
-| 06 | `f.md` | #105 | IN-PROGRESS — packet in flight | — | — |
-| 07 | `g.md` | #106 | IN-PROGRESS — packet in flight | — | — |
-| 08 | `h.md` | #107 | IN-PROGRESS — packet in flight | — | — |
+| 21 | `u.md` | #121 | IN-PROGRESS — packet in flight | — | 22 |
+| 22 | `v.md` | #122 | BLOCKED — held behind 21 | 21 | — |
 EOF
 )"
   run_checker
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK — every"* ]]
+  # nothing from the shipped baseline may appear in a report about this file
+  ! grep -qiE 'expected id (01|02|03|04|05|06|07|08)\b' <<<"$output"
+  # and the conditionality has to be visible, not silent
+  run_checker_stderr
+  [ "$status" -eq 0 ]
+  assert_skip_warning
 }
 
 # ==========================================================================
@@ -1849,4 +1881,414 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *STALE* ]]
   [[ "$output" != *"OK — every"* ]]
+}
+
+# ==========================================================================
+# ROUND 3 — CHECK C: REGION CONTAINMENT.
+#
+# Round 2 shipped Check A and Check B and I called them "two INDEPENDENT
+# checks that cover each other's escape paths". They are not independent.
+# They share an upstream input — the region. Check A grades every line IN the
+# region; Check B compares the pinned baseline against the ids parsed FROM
+# THAT SAME REGION. Nothing anywhere proved the region contains every plan row
+# in the file, so a plan row OUTSIDE the region is invisible to BOTH of them.
+#
+# Reproduced on the DEFAULT CANONICAL PATH with Check B fully active: append a
+# second "### Retired plans" table whose header says `plan` where the real one
+# says `file` (so it does not match structurally, and header_count stays 1) and
+# the checker prints "(8 plan rows) ... OK" and exits 0 — over a row that is
+# BLOCKED, cites closed issues, is blocked-by a nonexistent plan 99, and claims
+# to block a COMPLETE plan. Every one of those is what this tool exists to
+# catch. The milder shape is a blank line mid-table: the region ends early and
+# the later rows silently stop being rows.
+#
+# Check C closes it, and its candidate set MUST be computed from the WHOLE
+# FILE, independently of the region. Re-deriving candidates from the region
+# would reproduce round 2's error exactly, and the G group is written so that a
+# region-derived implementation fails every one of the fatal cases below.
+#
+# THE RULE UNDER TEST — a line is PLAN-ROW-SHAPED if, split on `|`, it has
+# NF >= 7 and field 2 (stripped of whitespace, `*` and backticks) is
+# `^[0-9]+$`. Every plan-row-shaped line must fall INSIDE the table region.
+# One outside is fatal (exit 2), naming its line number and its raw text.
+#
+# TWO DELIBERATE BOUNDARY DECISIONS, tested from both sides, because "what
+# ELSE reaches 'a plan row exists but is not graded'" is the question that
+# refuted round 2 and it applies to this fix too:
+#
+#   * A CLOSED fenced code block is EXEMPT (G4). Inside a fence the line
+#     renders as literal monospace text, not as a table row: it is visibly an
+#     illustration, and this repo's own docs show sample plan rows. A check
+#     that forces people to mangle documentation to stay green is its own
+#     defect, and a mangled doc is a worse outcome than an un-graded example
+#     that no reader can mistake for a claim. The exemption is bounded from
+#     both ends: the fence must actually CLOSE (G6) and the state must toggle
+#     back off after it does (G5). An unterminated fence would otherwise
+#     exempt the entire rest of the file — the exemption's own escape path.
+#   * A BLOCKQUOTE is NOT exempt (G7). `> | 09 | ... |` renders as a real
+#     table inside the quote; a reader sees a plan row. It is one `> ` away
+#     from the ghost-row reproduction above and nobody documents plan rows in
+#     blockquotes.
+#
+# OUT OF REACH, stated rather than hidden: a plan row hidden in a CLOSED fence
+# is not graded and Check C will not report it. That is the cost of the G4
+# exemption and it is accepted on the ground above — such a line does not
+# render as a table row. Anything that does render as one is in scope.
+#
+# Do NOT close these by widening the region. The region is the graded set;
+# Check C's job is to prove nothing graded-looking sits outside it.
+# ==========================================================================
+
+@test "G1 — the ghost table: a plan row outside the region is FATAL on the canonical path" {
+  # THE reproduction, verbatim, on the default canonical path with the
+  # baseline present and Check B fully active. Both round-2 checks are
+  # satisfied — the region is well formed and the parsed id set is exactly the
+  # pinned one — and the run still exits 0 today. It must not.
+  make_fake_repo
+  fake_baseline 01 02
+  api_state 100 closed issue
+  api_state 101 open   issue
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+### Retired plans
+
+| # | plan | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 09 | `09-ghost.md` | #26 | BLOCKED — awaiting #26 and #24 to be decided | 99 | 01 |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  # the 1-based line number of the un-graded row
+  grep -Eq "(line|:)[[:space:]]*12([^0-9]|$)" <<<"$output"
+  # its raw text, so a reader can see exactly which row was never graded
+  [[ "$output" == *'09-ghost.md'* ]]
+  # and the message has to say what is wrong and what to do about it — an
+  # operator told only "exit 2" learns nothing about a row sitting in the file
+  grep -qiE 'outside|not inside|not in the|beyond' <<<"$output"
+  grep -qiE 'region|table'                         <<<"$output"
+  grep -qiE 'graded|checked'                       <<<"$output"
+  grep -qiE 'move|remove|delete'                   <<<"$output"
+}
+
+@test "G2 — a blank line mid-table drops the rows below it, and that is FATAL" {
+  # The milder shape of the same hole, found independently by two review lanes.
+  # No baseline at all here (fixture path, no override), so Check B is SKIPPED
+  # and cannot be what rescues the run — on a non-canonical index this hole is
+  # otherwise completely open. Today: "(2 plan rows) ... OK", exit 0.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  api_state 102 open   issue
+  api_state 103 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+| 03 | `c.md` | #102 | BLOCKED — held behind 02 | 02 | — |
+| 04 | `d.md` | #103 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*8([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'c.md'* ]]
+}
+
+@test "G3 — a plan row ABOVE the header is outside the region too" {
+  # Containment is not a "below the table" rule. A row parked before the header
+  # is just as un-graded, and a check that only scans forward from the region
+  # misses it. No baseline, so only Check C can be what fires.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01 |
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*3([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'09-ghost.md'* ]]
+}
+
+@test "G4 — a plan row inside a CLOSED fenced code block is documentation, not a row" {
+  # The false-positive side, and it is load-bearing: a check that goes red on a
+  # documented example forces people to mangle the documentation to stay green,
+  # which is its own defect. Inside a fence the line renders as literal text —
+  # no reader mistakes it for a table row. This must stay exit 0.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+A row in this table looks like this:
+
+```
+| 07 | `g.md` | #107 | IN-PROGRESS — an example, not a plan | — | — |
+```
+
+and the `#` column is the plan id.
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+@test "G5 — the fence exemption switches back off after the fence closes" {
+  # The other half of G4. If the exemption is implemented as "anything at or
+  # after a fence marker", one documented example silences the rest of the
+  # file — the ghost row below would ride out on the doc block above it.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+A row in this table looks like this:
+
+```
+| 07 | `g.md` | #107 | IN-PROGRESS — an example, not a plan | — | — |
+```
+
+| 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01 |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*15([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'09-ghost.md'* ]]
+  # the EXAMPLE must not be what got reported — that would be G4 regressing
+  [[ "$output" != *'an example, not a plan'* ]]
+}
+
+@test "G6 — an UNTERMINATED fence exempts nothing: that is the exemption's own escape path" {
+  # If an open fence exempts everything after it, the exemption is a one-line
+  # switch for turning Check C off over the whole rest of the file. A fence
+  # that never closes is malformed markdown and buys no exemption.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+```
+
+| 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01 |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*10([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'09-ghost.md'* ]]
+}
+
+@test "G7 — a blockquoted plan row still renders as a table row, and is FATAL" {
+  # Decided the other way from the fence on purpose: `> | 09 | ... |` renders
+  # as a real table inside the quote, so a reader sees a plan row. It is one
+  # `> ` away from the G1 reproduction.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+> | 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01 |
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*8([^0-9]|$)" <<<"$output"
+  [[ "$output" == *'09-ghost.md'* ]]
+}
+
+@test "G8 — the containment check runs before any evidence is fetched" {
+  # Same ordering contract as A10 / B7 / E12. A containment failure must be
+  # reported as a containment failure, not swallowed by whatever the API
+  # happened to say or fail to say.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+| 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01 |
+EOF
+  arm_gh_marker
+  run_checker
+  [ "$status" -eq 2 ]
+  [ ! -e "$MARKER" ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *'09-ghost.md'* ]]
+}
+
+@test "G9 — a dead evidence source does not stand in for the containment failure" {
+  # Same argument as F5: an operator told only "the API is down" reruns the
+  # check tomorrow and never learns a row is sitting outside the table. Two
+  # failures at once must not net out to the less useful one.
+  make_fake_repo
+  fake_baseline 01 02
+  printf '#!/usr/bin/env bash\necho "gh: dial tcp: lookup api.github.com: no such host" >&2\nexit 1\n' >"$STUB/gh"
+  chmod +x "$STUB/gh"
+  fake_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+| 09 | `09-ghost.md` | #109 | BLOCKED — awaiting a decision | 99 | 01 |
+EOF
+  run_fake
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  [[ "$output" == *'09-ghost.md'* ]]
+}
+
+@test "G10 — the other tables in the index are not plan-row-shaped and stay un-graded" {
+  # The false-positive side of the candidate rule. 00-INDEX.md really does
+  # carry a second, 3-column table whose first cell is numeric. It is NF=5, so
+  # it is not plan-row-shaped, and Check C must have nothing to say about it —
+  # a containment check that swallows every numbered table in the file is
+  # unusable and will be switched off by whoever has to live with it.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | — |
+
+## the 14 sections
+
+| § | section | what it defends against |
+|---|---|---|
+| 1 | CONTEXT YOU DO NOT HAVE | the conversation the executor never had |
+| 2 | REPO FACTS | a mid-tier model that explores and then guesses |
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
+# ==========================================================================
+# ROUND 3 — H: the two gaps a 16-mutation round found in the SUITE, not in the
+# script. The script is correct on both; nothing was testing it, so both
+# behaviours were one careless edit from vanishing unnoticed.
+# ==========================================================================
+
+@test "H1 — a BLANK id cell is not a plan id (M11: the ^[0-9]*$ mutant)" {
+  # The one mutation of sixteen that no test caught: relaxing the id regex from
+  # `^[0-9]+$` to `^[0-9]*$`. Under that mutant a row whose id cell is empty —
+  # or holds nothing but emphasis markers and backticks — is admitted as a
+  # genuine plan row, keyed under the empty string, counted in "(N plan rows)"
+  # and graded green. Check B cannot be the thing that catches it (an empty id
+  # can never be written into a baseline file, whose blank lines are stripped),
+  # so this runs on a fixture with NO baseline: only the id regex stands
+  # between an empty cell and a graded row.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  local cell
+  for cell in '' '   ' '**' '``' '**``**'; do
+    raw_two_row_index "$cell"
+    run_checker
+    [ "$status" -eq 2 ]
+    [[ "$output" != *"OK — every"* ]]
+    grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
+  done
+}
+
+@test "H2 — NF == 7 exactly is a complete row: a table with no trailing pipe parses" {
+  # The lower boundary of `NF >= 7`, which the mutation round showed was never
+  # exercised: every fixture writes the trailing `|` and lands on NF == 8, so
+  # tightening the rule to `NF >= 8` killed nothing. A markdown table without
+  # the closing pipe is legal and common; its rows split into exactly 7 fields
+  # and every one of the six columns is present. It must be graded, not
+  # refused, or the check invents a formatting rule the format does not have.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | —
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | — | —
+EOF
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+  # and both rows were actually counted, not quietly reduced to one
+  grep -qE '\(2 plan rows\)' <<<"$output"
+}
+
+@test "H3 — NF == 6 is one column short and is FATAL: the other side of the boundary" {
+  # Stated as its own case so the pair H2/H3 pins the boundary from both
+  # sides. A rule tested on only one side of its threshold is a rule that can
+  # slide one column in either direction without a test noticing.
+  api_state 100 closed issue
+  api_state 101 open   issue
+  write_decisions
+  write_raw_index <<'EOF'
+# plans — index
+
+| # | file | issue | status | blocked-by | blocks |
+|---|---|---|---|---|---|
+| 01 | `a.md` | #100 | COMPLETE — PR merged; main green | — | — |
+| 02 | `b.md` | #101 | IN-PROGRESS — packet in flight | —
+EOF
+  run_checker
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"OK — every"* ]]
+  grep -Eq "(line|:)[[:space:]]*6([^0-9]|$)" <<<"$output"
+  grep -qi 'silent' <<<"$output"
 }

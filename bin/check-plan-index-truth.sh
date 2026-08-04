@@ -114,20 +114,108 @@ fi
 # stale today. A row is any pipe table line whose first cell is a plan id.
 # Parsed BEFORE the evidence source is probed, so that a dead source can name
 # the specific rows whose claims it left unchecked.
+#
+# CHECK A — table-region integrity (issue #69, the c-001 row-drop hole).
+# Unconditional: applies to every index, canonical or fixture. The old parser
+# below (single awk pass, no header anchor) silently dropped any row whose id
+# cell was perturbed or whose column count was short. Locate the plans-table
+# header STRUCTURALLY — a pipe row whose trimmed, lowercased cells are
+# exactly `#, file, issue, status, blocked-by, blocks` — and require exactly
+# one match. Zero or two-or-more is fatal: a checker that cannot
+# unambiguously find its own table must refuse rather than report a clean
+# index. The region runs from that header to the first following line that
+# does not start with optional whitespace then `|`. Every line in the region
+# other than the header and a separator row (cells made only of `-`/`:`) must
+# parse — NF >= 7 (`-F'|'`) and field 2, stripped of whitespace/`*`/backtick,
+# matching `^[0-9]+$` — or the run is fatal, naming the 1-based line number
+# and the raw offending line. No region line may be silently skipped.
 
-mapfile -t ROWS < <(awk -F'|' '
+# Resolve which baseline (if any) Check B will use, and announce a skip up
+# front — before Check A can fatally exit — so the skip notice is printed
+# regardless of whether the region itself turns out to be malformed. A
+# skipped check must be visible no matter which check fires first.
+requested_index="$(realpath -m -- "$INDEX")"
+canonical_index="$(realpath -m -- "$REPO_ROOT/plans/00-INDEX.md")"
+
+run_check_b=0
+if [[ -n "${PLAN_INDEX_EXPECTED_IDS+set}" ]]; then
+  eids_baseline="$PLAN_INDEX_EXPECTED_IDS"
+  run_check_b=1
+elif [[ "$requested_index" == "$canonical_index" ]]; then
+  eids_baseline="$REPO_ROOT/conf/plan-index-expected-ids.conf"
+  run_check_b=1
+fi
+
+if (( ! run_check_b )); then
+  printf '%s: pinned expected-id check (Check B) SKIPPED for %s — this is not the canonical index and PLAN_INDEX_EXPECTED_IDS is not set. Only Check A (table-region integrity / structural check) applied. This is not a verification of the id set.\n' \
+    "$PROG" "$INDEX" >&2
+fi
+
+hdr_info="$(awk -F'|' '
+  BEGIN { split("#,file,issue,status,blocked-by,blocks", want, ",") }
   /^[[:space:]]*\|/ {
-    if (NF < 7) next
+    if (NF == 8) {
+      ok = 1
+      for (i = 2; i <= 7; i++) {
+        c = $i; gsub(/^[[:space:]]+|[[:space:]]+$/, "", c); c = tolower(c)
+        if (c != want[i - 1]) { ok = 0; break }
+      }
+      if (ok) { cnt++; if (cnt == 1) first = NR }
+    }
+  }
+  END { printf "%d\t%d\n", cnt+0, first+0 }
+' "$INDEX")"
+header_count="${hdr_info%%$'\t'*}"
+header_line="${hdr_info##*$'\t'}"
+
+if (( header_count == 0 )); then
+  die2 \
+    "could not parse any plan rows out of $INDEX — the table shape changed.
+  Refusing to report a clean index off a parser that matched nothing.
+  (no plans-table header — # | file | issue | status | blocked-by | blocks —
+  found structurally in the file.)"
+elif (( header_count > 1 )); then
+  die2 \
+    "found $header_count plans-table header rows in $INDEX, not exactly one.
+  A checker that cannot unambiguously find its own table must refuse rather
+  than report a clean index."
+fi
+
+region_result="$(awk -F'|' -v start="$header_line" '
+  NR == start { instart = 1; next }
+  instart != 1 { next }
+  {
+    if ($0 !~ /^[[:space:]]*\|/) { exit }
+    is_sep = (NF >= 3)
+    for (i = 2; i <= NF - 1 && is_sep; i++) {
+      c = $i; gsub(/[[:space:]]+/, "", c)
+      if (c !~ /^[-:]+$/) is_sep = 0
+    }
+    if (is_sep) next
+    if (NF < 7) { printf "FATAL\t%d\t%s\n", NR, $0; exit }
     id = $2; gsub(/[[:space:]*`]/, "", id)
-    if (id !~ /^[0-9]+$/) next
+    if (id !~ /^[0-9]+$/) { printf "FATAL\t%d\t%s\n", NR, $0; exit }
     file = $3; issue = $4; status = $5; bby = $6; blk = $7
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", file)
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", issue)
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", status)
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", bby)
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", blk)
-    printf "%s\t%s\t%s\t%s\t%s\t%s\n", id, file, issue, status, bby, blk
-  }' "$INDEX")
+    printf "OK\t%s\t%s\t%s\t%s\t%s\t%s\n", id, file, issue, status, bby, blk
+  }
+' "$INDEX")"
+
+ROWS=()
+while IFS=$'\t' read -r tag a b c d e f; do
+  [[ -z "$tag" ]] && continue
+  if [[ "$tag" == "FATAL" ]]; then
+    die2 \
+      "index region line $a does not parse and cannot be silently skipped: $b
+  Every line inside the plans-table region must parse (NF >= 7, a numeric id
+  cell) or the run refuses — no row may be silently dropped from the count."
+  fi
+  ROWS+=("$a"$'\t'"$b"$'\t'"$c"$'\t'"$d"$'\t'"$e"$'\t'"$f")
+done <<<"$region_result"
 
 ((${#ROWS[@]} > 0)) || die2 \
   "could not parse any plan rows out of $INDEX — the table shape changed.
@@ -144,6 +232,60 @@ for row in "${ROWS[@]}"; do
   cls="${status//\*/}"; cls="${cls%%[[:space:]]*}"
   R_CLASS["$id"]="$(tr '[:lower:]' '[:upper:]' <<<"$cls")"
 done
+
+# CHECK B — pinned expected id set (conditional on the index being canonical).
+# Uses the idiom this repo already uses in bin/add-failure-mode.sh (lines
+# 51-52): resolve both paths with `realpath -m` and compare the resolved
+# forms, never the strings passed in.
+#
+#   PLAN_INDEX_EXPECTED_IDS explicitly set  -> Check B runs against that file
+#   else index resolves to the canonical    -> Check B runs against conf/
+#   else                                    -> Check B is SKIPPED, loudly
+#
+# When it runs: an expected id missing from the parse, a parsed id absent
+# from the baseline, or any id appearing MORE THAN ONCE in the table (counted
+# explicitly — set equality alone cannot see a duplicated row) is fatal.
+
+if (( run_check_b )); then
+  [[ -r "$eids_baseline" ]] || die2 \
+    "pinned expected-id baseline not found or unreadable: $eids_baseline
+  An explicitly requested (or canonical) baseline must never silently vanish."
+
+  mapfile -t eids_list < <(grep -vE '^[[:space:]]*(#|$)' "$eids_baseline" \
+    | sed -e 's/[[:space:]]//g' | sed -e '/^$/d')
+
+  (( ${#eids_list[@]} > 0 )) || die2 \
+    "pinned expected-id baseline $eids_baseline contains no ids.
+  An empty baseline would make 'every expected row was checked' vacuously
+  true, the same shape as an empty catalog/id-ledger.txt."
+
+  declare -A eid_count=()
+  for id in "${IDS[@]}"; do eid_count["$id"]=$(( ${eid_count["$id"]:-0} + 1 )); done
+
+  for id in "${!eid_count[@]}"; do
+    if (( eid_count["$id"] > 1 )); then
+      die2 \
+        "id $id appears more than once (${eid_count[$id]} times) in the
+  plans table — a duplicated row. Set equality alone cannot see this; the
+  occurrence count is checked explicitly."
+    fi
+  done
+
+  declare -A eid_baseline_set=()
+  for id in "${eids_list[@]}"; do eid_baseline_set["$id"]=1; done
+
+  for id in "${eids_list[@]}"; do
+    [[ -n "${eid_count[$id]:-}" ]] || die2 \
+      "expected id $id (pinned baseline $eids_baseline) is missing from the
+  parsed plans table in $INDEX — a row was dropped."
+  done
+
+  for id in "${!eid_count[@]}"; do
+    [[ -n "${eid_baseline_set[$id]:-}" ]] || die2 \
+      "parsed id $id in $INDEX is not present in the pinned baseline
+  $eids_baseline."
+  done
+fi
 
 # ---------------------------------------------------------------- evidence ---
 # The evidence source is probed BEFORE any claim is graded. A checker that

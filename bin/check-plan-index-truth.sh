@@ -182,10 +182,11 @@ elif (( header_count > 1 )); then
 fi
 
 region_result="$(awk -F'|' -v start="$header_line" '
-  NR == start { instart = 1; next }
+  NR == start { instart = 1; last = start; next }
   instart != 1 { next }
   {
     if ($0 !~ /^[[:space:]]*\|/) { exit }
+    last = NR
     is_sep = (NF >= 3)
     for (i = 2; i <= NF - 1 && is_sep; i++) {
       c = $i; gsub(/[[:space:]]+/, "", c)
@@ -203,11 +204,17 @@ region_result="$(awk -F'|' -v start="$header_line" '
     gsub(/^[[:space:]]+|[[:space:]]+$/, "", blk)
     printf "OK\t%s\t%s\t%s\t%s\t%s\t%s\n", id, file, issue, status, bby, blk
   }
+  END { printf "REGIONEND\t%d\n", last }
 ' "$INDEX")"
 
 ROWS=()
+region_end="$header_line"
 while IFS=$'\t' read -r tag a b c d e f; do
   [[ -z "$tag" ]] && continue
+  if [[ "$tag" == "REGIONEND" ]]; then
+    region_end="$a"
+    continue
+  fi
   if [[ "$tag" == "FATAL" ]]; then
     die2 \
       "index region line $a does not parse and cannot be silently skipped: $b
@@ -285,6 +292,59 @@ if (( run_check_b )); then
       "parsed id $id in $INDEX is not present in the pinned baseline
   $eids_baseline."
   done
+fi
+
+# CHECK C — region containment (round 3, adversarial refutation of round 2).
+# Check A only validates lines INSIDE the region; Check B only compares ids
+# PARSED FROM the region. Neither can see a plan row sitting outside the
+# region — a second table, a row above the header, a row stranded by a blank
+# line mid-table. Check C's candidate set is computed from the WHOLE FILE,
+# independently of the region, and proves nothing plan-row-shaped sits
+# outside [$header_line, $region_end].
+#
+# A line is PLAN-ROW-SHAPED if, split on `|`, it has NF >= 7 and field 2
+# (stripped of whitespace, `*`, and backtick) matches ^[0-9]+$. Lines inside a
+# CLOSED fenced code block (a matched pair of ``` markers) are exempt — a
+# documented example is not a row a reader would mistake for real. An
+# unterminated fence exempts nothing: only markers that pair up count.
+containment_hit="$(awk -F'|' -v rs="$header_line" -v re="$region_end" '
+  {
+    lines[NR] = $0
+    nf[NR] = NF
+    f2[NR] = $2
+  }
+  END {
+    mcount = 0
+    for (i = 1; i <= NR; i++) {
+      if (lines[i] ~ /^[[:space:]]*```/) { mcount++; marker[mcount] = i }
+    }
+    pairs = int(mcount / 2)
+    for (k = 1; k <= pairs; k++) {
+      a = marker[2*k - 1]; b = marker[2*k]
+      for (i = a; i <= b; i++) exempt[i] = 1
+    }
+    for (i = 1; i <= NR; i++) {
+      if (exempt[i]) continue
+      if (nf[i] < 7) continue
+      id = f2[i]
+      gsub(/[[:space:]*`]/, "", id)
+      if (id !~ /^[0-9]+$/) continue
+      if (i < rs || i > re) {
+        printf "%d\t%s\n", i, lines[i]
+        exit
+      }
+    }
+  }
+' "$INDEX")"
+
+if [[ -n "$containment_hit" ]]; then
+  hit_line="${containment_hit%%$'\t'*}"
+  hit_text="${containment_hit#*$'\t'}"
+  die2 \
+    "index line $hit_line looks like a plan row but sits outside the plans-table
+  region (region: lines $header_line-$region_end) — it is never graded: $hit_text
+  Move it into the table or remove it; a plan row outside the table region is
+  invisible to every check this tool runs."
 fi
 
 # ---------------------------------------------------------------- evidence ---

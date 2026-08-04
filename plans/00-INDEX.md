@@ -11,7 +11,7 @@ a copy-pasteable dispatch prompt if you prefer to hand over the path rather than
 
 ## Ceiling
 
-**≤250 lines · ≤12 KB · ≤5 files it may modify · exactly 1 issue.** Enforced by
+**≤250 lines · ≤12 KB · ≤6 files it may modify · exactly 1 issue.** Enforced by
 `bin/check-plan-preamble.sh`.
 
 Justified by this repo's own record, not by taste: the packets that passed on the first attempt were

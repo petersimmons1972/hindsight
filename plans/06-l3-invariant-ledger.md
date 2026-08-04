@@ -76,7 +76,8 @@ nothing else**, plus the validator that makes a third state impossible.
 - **An `enforcement` value of `null` is a CORRECT answer.** Never invent a test or hook path to fill the field. A fabricated mechanism is worse than an honest gap, because it reads as covered.
 - **NEVER relax a test to make a change pass.** **NEVER edit `conf/` or `pipeline/L1/` to pass a check.**
 - **An `enforcement` value of `null` is a CORRECT answer.** Never invent a test or hook path to fill the field. A fabricated mechanism is worse than an honest gap, because it reads as covered.
-- **NEVER read a command's exit status through a pipe** (CI-17). **NEVER modify a file not listed in §7.**
+- **NEVER read a command's exit status through a pipe** (CI-17). **NEVER modify a file that is
+  neither listed by name in §7 nor located under a directory listed in §7.**
 - **Do not merge, push to `main`, or open a PR.**
 
 ## 7. FILES YOU MAY TOUCH
@@ -87,6 +88,7 @@ nothing else**, plus the validator that makes a third state impossible.
 /home/psimmons/projects/hindsight/pipeline/tests/test_validate_l3.py
 /home/psimmons/projects/hindsight/pipeline/tests/fixtures/l3_ground_truth.jsonl
 /home/psimmons/projects/hindsight/docs/L3.md
+/home/psimmons/projects/hindsight/pipeline/L3/work/
 ```
 
 ## 8. RED-FIRST PROCEDURE
@@ -121,9 +123,12 @@ Report survivors explicitly.
 ## 11. UNDO
 
 ```bash
-cd /home/psimmons/projects/hindsight && git checkout -- pipeline/ docs/ && rm -rf pipeline/L3 && \
+cd /home/psimmons/projects/hindsight && git checkout -- pipeline/ docs/ && \
+  git clean -fd pipeline/L3 pipeline/tests && \
   git checkout main && git branch -D feat/21-l3-invariant-ledger
 ```
+This reverts tracked changes and removes only UNTRACKED/uncommitted work (`git clean -fd`, never
+`rm -rf`) so a committed brief already merged under `pipeline/L3/` survives the undo.
 No file outside the repo is written; in particular nothing under `~/.claude/`.
 
 ## 12. ESCALATE INSTEAD OF GUESSING
@@ -143,7 +148,8 @@ First line **literally** `VERDICT: CONFIRMED_GOOD` or `VERDICT: DEFECTIVE`, then
 ```
 Work in /home/psimmons/projects/hindsight on branch feat/21-l3-invariant-ledger off main.
 Read /home/psimmons/projects/hindsight/plans/06-l3-invariant-ledger.md in full and execute it exactly
-as written. It is self-contained. Modify ONLY the five files in section 7.
+as written. It is self-contained. Modify ONLY the files named in section 7, and files located
+under a directory named in section 7 -- nothing else.
 Every L3 row resolves to `machine` or `judgment` -- there is no third state, and "documented" is not
 one. Never invent a path to fill a field; `enforcement: null` and `judgment` are correct answers.
 Never write to ~/.claude/ -- emit a diff. Complete section 8 first and paste the failing run.

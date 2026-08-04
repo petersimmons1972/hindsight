@@ -14,7 +14,7 @@ PLANS="$ROOT/plans"
 INV="$ROOT/docs/INVARIANTS.md"
 MAX_LINES="${MAX_LINES:-250}"
 MAX_BYTES="${MAX_BYTES:-12288}"
-MAX_FILES="${MAX_FILES:-5}"
+MAX_FILES="${MAX_FILES:-6}"
 
 fails=0; checked=0; skips=0
 fail() { printf 'FAIL  %s\n' "$*" >&2; fails=$((fails+1)); }

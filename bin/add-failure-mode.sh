@@ -465,8 +465,14 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     # every add to the state of sibling repos this add never touched: a 12-entry
     # backlog in `fleet-orch` made the catalog unable to accept ANY new row, and
     # the add rolled itself back every time (issue #73). The gate still bites on
-    # what the add can actually have broken; `--source` prints what it skipped,
-    # and the unscoped run is still what CI and humans use for corpus drift.
+    # what the add can actually have broken; `--source` prints what it skipped.
+    #
+    # CI (guard.yml) reconciles homelab-canon only -- the one source its runner
+    # checks out. fleet-dispatch-schema is scoped here for this loop's own
+    # regenerated artifacts, but CI does NOT verify it, and CI does NOT verify
+    # fleet-main, fleet-orch, or claude-codex-integration either. There is no
+    # unscoped run left that humans or CI use for corpus-wide drift; that gap
+    # is a known, ledgered limitation, not something this loop or CI covers.
     python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
         --source homelab-canon --source fleet-dispatch-schema
 else

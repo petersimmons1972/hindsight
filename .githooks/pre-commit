@@ -19,8 +19,14 @@ python3 "$REPO_ROOT/pipeline/cluster.py"
 # the same two named in GENERATED below. The unscoped run also reads four
 # sibling repos this commit never touched, so a backlog in any of them made
 # EVERY commit that changed the catalog impossible (issue #73). A scoped run
-# prints the sources it skipped, so the narrowing is never silent; corpus-wide
-# drift is still caught by the unscoped run that humans and CI use.
+# prints the sources it skipped, so the narrowing is never silent.
+#
+# CI (guard.yml) reconciles homelab-canon only -- the one source its runner
+# checks out. fleet-dispatch-schema is scoped here for this hook's own
+# regenerated-artifact check, but CI does NOT verify it, and CI does NOT
+# verify fleet-main, fleet-orch, or claude-codex-integration either. There is
+# no unscoped run left that humans or CI use for corpus-wide drift; that gap
+# is a known, ledgered limitation, not something this hook or CI covers.
 python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
     --source homelab-canon --source fleet-dispatch-schema
 

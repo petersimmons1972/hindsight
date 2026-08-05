@@ -146,6 +146,26 @@ file_digest() {
   ! [[ "$output" == *"Corpus is empty"* ]]
 }
 
+# ── STUB WARNING: read this before trusting a green run of the tests below ────
+# make_staged_repo replaces pipeline/reconcile_l1.py with a fixture whose whole
+# body prints "COMPLETE: 0 enumerable entries unaccounted for". It exists to
+# make ordering and undo assertions fast and deterministic, NOT to check the
+# reconciler. SIX tests use it and therefore cannot observe any behaviour of the
+# real reconciler at all:
+#
+#   1. canonical add runs extract L2 and reconcile in order and undo restores
+#      generated artifacts
+#   2. dot-dot canonical catalog alias still runs the whole loop
+#   3. symlink canonical catalog alias still runs the whole loop
+#   4. missing sibling topology fails before journal or write
+#   5. pre-commit skips derived regeneration when canonical inputs are unchanged
+#   6. pre-commit fails loud until regenerated artifacts are staged
+#
+# That is the shape of issue #73's own root cause: a stubbed reconciler hid the
+# bug from the very tests that looked like they covered it. The stub is kept
+# only where the reconciler is not the subject; every claim about what the add
+# loop does WITH the reconciler is made by a test built on
+# make_real_reconcile_repo, which copies the shipped script in verbatim.
 make_staged_repo() {
   STAGE="$WORK/stage"
   mkdir -p "$STAGE/bin" "$STAGE/.githooks" "$STAGE/guard" \
@@ -397,6 +417,61 @@ root = Path(__file__).resolve().parents[1]
 (root / "pipeline/L2/clusters.jsonl").write_text(
     '{"_meta":{"backend":"fixture"}}\n{"cluster_id":"c-001","members":["seed"]}\n')
 PY
+}
+
+@test "the real-reconciler fixture uses the shipped script byte for byte" {
+  # If this ever drifts, every test below is testing a copy of the reconciler
+  # rather than the reconciler -- the stub problem wearing a different hat.
+  make_real_reconcile_repo
+  [ "$(file_digest "$STAGE/pipeline/reconcile_l1.py")" \
+    = "$(file_digest "$ROOT/pipeline/reconcile_l1.py")" ]
+  ! grep -Fq 'COMPLETE: 0 enumerable entries unaccounted for' \
+    "$STAGE/pipeline/reconcile_l1.py"
+}
+
+@test "canonical add runs the whole loop against the real reconciler and undo restores every artifact" {
+  # The unstubbed twin of "canonical add runs extract L2 and reconcile in
+  # order...". Ordering is proved by evidence rather than by a trace file a
+  # fixture wrote: the reconciler reports COMPLETE for homelab-canon, which is
+  # only reachable if extract had already regenerated that L1 from the catalog
+  # row this very add appended. A reconcile that ran first would be SHORT.
+  make_real_reconcile_repo
+  catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
+  ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
+  l1_canon_before="$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")"
+  l1_schema_before="$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")"
+  l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A "full loop no stub" --recurrence-of none
+
+  [ "$status" -eq 0 ]
+  grep -Fq '| FM-002 |' "$STAGE/catalog/failure-modes.md"
+  grep -Fq 'FM-002' "$STAGE/pipeline/L1/homelab-canon.jsonl"
+
+  # Output only the shipped reconciler can produce: a per-source coverage table,
+  # a resolved-source count, and the standing scope-limit footer. The stub
+  # printed one line and none of this.
+  [[ "$output" == *"COMPLETE: 0 enumerable entries unaccounted for (2/2 sources resolved)"* ]]
+  [[ "$output" == *"SCOPE LIMIT"* ]]
+  [[ "$output" == *"homelab-canon"* ]]
+  [[ "$output" == *"fleet-dispatch-schema"* ]]
+  # ... and it must say which sources it did not look at.
+  [[ "$output" == *"NOT CHECKED by this run"* ]]
+  [[ "$output" == *"fleet-main"* ]]
+  [[ "$output" == *"fleet-orch"* ]]
+  [[ "$output" == *"claude-codex-integration"* ]]
+
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
+  [ -n "$journal" ]
+  run env CATALOG="$STAGE/catalog/failure-modes.md" \
+    bash "$STAGE/bin/add-failure-mode.sh" --undo "$journal"
+  [ "$status" -eq 0 ]
+  [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
+  [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
+  [ "$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")" = "$l1_canon_before" ]
+  [ "$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")" = "$l1_schema_before" ]
+  [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
 }
 
 @test "an unrelated source's backlog does not block a canonical add" {

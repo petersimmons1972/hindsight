@@ -14,8 +14,16 @@ each source by regex, and any ID absent from the JSONL is reported. Sources whos
 entries are machine-enumerable are extracted mechanically outright -- no model in
 the loop -- because their structure already encodes the answer.
 
-Usage:  python3 reconcile_l1.py [--json] [--allow-partial]
+Usage:  python3 reconcile_l1.py [--json] [--allow-partial] [--source SLUG ...]
 Exit 0 only for COMPLETE, or for PARTIAL when explicitly waived.
+
+`--source` narrows the run to named sources. It exists because the corpus is a
+union of five independently-owned sources, and a gate that reconciles ALL of
+them is the wrong coupling for a caller that wrote ONE of them: an unrelated
+sibling repo's backlog made `bin/add-failure-mode.sh` unable to add anything at
+all (issue #73). Narrowing is never silent -- a scoped run prints exactly which
+sources it did not look at, and an unknown slug is a hard error rather than an
+empty scope that would certify nothing while exiting 0.
 """
 from __future__ import annotations
 
@@ -113,11 +121,29 @@ def main() -> int:
         action="store_true",
         help="accept PARTIAL after printing how many sources were not checked",
     )
+    ap.add_argument(
+        "--source",
+        action="append",
+        metavar="SLUG",
+        help="restrict the run to this source (repeatable). The verdict then "
+             "covers only the named sources, and the scope is printed.",
+    )
     args = ap.parse_args()
+
+    selected = list(ENUMERABLE)
+    if args.source:
+        unknown = sorted(set(args.source) - set(ENUMERABLE))
+        if unknown:
+            # An unknown slug must never degrade to "checked nothing, exit 0".
+            print(f"ERROR: unknown --source: {', '.join(unknown)}\n"
+                  f"  known sources: {', '.join(ENUMERABLE)}", file=sys.stderr)
+            return 2
+        selected = [s for s in ENUMERABLE if s in set(args.source)]
+    skipped = [s for s in ENUMERABLE if s not in selected]
 
     report, short = [], False
     n_resolved = 0
-    for slug in ENUMERABLE:
+    for slug in selected:
         truth, resolved = ground_truth_resolved(slug)
         n_resolved += 1 if resolved else 0
         found, n_lines = extracted(slug)
@@ -135,7 +161,7 @@ def main() -> int:
         report.append({"slug": slug, "ground_truth": len(truth), "jsonl_lines": n_lines,
                        "covered": len(truth) - len(missing), "coverage_pct": cov,
                        "resolved": resolved, "missing": missing})
-    n_unresolved = len(ENUMERABLE) - n_resolved
+    n_unresolved = len(selected) - n_resolved
     n_missing = sum(len(r["missing"]) for r in report)
     if n_resolved == 0:
         verdict = "UNVERIFIED"
@@ -157,7 +183,12 @@ def main() -> int:
             print(f"{r['slug']:<28}{r['ground_truth']:>6}{r['jsonl_lines']:>7}"
                   f"{cov_s}%  {m}{flag}")
         print(f"\n{verdict}: {n_missing} enumerable entries unaccounted for"
-              f" ({n_resolved}/{len(ENUMERABLE)} sources resolved)")
+              f" ({n_resolved}/{len(selected)} sources resolved)")
+        if skipped:
+            print(f"  SCOPE: --source restricted this run to {len(selected)} of "
+                  f"{len(ENUMERABLE)} sources.\n"
+                  f"  NOT CHECKED by this run: {', '.join(skipped)}.\n"
+                  "  This verdict says nothing about them, in either direction.")
         if verdict == "UNVERIFIED":
             print("  NOTHING WAS CHECKED: no configured source resolved on this host.\n"
                   "  This is a refusal, not a pass -- an empty ground truth cannot\n"
@@ -176,6 +207,12 @@ def main() -> int:
             "  100% coverage. They were recovered only because a model pass saw them.\n"
             "  COMPLETE means 'no enumerable entry is missing', never 'nothing is missing'."
         )
+    if skipped and args.json:
+        # The scope narrowing must be visible in every output mode, or a JSON
+        # consumer reads a COMPLETE that silently covered a subset.
+        print(f"SCOPE: --source restricted this run to {len(selected)} of "
+              f"{len(ENUMERABLE)} sources; NOT CHECKED: {', '.join(skipped)}.",
+              file=sys.stderr)
     if verdict == "PARTIAL" and args.allow_partial:
         stream = sys.stderr if args.json else sys.stdout
         print(

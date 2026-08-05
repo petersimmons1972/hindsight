@@ -15,7 +15,14 @@ fi
 
 python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
 python3 "$REPO_ROOT/pipeline/cluster.py"
-python3 "$REPO_ROOT/pipeline/reconcile_l1.py"
+# Reconcile ONLY the two L1 sources the regeneration above actually writes --
+# the same two named in GENERATED below. The unscoped run also reads four
+# sibling repos this commit never touched, so a backlog in any of them made
+# EVERY commit that changed the catalog impossible (issue #73). A scoped run
+# prints the sources it skipped, so the narrowing is never silent; corpus-wide
+# drift is still caught by the unscoped run that humans and CI use.
+python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
+    --source homelab-canon --source fleet-dispatch-schema
 
 GENERATED=(
     pipeline/L1/homelab-canon.jsonl

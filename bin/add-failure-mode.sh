@@ -460,7 +460,15 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
     python3 "$REPO_ROOT/pipeline/cluster.py"
-    python3 "$REPO_ROOT/pipeline/reconcile_l1.py"
+    # Reconcile ONLY the two L1 artifacts this loop just regenerated -- the same
+    # two the undo journal snapshots above. Reconciling all five sources coupled
+    # every add to the state of sibling repos this add never touched: a 12-entry
+    # backlog in `fleet-orch` made the catalog unable to accept ANY new row, and
+    # the add rolled itself back every time (issue #73). The gate still bites on
+    # what the add can actually have broken; `--source` prints what it skipped,
+    # and the unscoped run is still what CI and humans use for corpus drift.
+    python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
+        --source homelab-canon --source fleet-dispatch-schema
 else
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
 fi

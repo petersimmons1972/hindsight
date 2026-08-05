@@ -42,9 +42,24 @@ jobs:
       - name: Run bin/ tool bats tests (require-real-ci, land)
         run: bats bin/tests/*.bats
       - name: Reconcile L1 corpus (declared reduced check)
-        # CI checks out only this repo, so four sibling sources are unavailable.
-        # The explicit waiver stays loud in the step output and names that count.
-        run: python3 pipeline/reconcile_l1.py --allow-partial
+        # CI checks out only this repo, so four of the five sources are not on
+        # disk here. The old form ran all five and waived the resulting PARTIAL,
+        # which made this step green BECAUSE it could not see what it checks:
+        # --allow-partial waives PARTIAL only, so a real shortfall (SHORT) in the
+        # one source CI can actually read would fail -- but a shortfall in the
+        # other four is invisible here permanently, waiver or not (issue #73).
+        #
+        # So this step now names its scope instead of waiving its blindness: it
+        # reconciles homelab-canon, the source that IS checked out, with no
+        # waiver in play. A drift between catalog/failure-modes.md and
+        # pipeline/L1/homelab-canon.jsonl now fails CI outright, and the run
+        # prints the four sources it did not check.
+        #
+        # STILL NOT CHECKED ANYWHERE IN CI: fleet-main, fleet-orch,
+        # claude-codex-integration, fleet-dispatch-schema. Closing that needs the
+        # sibling repos checked out on the runner; it is not in this workflow's
+        # reach, and a green tick here must not be read as covering them.
+        run: python3 pipeline/reconcile_l1.py --source homelab-canon
       - name: Validate L1 schema
         run: python3 pipeline/validate_l1.py
       - name: Verify enforcement

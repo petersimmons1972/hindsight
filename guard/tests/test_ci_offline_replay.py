@@ -1,9 +1,73 @@
+"""What CI actually runs, and whether the repo's own comments say so truthfully.
+
+Two separate jobs live here.
+
+1. The workflow pin. `.github/workflows/guard.yml` is pinned by full-file digest
+   so no workflow edit can land without a human updating this test.
+
+2. The claim audit. Three call sites reconcile L1 with `--source` scoping, and
+   each carries a comment explaining what is still covered elsewhere. A comment
+   that certifies a check nobody runs is this registry's own headline failure
+   mode -- a proxy trusted in place of the thing -- so the comments are checked
+   against what `guard.yml` demonstrably executes, not against a fixed string.
+   Every rule below is DERIVED: the scoped sources come from parsing the
+   workflow, the full source list comes from `reconcile_l1.ENUMERABLE`. If CI
+   later starts running an unscoped reconcile, these tests relax on their own.
+"""
 import hashlib
+import importlib.util
+import re
 from pathlib import Path
 
 
-WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "guard.yml"
-INTENDED_WORKFLOW_SHA256 = "aaac78d7b665714d3ade29290bfa6370f539941e877e9d77b2b77354f2018403"
+REPO = Path(__file__).parents[2]
+WORKFLOW = REPO / ".github" / "workflows" / "guard.yml"
+RECONCILE = REPO / "pipeline" / "reconcile_l1.py"
+PRE_COMMIT = REPO / ".githooks" / "pre-commit"
+ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
+
+# sha256 of .github/workflows/guard.yml, measured with
+#   python3 -c "import hashlib,pathlib;print(hashlib.sha256(
+#       pathlib.Path('.github/workflows/guard.yml').read_bytes()).hexdigest())"
+# ANY edit to that workflow changes this value and MUST update it here in the
+# same change -- that is the whole point of the pin. Never copy a digest out of
+# a review comment or a PR body; recompute it against the file on disk.
+INTENDED_WORKFLOW_SHA256 = "df5d5b452a3f0de7850c5fbd7bdc92e9dcc697e840e055caa1a130c733139b58"
+
+# A comment sentence may name a broader-than-CI check only while denying it.
+# "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
+_OVERCLAIM_TOKENS = ("unscoped", "all five", "every source", "full corpus",
+                     "corpus-wide", "corpus wide")
+_NEGATION = re.compile(
+    r"\b(not|never|no|none|cannot|can't|isn't|aren't|without|nothing|neither)\b",
+    re.IGNORECASE,
+)
+_CI = re.compile(r"\bCI\b")
+_SOURCE_ARG = re.compile(r"--source[=\s]+(?:'([^']*)'|\"([^\"]*)\"|([^\s\\]+))")
+
+
+# ── evidence loaders: an unreadable evidence source must FAIL, never skip ─────
+
+def _read(path: Path) -> str:
+    assert path.is_file(), (
+        f"evidence source missing: {path}. This check cannot pass without it; "
+        "an absent input is not a clean result."
+    )
+    text = path.read_text(encoding="utf-8")
+    assert text.strip(), f"evidence source is empty: {path}"
+    return text
+
+
+def _enumerable_slugs() -> set[str]:
+    """The full source list, read from the reconciler itself -- never hardcoded."""
+    assert RECONCILE.is_file(), f"evidence source missing: {RECONCILE}"
+    spec = importlib.util.spec_from_file_location("_reconcile_l1_probe", RECONCILE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    slugs = set(getattr(module, "ENUMERABLE", {}))
+    assert slugs, "reconcile_l1.ENUMERABLE is empty -- nothing could be scoped"
+    return slugs
 
 
 def _step_blocks(workflow: str) -> list[tuple[str, ...]]:
@@ -15,6 +79,58 @@ def _step_blocks(workflow: str) -> list[tuple[str, ...]]:
         elif blocks and (line.startswith("        ") or not line.strip()):
             blocks[-1].append(line)
     return [tuple(block) for block in blocks]
+
+
+def _reconcile_commands(workflow: str) -> list[str]:
+    """Every executable (non-comment) reconcile invocation in the workflow."""
+    return [
+        line.strip() for line in workflow.splitlines()
+        if "reconcile_l1.py" in line and not line.strip().startswith("#")
+    ]
+
+
+def _scoped_sources(command: str) -> list[str]:
+    return ["".join(match) for match in _SOURCE_ARG.findall(command)]
+
+
+def _preceding_comment_block(path: Path, needle: str) -> str:
+    """The contiguous comment block immediately above the first real use of `needle`."""
+    lines = _read(path).splitlines()
+    idx = next(
+        (i for i, line in enumerate(lines)
+         if needle in line and not line.strip().startswith("#")),
+        None,
+    )
+    assert idx is not None, f"{path} has no executable line containing {needle!r}"
+    block: list[str] = []
+    j = idx - 1
+    while j >= 0 and lines[j].strip().startswith("#"):
+        block.append(lines[j].strip().lstrip("#").strip())
+        j -= 1
+    text = "\n".join(reversed(block))
+    assert text.strip(), (
+        f"{path}: the {needle!r} invocation carries no explanatory comment, so "
+        "there is nothing to audit and nothing telling the next reader what CI "
+        "does and does not cover."
+    )
+    return text
+
+
+def _sentences(block: str) -> list[str]:
+    flat = " ".join(block.split())
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+", flat) if s.strip()]
+
+
+# ── the workflow pin ─────────────────────────────────────────────────────────
+
+def test_pinned_workflow_evidence_source_must_be_present() -> None:
+    # A pin whose subject is gone must fail loudly rather than vacuously pass.
+    assert WORKFLOW.is_file(), f"pinned workflow missing: {WORKFLOW}"
+    assert WORKFLOW.read_bytes().strip(), "pinned workflow is empty"
+    assert re.fullmatch(r"[0-9a-f]{64}", INTENDED_WORKFLOW_SHA256), (
+        "INTENDED_WORKFLOW_SHA256 is not a well-formed sha256 digest -- an "
+        "abbreviated or mistyped value cannot pin anything."
+    )
 
 
 def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
@@ -54,3 +170,127 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     }
     lowered_workflow = workflow.lower()
     assert not [token for token in sorted(forbidden) if token.lower() in lowered_workflow]
+
+
+# ── what CI's reconcile step actually covers ─────────────────────────────────
+
+def test_ci_reconciles_a_named_proper_subset_of_the_corpus() -> None:
+    workflow = _read(WORKFLOW)
+    slugs = _enumerable_slugs()
+    commands = _reconcile_commands(workflow)
+    assert commands, "guard.yml no longer reconciles L1 at all"
+
+    scoped: set[str] = set()
+    unscoped: list[str] = []
+    for command in commands:
+        found = _scoped_sources(command)
+        if found:
+            scoped.update(found)
+        else:
+            unscoped.append(command)
+
+    unknown = sorted(scoped - slugs)
+    assert not unknown, (
+        f"guard.yml scopes reconcile to unknown source(s) {unknown}; the "
+        "reconciler exits 2 on those, so CI would fail for the wrong reason."
+    )
+    # Today CI is deliberately reduced. If that ever changes, this assertion is
+    # what tells the author that the comment audit below has loosened too.
+    assert not unscoped, (
+        "guard.yml now runs an unscoped reconcile; re-read the comment audit "
+        "tests below, which relax on their own when this is true."
+    )
+    assert scoped, "guard.yml reconciles nothing"
+    assert scoped < slugs, (
+        "CI now covers every source; the 'not checked in CI' comments this "
+        "suite requires are no longer true and must be rewritten."
+    )
+
+
+def _assert_comment_tells_the_truth_about_ci(
+    label: str, block: str, ci_scoped: set[str], slugs: set[str]
+) -> None:
+    unverified = sorted(slugs - ci_scoped)
+    assert unverified, "nothing to audit: CI covers every source"
+    sentences = _sentences(block)
+
+    assert _CI.search(block), (
+        f"{label}: the comment above the scoped reconcile never mentions CI, so "
+        "it cannot tell a reader what the CI path does and does not cover."
+    )
+
+    for slug in sorted(ci_scoped):
+        assert slug in block, (
+            f"{label}: the comment must name the source CI actually reconciles "
+            f"({slug}); a reader cannot check a scope that is not written down."
+        )
+
+    for slug in unverified:
+        carriers = [s for s in sentences if slug in s]
+        assert carriers, (
+            f"{label}: the comment does not name {slug}, which CI never "
+            "verifies. 'four sibling repos' is not a name a reader can act on."
+        )
+        assert any(_NEGATION.search(s) for s in carriers), (
+            f"{label}: every sentence naming {slug} reads as a positive claim. "
+            "A source CI does not verify must be stated as NOT verified."
+        )
+
+    for sentence in sentences:
+        if not _CI.search(sentence):
+            continue
+        overclaims = [t for t in _OVERCLAIM_TOKENS if t in sentence.lower()]
+        if not overclaims:
+            continue
+        assert _NEGATION.search(sentence), (
+            f"{label}: this comment sentence asserts CI performs a "
+            f"{overclaims[0]!r} check that guard.yml does not run -- "
+            f"{sentence!r}. Documentation may not certify what it never "
+            "compared."
+        )
+
+
+def _ci_scoped_sources() -> set[str]:
+    return {s for c in _reconcile_commands(_read(WORKFLOW)) for s in _scoped_sources(c)}
+
+
+def test_ci_reconcile_step_names_the_sources_it_cannot_verify() -> None:
+    block = _preceding_comment_block(WORKFLOW, "reconcile_l1.py")
+    _assert_comment_tells_the_truth_about_ci(
+        "guard.yml", block, _ci_scoped_sources(), _enumerable_slugs()
+    )
+
+
+def test_pre_commit_comment_matches_what_ci_really_checks() -> None:
+    block = _preceding_comment_block(PRE_COMMIT, "reconcile_l1.py")
+    _assert_comment_tells_the_truth_about_ci(
+        ".githooks/pre-commit", block, _ci_scoped_sources(), _enumerable_slugs()
+    )
+
+
+def test_add_failure_mode_comment_matches_what_ci_really_checks() -> None:
+    block = _preceding_comment_block(ADD_TOOL, "reconcile_l1.py")
+    _assert_comment_tells_the_truth_about_ci(
+        "bin/add-failure-mode.sh", block, _ci_scoped_sources(), _enumerable_slugs()
+    )
+
+
+def test_every_call_site_scopes_to_slugs_the_reconciler_knows() -> None:
+    """A typo'd slug exits 2, which would break the add loop and the hook."""
+    slugs = _enumerable_slugs()
+    for path in (WORKFLOW, PRE_COMMIT, ADD_TOOL):
+        lines = _read(path).splitlines()
+        idx = next(
+            i for i, line in enumerate(lines)
+            if "reconcile_l1.py" in line and not line.strip().startswith("#")
+        )
+        # Follow shell line continuations so the scoping flags are not missed.
+        command = lines[idx].strip()
+        j = idx
+        while command.endswith("\\") and j + 1 < len(lines):
+            j += 1
+            command = command[:-1] + " " + lines[j].strip()
+        named = _scoped_sources(command)
+        assert named, f"{path}: reconcile invocation carries no --source scoping"
+        unknown = sorted(set(named) - slugs)
+        assert not unknown, f"{path}: unknown --source slug(s) {unknown}"

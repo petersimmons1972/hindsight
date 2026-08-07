@@ -11,8 +11,10 @@ a copy-pasteable dispatch prompt if you prefer to hand over the path rather than
 
 ## Ceiling
 
-**≤250 lines · ≤12 KB · ≤5 files it may modify · exactly 1 issue.** Enforced by
-`bin/check-plan-preamble.sh`.
+**Target (advisory): ≤250 lines · ≤12 KB · ≤6 paths in §7 · exactly 1 issue.** Reviewers apply
+this as a sizing target; a §7 directory entry authorises its subtree at one line of count, so the
+path count is not a hard blast-radius bound. `bin/check-plan-preamble.sh` still checks structure
+and warns when the path-count target is exceeded.
 
 Justified by this repo's own record, not by taste: the packets that passed on the first attempt were
 single-file, single-contract. The packets that took **five and six rounds** each spanned `guard/` +

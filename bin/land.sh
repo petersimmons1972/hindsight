@@ -70,6 +70,30 @@ if [ "$gate_status" -ne 0 ]; then
   exit "$gate_status"
 fi
 
+# Supported-shape discriminating-test gate (issue #23). Opt-in via
+# VERIFY_DISCRIMINATING_BASE=<pr-base-ref> so already-landed tips (no new
+# tests vs HEAD) are not falsely refused. Offline land.bats fixtures skip
+# the same way as plan-index (JSON_FILE / LAND_SKIP_PLAN_INDEX).
+if [ -n "$JSON_FILE" ] || [ "${LAND_SKIP_PLAN_INDEX:-0}" = "1" ]; then
+  echo "=== discriminating: SKIPPED (offline/fixture) ==="
+elif [ -n "${VERIFY_DISCRIMINATING_BASE:-}" ]; then
+  echo "=== discriminating: verify-discriminating.sh --base $VERIFY_DISCRIMINATING_BASE ==="
+  disc_log="$(mktemp)"
+  trap 'rm -f "$gate_log" "$disc_log"' EXIT
+  bash "$HERE/verify-discriminating.sh" --base "$VERIFY_DISCRIMINATING_BASE" >"$disc_log" 2>&1
+  disc_status=$?
+  cat "$disc_log"
+  echo "=== discriminating exit: $disc_status ==="
+  if [ "$disc_status" -ne 0 ]; then
+    echo ""
+    echo "REFUSING to merge PR #$PR: supported-shape discriminating gate failed."
+    echo "Fix tests or shapes before landing (see docs/DISCRIMINATING.md)."
+    exit "$disc_status"
+  fi
+else
+  echo "=== discriminating: SKIPPED (set VERIFY_DISCRIMINATING_BASE=<base-ref> to enable) ==="
+fi
+
 # Plan-index truth (issue #92): CI does not run this checker (workflow edits
 # out of scope). Land must not ship while the local tip's index asserts
 # blockers it cannot back. Invokes the shipped binary by path, never a stub.

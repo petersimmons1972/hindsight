@@ -1,8 +1,6 @@
 # PLAN-07 — rebuild the discriminating check by reverting the hunk, not copying the tree
-Issue: petersimmons1972/hindsight#23 · Replaces PR #10 · Status: FOUNDER-BLOCKED — PR #48 was
-closed unmerged after independent review found this universal reverse-hunk design unsound. Do not
-execute §14 until the founder selects a supported-shape gate, language-aware reducer, or
-diagnostic-only behavior. Blocks nothing.
+Issue: petersimmons1972/hindsight#23 · Replaces PR #10 · Status: IN FLIGHT — founder selected
+supported-shape gate (2026-08-03 issue comment). Implementation lands via agent/grok/issue-23-supported-shape.
 
 ## 1. CONTEXT YOU DO NOT HAVE
 

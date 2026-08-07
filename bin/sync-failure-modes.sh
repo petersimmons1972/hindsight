@@ -74,12 +74,49 @@ origin_fragment() {
   printf '%s\n' "${fragment%.git}"
 }
 
-# ── --undo: restore every path listed in the journal ─────────────────────────
+# Allowed write targets are derived ONLY from operator-supplied consumers conf
+# + git toplevel of each entry — never from a journal row (issue #72 / #66).
+# A check whose both sides come from the journal is self-consistent by
+# construction and certifies nothing.
+allowed_destinations() {
+  local conf_path="$1"
+  [[ -f "$conf_path" ]] || return 1
+  local raw repo required_fragment repo_root origin actual_fragment dest
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    [[ "$raw" =~ ^[[:space:]]*($|#) ]] && continue
+    [[ "$raw" == *:* ]] || continue
+    repo="${raw%%:*}"
+    required_fragment="${raw#*:}"
+    [[ -n "$repo" && -n "$required_fragment" && "$required_fragment" != *:* ]] || continue
+    [[ -d "$repo" ]] || continue
+    repo_root="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" || continue
+    origin="$(git -C "$repo" remote get-url origin 2>/dev/null)" || continue
+    actual_fragment="$(origin_fragment "$origin")" || continue
+    [[ "$actual_fragment" == "$required_fragment" ]] || continue
+    dest="$(realpath -m -- "$repo_root/docs/failure-modes.md")"
+    printf '%s\n' "$dest"
+  done < "$conf_path"
+}
+
+# ── --undo: restore only paths the operator conf still authorises ────────────
 if [[ "$MODE" == "undo" ]]; then
   [[ -n "$UNDO_DIR" && -d "$UNDO_DIR" && -f "$UNDO_DIR/manifest.tsv" && ! -L "$UNDO_DIR/manifest.tsv" ]] || {
     printf 'ERROR: undo journal not found: %s\n' "${UNDO_DIR:-}" >&2
     exit 1
   }
+  [[ -f "$CONF" ]] || { printf 'ERROR: consumers config not found: %s\n' "$CONF" >&2; exit 1; }
+
+  declare -A ALLOWED=()
+  local_dest=""
+  while IFS= read -r local_dest || [[ -n "$local_dest" ]]; do
+    [[ -n "$local_dest" ]] || continue
+    ALLOWED["$local_dest"]=1
+  done < <(allowed_destinations "$CONF")
+  if [[ ${#ALLOWED[@]} -eq 0 ]]; then
+    printf 'ERROR: no authorised consumer destinations in %s — refusing undo\n' "$CONF" >&2
+    exit 1
+  fi
+
   line_number=0
   while IFS=$'\t' read -r state target backup extra || [[ -n "${state:-}" ]]; do
     line_number=$((line_number + 1))
@@ -87,18 +124,25 @@ if [[ "$MODE" == "undo" ]]; then
       printf 'ERROR: malformed undo journal at line %s\n' "$line_number" >&2
       exit 1
     }
+    # Containment: journal names the target, conf names the boundary. Both sides
+    # must agree; the journal alone cannot authorise a path (issue #72).
+    normalized="$(realpath -m -- "$target")"
+    if [[ -z "${ALLOWED[$normalized]:-}" ]]; then
+      printf 'ERROR: undo target not authorised by consumers conf: %s\n' "$target" >&2
+      exit 1
+    fi
     case "$state" in
       file)
         [[ -n "$backup" && -f "$UNDO_DIR/$backup" && ! -L "$UNDO_DIR/$backup" ]] || {
           printf 'ERROR: undo snapshot missing: %s\n' "$UNDO_DIR/$backup" >&2
           exit 1
         }
-        mkdir -p "$(dirname "$target")"
-        cp "$UNDO_DIR/$backup" "$target"
+        mkdir -p "$(dirname "$normalized")"
+        cp "$UNDO_DIR/$backup" "$normalized"
         ;;
       absent)
-        if [[ -e "$target" || -L "$target" ]]; then
-          rm -f "$target"
+        if [[ -e "$normalized" || -L "$normalized" ]]; then
+          rm -f "$normalized"
         fi
         ;;
       *)
@@ -195,7 +239,7 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
     continue
   fi
 
-  destination="$repo_root/docs/failure-modes.md"
+  destination="$(realpath -m -- "$repo_root/docs/failure-modes.md")"
   if [[ -L "$repo_root/docs" || -L "$destination" ]]; then
     PLAN_STATUS+=("refused-unsafe-path")
     PLAN_REPO+=("$repo")

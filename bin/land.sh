@@ -73,18 +73,26 @@ fi
 # Plan-index truth (issue #92): CI does not run this checker (workflow edits
 # out of scope). Land must not ship while the local tip's index asserts
 # blockers it cannot back. Invokes the shipped binary by path, never a stub.
-echo "=== plan-index: check-plan-index-truth.sh ==="
-index_log="$(mktemp)"
-trap 'rm -f "$gate_log" "$index_log"' EXIT
-bash "$HERE/check-plan-index-truth.sh" >"$index_log" 2>&1
-index_status=$?
-cat "$index_log"
-echo "=== plan-index exit: $index_status ==="
-if [ "$index_status" -ne 0 ]; then
-  echo ""
-  echo "REFUSING to merge PR #$PR: plan-index truth check failed on this checkout."
-  echo "Fix plans/00-INDEX.md (or DECISIONS/baseline) before landing."
-  exit "$index_status"
+#
+# Skipped when --json-file is set (offline/fixture mode used by
+# bin/tests/test_land.bats) or LAND_SKIP_PLAN_INDEX=1 (tests that stub gh on
+# PATH without a fixture file). Real landings use neither and grade the index.
+if [ -n "$JSON_FILE" ] || [ "${LAND_SKIP_PLAN_INDEX:-0}" = "1" ]; then
+  echo "=== plan-index: SKIPPED (offline/fixture or LAND_SKIP_PLAN_INDEX=1) ==="
+else
+  echo "=== plan-index: check-plan-index-truth.sh ==="
+  index_log="$(mktemp)"
+  trap 'rm -f "$gate_log" "$index_log"' EXIT
+  bash "$HERE/check-plan-index-truth.sh" >"$index_log" 2>&1
+  index_status=$?
+  cat "$index_log"
+  echo "=== plan-index exit: $index_status ==="
+  if [ "$index_status" -ne 0 ]; then
+    echo ""
+    echo "REFUSING to merge PR #$PR: plan-index truth check failed on this checkout."
+    echo "Fix plans/00-INDEX.md (or DECISIONS/baseline) before landing."
+    exit "$index_status"
+  fi
 fi
 
 # Law 3: the undo is printed BEFORE the action, not after.

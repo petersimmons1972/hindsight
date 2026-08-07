@@ -207,6 +207,38 @@ EOF
   [[ "$output" == *"2026-08-04T03:27:31Z"* ]]
 }
 
+
+@test "F3-relabel — HELD with the same claim as FOUNDER-BLOCKED still grades (issue #89)" {
+  # Relabeling FOUNDER-BLOCKED → HELD used to skip is_blocked (*BLOCKED* only),
+  # so a closed own-issue or empty-anchor prose went ungraded (exit 0).
+  api_state 100 closed issue
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | HELD — held pending internal cleanup; see #100 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *STALE* || "$output" == *UNVERIFIABLE* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "F3-relabel — ON HOLD (class token ON) still grades as blocked (issue #89)" {
+  api_state 100 closed issue
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | On hold — pending cleanup work; tracked at #100 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"OK — every"* ]]
+}
+
+@test "F3-relabel — PAUSED with no live anchor is UNVERIFIABLE (issue #89)" {
+  api_state 100 closed issue
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | PAUSED — waiting on internal cleanup with no open anchor | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" == *UNVERIFIABLE* || "$output" == *STALE* ]]
+  [[ "$output" != *"OK — every"* ]]
+}
+
 @test "the two halves of an edge must agree" {
   api_state 100 open issue
   api_state 101 open issue

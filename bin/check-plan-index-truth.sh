@@ -457,7 +457,12 @@ trap 'rm -f "$TMP_ERR" "$TMP_OUT"' EXIT
 
 is_terminal() { case "$1" in COMPLETE|COMPLETED|DONE|WITHDRAWN|CANCELLED|CANCELED|SUPERSEDED) return 0;; *) return 1;; esac; }
 is_complete() { case "$1" in COMPLETE|COMPLETED|DONE) return 0;; *) return 1;; esac; }
-is_blocked()  { [[ "$1" == *BLOCKED* ]]; }
+is_blocked() {
+  case "$1" in
+    *BLOCKED*|HELD|HOLD|PAUSED|PENDING|DEFERRED|WAITING|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # split an edge cell into target tokens; em dash / hyphen / empty = no edges
 edge_targets() {

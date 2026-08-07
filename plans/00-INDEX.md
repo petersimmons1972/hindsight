@@ -30,7 +30,7 @@ have produced the defect.
 | 02 | `02-ingest-consults-corpus.md` | #19 | COMPLETE — PR #28 merged; main guard green | — | — |
 | 03 | `03-recurrence-trend-instrument.md` | #29 | **WITHDRAWN 2026-08-03** — rejected on validity (Codex) and worth (Grok); `docs/DECISIONS.md` rows 22–26 | — | — |
 | 04 | `04-sync-repair-and-distribute.md` | #22 (closes #24) | COMPLETE — dry-run-only repair landed (#83/#85); #22/#24 closed; foreign-repo `--apply` remains out of scope per founder ruling on #22; plan-04 PR stack (#40/#41/#43/#46) rejected | — | — |
-| 05 | `05-enforcement-locality.md` | PR #12 | BLOCKED — issue #20 closed with packet 20-1 / PR #52; remaining locality work was held behind 04 (now COMPLETE); unblock or re-scope against open PR #12 | — | — |
+| 05 | `05-enforcement-locality.md` | — | OPEN — PR #12 closed unmerged (CONFLICTING; workflow edits out of drain scope); locality needs a fresh branch if resumed | — | — |
 | 06 | `06-l3-invariant-ledger.md` | #21 | FOUNDER-BLOCKED — coordinator fixture is merged (#63); W1/W2 artifact contract unresolved per #21; no founder ruling recorded on #21 yet | — | — |
 | 07 | `07-discriminating-rebuild.md` | #23 | FOUNDER-BLOCKED — founder ruling on #23 (2026-08-04) replaces the withdrawn discriminator with a supported-shape gate; PR #48 rejected, could not discriminate import-only files | — | — |
 | 08 | `08-reconcile-partial-is-not-pass.md` | #25 | COMPLETE — PR #26 merged, main green | — | — |

@@ -87,7 +87,12 @@ nothing else**, plus the validator that makes a third state impossible.
 /home/psimmons/projects/hindsight/pipeline/tests/test_validate_l3.py
 /home/psimmons/projects/hindsight/pipeline/tests/fixtures/l3_ground_truth.jsonl
 /home/psimmons/projects/hindsight/docs/L3.md
+/home/psimmons/projects/hindsight/pipeline/L3/work/
 ```
+
+A trailing `/` marks a directory entry: it authorises the subtree beneath it and costs one line
+against the advisory ceiling (founder ruling 2026-08-04 on #71). It is not a licence to touch
+paths outside that subtree.
 
 ## 8. RED-FIRST PROCEDURE
 
@@ -120,9 +125,23 @@ Report survivors explicitly.
 
 ## 11. UNDO
 
+Static, explicitly listed paths only — do not parse this document at runtime, do not derive the
+path set from §7, and do not `rm -rf` a tree (founder ruling 2026-08-04 on #71). `git branch -d`
+(not `-D`) so a branch with unrecovered commits refuses to delete.
+
 ```bash
-cd /home/psimmons/projects/hindsight && git checkout -- pipeline/ docs/ && rm -rf pipeline/L3 && \
-  git checkout main && git branch -D feat/21-l3-invariant-ledger
+cd /home/psimmons/projects/hindsight
+git checkout HEAD -- \
+  pipeline/validate_l3.py \
+  pipeline/tests/test_validate_l3.py \
+  pipeline/tests/fixtures/l3_ground_truth.jsonl \
+  docs/L3.md \
+  2>/dev/null || true
+# Untracked work products this plan creates (explicit paths only).
+rm -f pipeline/L3/invariants.jsonl
+git clean -fd -- pipeline/L3/work 2>/dev/null || true
+git checkout main
+git branch -d feat/21-l3-invariant-ledger 2>&1 || true
 ```
 No file outside the repo is written; in particular nothing under `~/.claude/`.
 
@@ -143,7 +162,8 @@ First line **literally** `VERDICT: CONFIRMED_GOOD` or `VERDICT: DEFECTIVE`, then
 ```
 Work in /home/psimmons/projects/hindsight on branch feat/21-l3-invariant-ledger off main.
 Read /home/psimmons/projects/hindsight/plans/06-l3-invariant-ledger.md in full and execute it exactly
-as written. It is self-contained. Modify ONLY the five files in section 7.
+as written. It is self-contained. Modify ONLY the paths listed in section 7 (five files plus the
+pipeline/L3/work/ directory).
 Every L3 row resolves to `machine` or `judgment` -- there is no third state, and "documented" is not
 one. Never invent a path to fill a field; `enforcement: null` and `judgment` are correct answers.
 Never write to ~/.claude/ -- emit a diff. Complete section 8 first and paste the failing run.

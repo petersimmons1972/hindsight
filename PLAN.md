@@ -64,7 +64,7 @@ no pre-registered metric of its own — it is not a finding.
 ## Plans
 
 Each is self-contained and executable by a model with zero conversational context
-(`codex exec "$(cat plans/NN-....md)"`). Ceiling: **≤250 lines, ≤5 files, exactly 1 issue.**
+(`codex exec "$(cat plans/NN-....md)"`). Ceiling (advisory target): **≤250 lines, ≤6 §7 paths, exactly 1 issue.**
 
 | # | plan | issue | status |
 |---|---|---|---|
@@ -149,7 +149,7 @@ canonical L2 output. Deterministic mechanical L1 subsets are replayed against co
 snapshots; non-mechanical L1 rows are covered by explicit source/revision hashes, not falsely
 claimed regenerated. CI must fail on a changed L1 digest, missing/extra embedding ID, changed
 vector/config provenance, or a changed L2 partition; it must never call the HTTP backend. Split
-this into ≤5-file packets if its precise artifact formats exceed the plan ceiling.
+this into ≤6-path packets if its precise artifact formats exceed the plan ceiling.
 
 Serial throughout (R8). Schedule 02, 04, 06, 07 as cross-vendor triangle packets — the QA hypothesis
 is stuck at N=1 against a pre-registered rule needing ≥5, and four packets reaches it at zero extra
@@ -167,7 +167,7 @@ becomes an operation; anything after that is new work needing a new decision, no
 | X2 | Every claim is a command that has been run | `bash bin/verify-ledger.sh` → 0 |
 | X3 | The floor reaches its consumers and each verifies its own claims | dry-run diff empty for all 12; `--require-attestations --max-age-days 14` → 0 |
 | X4 | Recurrence trend measured against a pre-registered rule | `python3 pipeline/recurrence_trend.py --prereg pipeline/recurrence/PREREG.md` → per-family pre/post with denominators **and fire counts**; exit 1 if any family lacks a fire count |
-| X5 | No unmechanized rule in this repo's own governance | `bash bin/check-plan-preamble.sh && python3 pipeline/validate_l3.py` |
+| X5 | Plan packets keep required structure; L3 validator runs when present | `bash bin/check-plan-preamble.sh` (structure + advisory ceiling); `python3 pipeline/validate_l3.py` when `pipeline/L3/invariants.jsonl` exists |
 | X6 | The terminal question has a written answer, whichever way it points | `docs/TERMINAL-ANSWER.md` exists, cites X4 by commit hash, states REDUCED / RELOCATED / UNDERPOWERED |
 
 ## Out of scope

@@ -14,7 +14,7 @@ PLANS="$ROOT/plans"
 INV="$ROOT/docs/INVARIANTS.md"
 MAX_LINES="${MAX_LINES:-250}"
 MAX_BYTES="${MAX_BYTES:-12288}"
-MAX_FILES="${MAX_FILES:-5}"
+MAX_FILES="${MAX_FILES:-6}"
 
 fails=0; checked=0; skips=0
 fail() { printf 'FAIL  %s\n' "$*" >&2; fails=$((fails+1)); }
@@ -67,12 +67,16 @@ for p in "$PLANS"/[0-9][0-9]-*.md; do
 
   # ---- §7 file count
   n_files=$(awk '/^## 7\./{f=1;next} /^## 8\./{f=0} f' "$p" | grep -cE '^/home/psimmons/' || true)
+  # Ceiling is advisory (founder ruling 2026-08-04 on #71): directory entries in §7
+  # authorise a subtree at one line of count, so a hard fail here claims an enforcement
+  # the counting cannot deliver. Over-target is a WARN; empty §7 remains a FAIL.
   if [ "$n_files" -ge 1 ] && [ "$n_files" -le "$MAX_FILES" ]; then
-    pass "$name §7 names $n_files file(s)"
+    pass "$name §7 names $n_files path(s) (target ≤$MAX_FILES)"
   elif [ "$n_files" -eq 0 ]; then
     fail "$name §7 names no absolute paths -- blast radius is unbounded"
   else
-    fail "$name §7 names $n_files files > $MAX_FILES"
+    printf 'WARN  %s §7 names %s paths > advisory target %s\n' "$name" "$n_files" "$MAX_FILES" >&2
+    pass "$name §7 names $n_files path(s) (over advisory target $MAX_FILES)"
   fi
 
   # ---- §5/§6 carry the canonical rule ids verbatim, not paraphrased

@@ -189,4 +189,23 @@ set -e
 [[ $ec -ne 0 ]] || fail "empty consumers conf should fail, got 0"
 assert_contains 'attempted=0' "$output"
 
-printf 'PASS: sync-failure-modes contract (issue #22)\n'
+# ── 7. Issue #72: journal cannot authorise an out-of-tree undo target ────────
+# A containment check whose both sides come from the journal certifies nothing.
+# --undo must re-derive the boundary from operator conf + git toplevel.
+victim="$TMP/outside-victim"
+printf 'SAFE\n' > "$victim"
+evil_journal="$TMP/evil-journal"
+mkdir -p "$evil_journal"
+printf 'EVIL\n' > "$evil_journal/file-0"
+printf 'file\t%s\tfile-0\n' "$victim" > "$evil_journal/manifest.tsv"
+set +e
+HINDSIGHT_CONSUMERS_CONF="$conf" HINDSIGHT_CATALOG_SOURCE="$source" \
+  "$SYNC" --undo "$evil_journal" >"$output" 2>&1
+ec=$?
+set -e
+[[ $ec -ne 0 ]] || fail "poisoned journal undo must refuse, got 0; out=$(cat "$output")"
+assert_contains 'not authorised' "$output"
+[[ "$(cat "$victim")" == "SAFE" ]] || fail "poisoned journal overwrote path outside consumer roots"
+# Legitimate undo of an authorised destination still works (section 5 above).
+
+printf 'PASS: sync-failure-modes contract (issues #22 + #72)\n'

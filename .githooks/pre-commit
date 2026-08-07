@@ -4,6 +4,29 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py"
 
+# Plan-index truth (issue #92): load-bearing when the index or its evidence
+# inputs are staged. Catalog-only commits skip this to stay cheap; a silent
+# green index is the failure mode this call exists to catch.
+INDEX_INPUTS=(
+    plans/00-INDEX.md
+    docs/DECISIONS.md
+    conf/plan-index-expected-ids.conf
+)
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    index_touched=0
+    for f in "${INDEX_INPUTS[@]}"; do
+        if ! git -C "$REPO_ROOT" diff --quiet --cached -- "$f" 2>/dev/null \
+            || ! git -C "$REPO_ROOT" diff --quiet -- "$f" 2>/dev/null; then
+            index_touched=1
+            break
+        fi
+    done
+    if (( index_touched )); then
+        echo "pre-commit: running check-plan-index-truth.sh (index inputs staged or dirty)"
+        bash "$REPO_ROOT/bin/check-plan-index-truth.sh"
+    fi
+fi
+
 # Derived artifacts only need regeneration when a canonical input changed.
 # This hook is also called directly by add-failure-mode.sh after its write; in
 # that path the working-tree diff makes the full loop run before success.

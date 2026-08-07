@@ -116,7 +116,10 @@ EOF
 
 @test "L10 (S6): --repo is forwarded to the gate — a different repo's checks must never certify this PR" {
   _fake_gh 0
-  PATH="$FAKE_BIN:$PATH" run bash "$LAND" 99 --repo other/elsewhere
+  # LAND_SKIP_PLAN_INDEX: this case stubs gh on PATH without --json-file; the
+  # plan-index checker would otherwise call the stub and fail closed.
+  PATH="$FAKE_BIN:$PATH" LAND_SKIP_PLAN_INDEX=1 \
+    run bash "$LAND" 99 --repo other/elsewhere
   [ "$status" -eq 0 ]
   grep -q -- "--repo other/elsewhere" "$GH_LOG"
   ! grep -q -- "--repo petersimmons1972/hindsight" "$GH_LOG"

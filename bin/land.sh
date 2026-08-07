@@ -70,6 +70,23 @@ if [ "$gate_status" -ne 0 ]; then
   exit "$gate_status"
 fi
 
+# Plan-index truth (issue #92): CI does not run this checker (workflow edits
+# out of scope). Land must not ship while the local tip's index asserts
+# blockers it cannot back. Invokes the shipped binary by path, never a stub.
+echo "=== plan-index: check-plan-index-truth.sh ==="
+index_log="$(mktemp)"
+trap 'rm -f "$gate_log" "$index_log"' EXIT
+bash "$HERE/check-plan-index-truth.sh" >"$index_log" 2>&1
+index_status=$?
+cat "$index_log"
+echo "=== plan-index exit: $index_status ==="
+if [ "$index_status" -ne 0 ]; then
+  echo ""
+  echo "REFUSING to merge PR #$PR: plan-index truth check failed on this checkout."
+  echo "Fix plans/00-INDEX.md (or DECISIONS/baseline) before landing."
+  exit "$index_status"
+fi
+
 # Law 3: the undo is printed BEFORE the action, not after.
 cat <<UNDO
 

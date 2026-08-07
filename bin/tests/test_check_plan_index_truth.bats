@@ -701,6 +701,37 @@ EOF
   [[ "$output" != *"OK — every"* ]]
 }
 
+@test "S1b — a casual #own mention in an APPLIED DECISIONS row does not bind (issue #88)" {
+  # F1: body ~ "#<own>" matched "noted while triaging #100" and discharged a
+  # FOUNDER-BLOCKED plan whose own issue already carries a real ruling that
+  # the status cell never properly cites. Bind requires plans/<id> or a
+  # decision-shaped phrase (issue #N / ruling on #N), not a free mention.
+  api_state 100 open issue
+  ruling_on 100 2026-08-04T03:27:31Z
+  EXTRA_DECISION='| 22 | 2026-08-03 | plan 03 is WITHDRAWN, mechanize first (noted while triaging #100) | APPLIED | `plans/03-recurrence.md` status line and §12 |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — W1/W2 contract unresolved per #100; scope set by docs/DECISIONS.md row 22 | — | — |'
+  run_checker
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"OK — every"* ]]
+  # Must not treat the casual mention as a bound citation of a live ruling.
+  [[ "$output" == *"names neither"* || "$output" == *STALE* || "$output" == *UNVERIFIABLE* ]]
+}
+
+@test "S1c — decision-shaped issue #own in evidence still binds (issue #88 both directions)" {
+  # Live #100 in the status cell keeps the BLOCKED anchor; DECISIONS row 22
+  # binds via "issue #100" (not a free #100 mention) and is APPLIED, so the
+  # founder-ruling escape hatch fires without requiring a second citation form.
+  api_state 100 open issue
+  ruling_on 100 2026-08-04T03:27:31Z
+  EXTRA_DECISION='| 22 | 2026-08-03 | dry-run only for foreign-repo sync | APPLIED | issue #100 founder ruling; evidence in PR stack |'
+  write_decisions
+  write_index '| 01 | `a.md` | #100 | FOUNDER-BLOCKED — tracked at #100; scope set by docs/DECISIONS.md row 22 | — | — |'
+  run_checker
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK — every"* ]]
+}
+
 @test "S2 — a ruling on an issue that is not this row's own artifact does not discharge it" {
   api_state 100 open issue
   api_state 102 open issue

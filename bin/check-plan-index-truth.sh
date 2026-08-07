@@ -561,6 +561,10 @@ decisions_row_state() {  # $1 = row id -> its state cell, or empty if no such ro
 # Read from the ruling text and the evidence cell, the same two fields
 # applied_rows_naming reads, so "binds" and "names" cannot drift apart.
 decisions_row_binds() {  # $1 = decisions row, $2 = plan id, $3 = own issue or ""
+  # A free `#N` mention is not a bind (issue #88 / #69 F1): "noted while
+  # triaging #21" must not discharge plan 06. Own-issue binds require a
+  # decision-shaped phrase (issue #N / ruling on #N / founder ruling on #N).
+  # Naming plans/<id> remains the strongest bind and is unchanged.
   awk -F'|' -v want="$1" -v id="$2" -v own="$3" '
     /^[[:space:]]*\|/ {
       if (NF < 6) next
@@ -568,7 +572,11 @@ decisions_row_binds() {  # $1 = decisions row, $2 = plan id, $3 = own issue or "
       if (n != want) next
       body = $4 $6
       if (body ~ ("plans/" id)) { print "bound"; exit }
-      if (own != "" && body ~ ("#" own "([^0-9]|$)")) { print "bound"; exit }
+      if (own != "") {
+        if (body ~ ("issue #" own "([^0-9]|$)")) { print "bound"; exit }
+        if (body ~ ("ruling on #" own "([^0-9]|$)")) { print "bound"; exit }
+        if (body ~ ("founder ruling on #" own "([^0-9]|$)")) { print "bound"; exit }
+      }
       exit
     }' "$DECISIONS"
 }

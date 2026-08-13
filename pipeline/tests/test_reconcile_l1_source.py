@@ -155,6 +155,34 @@ def test_unscoped_run_checks_every_source_and_fails_on_the_short_one(
     )
 
 
+def test_gate_keeps_the_full_report_but_only_blocks_its_named_source(
+    fixture_repo: Path,
+) -> None:
+    """A write gate may narrow exit status without hiding sibling drift (#101)."""
+    result = _run(
+        fixture_repo / "pipeline" / "reconcile_l1.py",
+        "--gate",
+        "homelab-canon",
+    )
+
+    assert result.returncode == 0
+    assert "SHORT" in result.stdout
+    assert FIXTURE_MISSING_ID in result.stdout
+    assert "GATE: COMPLETE across homelab-canon; exit 0" in result.stdout
+    assert SCOPE_MARKER not in result.stdout, (
+        "--gate changes blocking semantics only; it must not omit source reports"
+    )
+
+
+def test_gate_rejects_unknown_or_empty_source_names(fixture_repo: Path) -> None:
+    for value in ("", "no-such", "homelab-canon,no-such"):
+        result = _run(
+            fixture_repo / "pipeline" / "reconcile_l1.py", "--gate", value
+        )
+        assert result.returncode == 2, value
+        assert "GATE:" not in result.stdout
+
+
 def test_naming_every_source_is_equivalent_to_the_unscoped_run(fixture_repo: Path) -> None:
     args: list[str] = []
     for slug in ALL_SLUGS:

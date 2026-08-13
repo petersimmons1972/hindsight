@@ -15,7 +15,9 @@ entries are machine-enumerable are extracted mechanically outright -- no model i
 the loop -- because their structure already encodes the answer.
 
 Usage:  python3 reconcile_l1.py [--json] [--allow-partial] [--source SLUG ...]
-Exit 0 only for COMPLETE, or for PARTIAL when explicitly waived.
+        [--gate SLUG[,SLUG...] ...]
+Exit 0 only when the gate is COMPLETE, or when its PARTIAL result is explicitly
+waived. Without `--gate`, every selected source is gated.
 
 `--source` narrows the run to named sources. It exists because the corpus is a
 union of five independently-owned sources, and a gate that reconciles ALL of
@@ -24,6 +26,11 @@ sibling repo's backlog made `bin/add-failure-mode.sh` unable to add anything at
 all (issue #73). Narrowing is never silent -- a scoped run prints exactly which
 sources it did not look at, and an unknown slug is a hard error rather than an
 empty scope that would certify nothing while exiting 0.
+
+`--gate` is deliberately different: it still reports every selected source,
+but narrows only the exit-status decision. This lets a canonical catalog write
+prove that its own `homelab-canon` extract survived while continuing to expose
+the separately tracked sibling-consumer sync backlog (hindsight#101).
 """
 from __future__ import annotations
 
@@ -128,6 +135,13 @@ def main() -> int:
         help="restrict the run to this source (repeatable). The verdict then "
              "covers only the named sources, and the scope is printed.",
     )
+    ap.add_argument(
+        "--gate",
+        action="append",
+        metavar="SLUG[,SLUG...]",
+        help="gate exit status on these comma-separated source slugs while "
+             "continuing to report every selected source (repeatable)",
+    )
     args = ap.parse_args()
 
     selected = list(ENUMERABLE)
@@ -140,6 +154,25 @@ def main() -> int:
             return 2
         selected = [s for s in ENUMERABLE if s in set(args.source)]
     skipped = [s for s in ENUMERABLE if s not in selected]
+
+    gate_requested = []
+    for value in args.gate or []:
+        gate_requested.extend(value.split(","))
+    if gate_requested:
+        invalid_gates = sorted({slug for slug in gate_requested if slug not in ENUMERABLE})
+        if invalid_gates:
+            printable = ", ".join(repr(slug) for slug in invalid_gates)
+            print(f"ERROR: unknown --gate: {printable}\n"
+                  f"  known sources: {', '.join(ENUMERABLE)}", file=sys.stderr)
+            return 2
+        excluded_gates = sorted(set(gate_requested) - set(selected))
+        if excluded_gates:
+            print(f"ERROR: --gate names source(s) excluded by --source: "
+                  f"{', '.join(excluded_gates)}", file=sys.stderr)
+            return 2
+        gated = [slug for slug in selected if slug in set(gate_requested)]
+    else:
+        gated = selected
 
     report, short = [], False
     n_resolved = 0
@@ -171,6 +204,41 @@ def main() -> int:
         verdict = "PARTIAL"
     else:
         verdict = "COMPLETE"
+
+    gated_report = [r for r in report if r["slug"] in gated]
+    gated_unresolved = [r["slug"] for r in gated_report if not r["resolved"]]
+    gated_short = [r["slug"] for r in gated_report if r["missing"]]
+    if not any(r["resolved"] for r in gated_report):
+        gate_verdict = "UNVERIFIED"
+    elif gated_short:
+        gate_verdict = "SHORT"
+    elif gated_unresolved:
+        gate_verdict = "PARTIAL"
+    else:
+        gate_verdict = "COMPLETE"
+
+    gate_sources = ", ".join(gated)
+    # Non-canonical-source SHORT results stay visible above as health evidence.
+    # They are ongoing consumer-sync backlog, not a canonical-write blocker;
+    # only `--gate` chooses which source(s) may determine this invocation's exit
+    # status (hindsight#101).
+    if gate_verdict == "COMPLETE":
+        gate_message = f"GATE: COMPLETE across {gate_sources}; exit 0"
+    elif gate_verdict == "SHORT":
+        gate_message = (
+            f"GATE: SHORT across {gate_sources}; blocking source(s): "
+            f"{', '.join(gated_short)}"
+        )
+    elif gate_verdict == "PARTIAL":
+        gate_message = (
+            f"GATE: PARTIAL across {gate_sources}; blocking unresolved source(s): "
+            f"{', '.join(gated_unresolved)}"
+        )
+    else:
+        gate_message = (
+            f"GATE: UNVERIFIED across {gate_sources}; blocking source(s): "
+            f"{', '.join(gated_unresolved)}"
+        )
 
     if args.json:
         print(json.dumps(report, indent=2))
@@ -207,21 +275,24 @@ def main() -> int:
             "  100% coverage. They were recovered only because a model pass saw them.\n"
             "  COMPLETE means 'no enumerable entry is missing', never 'nothing is missing'."
         )
+        print(f"\n{gate_message}")
     if skipped and args.json:
         # The scope narrowing must be visible in every output mode, or a JSON
         # consumer reads a COMPLETE that silently covered a subset.
         print(f"SCOPE: --source restricted this run to {len(selected)} of "
               f"{len(ENUMERABLE)} sources; NOT CHECKED: {', '.join(skipped)}.",
               file=sys.stderr)
-    if verdict == "PARTIAL" and args.allow_partial:
+    if args.json:
+        print(gate_message, file=sys.stderr)
+    if gate_verdict == "PARTIAL" and args.allow_partial:
         stream = sys.stderr if args.json else sys.stdout
         print(
             f"WAIVER: --allow-partial accepts this PARTIAL result; "
-            f"{n_unresolved} unresolved source(s) were NOT checked.",
+            f"{len(gated_unresolved)} unresolved source(s) were NOT checked.",
             file=stream,
         )
         return 0
-    return 0 if verdict == "COMPLETE" else 1
+    return 0 if gate_verdict == "COMPLETE" else 1
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ _NEGATION = re.compile(
 )
 _CI = re.compile(r"\bCI\b")
 _SOURCE_ARG = re.compile(r"--source[=\s]+(?:'([^']*)'|\"([^\"]*)\"|([^\s\\]+))")
+_GATE_ARG = re.compile(r"--gate[=\s]+(?:'([^']*)'|\"([^\"]*)\"|([^\s\\]+))")
 
 
 # ── evidence loaders: an unreadable evidence source must FAIL, never skip ─────
@@ -91,6 +92,10 @@ def _reconcile_commands(workflow: str) -> list[str]:
 
 def _scoped_sources(command: str) -> list[str]:
     return ["".join(match) for match in _SOURCE_ARG.findall(command)]
+
+
+def _gated_sources(command: str) -> list[str]:
+    return [slug for match in _GATE_ARG.findall(command) for slug in "".join(match).split(",")]
 
 
 def _preceding_comment_block(path: Path, needle: str) -> str:
@@ -275,8 +280,8 @@ def test_add_failure_mode_comment_matches_what_ci_really_checks() -> None:
     )
 
 
-def test_every_call_site_scopes_to_slugs_the_reconciler_knows() -> None:
-    """A typo'd slug exits 2, which would break the add loop and the hook."""
+def test_every_call_site_names_only_slugs_the_reconciler_knows() -> None:
+    """A typo'd source or gate slug exits 2, breaking its caller loudly."""
     slugs = _enumerable_slugs()
     for path in (WORKFLOW, PRE_COMMIT, ADD_TOOL):
         lines = _read(path).splitlines()
@@ -291,6 +296,13 @@ def test_every_call_site_scopes_to_slugs_the_reconciler_knows() -> None:
             j += 1
             command = command[:-1] + " " + lines[j].strip()
         named = _scoped_sources(command)
-        assert named, f"{path}: reconcile invocation carries no --source scoping"
+        if path == ADD_TOOL:
+            assert not named, (
+                f"{path}: the per-write path must report every source, not scope it"
+            )
+            named = _gated_sources(command)
+            assert named, f"{path}: reconcile invocation carries no --gate"
+        else:
+            assert named, f"{path}: reconcile invocation carries no --source scoping"
         unknown = sorted(set(named) - slugs)
-        assert not unknown, f"{path}: unknown --source slug(s) {unknown}"
+        assert not unknown, f"{path}: unknown reconcile slug(s) {unknown}"

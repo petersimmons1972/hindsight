@@ -364,14 +364,14 @@ SH
   [ "$(file_digest "$LEDGER")" = "$changed_ledger" ]
 }
 
-# ── Full loop against the REAL reconciler (issue #73) ─────────────────────────
+# ── Full loop against the REAL reconciler (issues #73 and #101) ───────────────
 # Every full-loop test above stubs pipeline/reconcile_l1.py, so the loop's last
 # step was only ever exercised as a fixture that prints COMPLETE. On a real
 # checkout it exited 1 -- an unrelated sibling source was SHORT -- and the add
-# rolled itself back, so the catalog could not be added to at all. These two
-# tests run the shipped reconciler: one proves an unrelated source's backlog no
-# longer blocks the add, the other proves the gate still fails the add when the
-# source the add itself writes is short.
+# rolled itself back, so the catalog could not be added to at all. These tests
+# run the shipped reconciler: one proves an unrelated source's backlog remains
+# visible but no longer blocks the add, the other proves the gate still fails
+# the add when the source the add itself writes is short.
 make_real_reconcile_repo() {
   make_staged_repo
   cp "$ROOT/pipeline/reconcile_l1.py" "$STAGE/pipeline/reconcile_l1.py"
@@ -451,16 +451,19 @@ PY
 
   # Output only the shipped reconciler can produce: a per-source coverage table,
   # a resolved-source count, and the standing scope-limit footer. The stub
-  # printed one line and none of this.
-  [[ "$output" == *"COMPLETE: 0 enumerable entries unaccounted for (2/2 sources resolved)"* ]]
+  # printed one line and none of this.  `fleet-orch` is intentionally SHORT,
+  # but the add gate is only the canonical catalog the loop just regenerated.
+  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for (5/5 sources resolved)"* ]]
   [[ "$output" == *"SCOPE LIMIT"* ]]
   [[ "$output" == *"homelab-canon"* ]]
   [[ "$output" == *"fleet-dispatch-schema"* ]]
-  # ... and it must say which sources it did not look at.
-  [[ "$output" == *"NOT CHECKED by this run"* ]]
+  # The full health report must keep the sibling backlog visible; only the
+  # exit-status gate is narrowed for this one canonical write (hindsight#101).
   [[ "$output" == *"fleet-main"* ]]
   [[ "$output" == *"fleet-orch"* ]]
   [[ "$output" == *"claude-codex-integration"* ]]
+  [[ "$output" == *"OPS-99"* ]]
+  [[ "$output" == *"GATE: COMPLETE across homelab-canon; exit 0"* ]]
 
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
@@ -474,7 +477,7 @@ PY
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
 }
 
-@test "an unrelated source's backlog does not block a canonical add" {
+@test "a sibling shortfall stays reported but does not block a canonical add" {
   make_real_reconcile_repo
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
@@ -485,9 +488,11 @@ PY
   grep -Fq '| FM-002 |' "$STAGE/catalog/failure-modes.md"
   [ "$(tail -n 1 "$STAGE/catalog/id-ledger.txt")" = "FM-002" ]
   [[ "$output" != *"applying undo journal"* ]]
-  # The narrowing must be stated, never silent.
-  [[ "$output" == *"NOT CHECKED by this run"* ]]
+  # The full report retains the real sibling shortfall; it is explicitly
+  # non-blocking only because this add did not write fleet-orch (hindsight#101).
   [[ "$output" == *"fleet-orch"* ]]
+  [[ "$output" == *"OPS-99"* ]]
+  [[ "$output" == *"GATE: COMPLETE across homelab-canon; exit 0"* ]]
 
   # And the drift it skipped is still detectable by the unscoped run: the fix
   # unblocks the add, it does not hide the backlog.
@@ -508,6 +513,7 @@ PY
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"SHORT"* ]]
+  [[ "$output" == *"GATE: SHORT across homelab-canon; blocking source(s): homelab-canon"* ]]
   [[ "$output" == *"applying undo journal"* ]]
   [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
   [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]

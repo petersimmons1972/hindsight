@@ -460,21 +460,18 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
     python3 "$REPO_ROOT/pipeline/cluster.py"
-    # Reconcile ONLY the two L1 artifacts this loop just regenerated -- the same
-    # two the undo journal snapshots above. Reconciling all five sources coupled
-    # every add to the state of sibling repos this add never touched: a 12-entry
-    # backlog in `fleet-orch` made the catalog unable to accept ANY new row, and
-    # the add rolled itself back every time (issue #73). The gate still bites on
-    # what the add can actually have broken; `--source` prints what it skipped.
+    # Report every L1 source so consumer-sync drift remains a visible health
+    # signal, but gate this write only on homelab-canon: it is the sole source
+    # derived from the catalog row this loop just wrote. Sibling shortfalls are
+    # ongoing backlog, tracked separately rather than allowed to roll back a
+    # correct canonical write (hindsight#101).
     #
-    # CI (guard.yml) reconciles homelab-canon only -- the one source its runner
-    # checks out. fleet-dispatch-schema is scoped here for this loop's own
-    # regenerated artifacts, but CI does NOT verify it, and CI does NOT verify
-    # fleet-main, fleet-orch, or claude-codex-integration either. There is no
-    # unscoped run left that humans or CI use for corpus-wide drift; that gap
-    # is a known, ledgered limitation, not something this loop or CI covers.
-    python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
-        --source homelab-canon --source fleet-dispatch-schema
+    # CI (guard.yml) scopes its own reconciliation to homelab-canon because it
+    # checks out only this repository. CI does NOT verify fleet-main,
+    # fleet-orch, claude-codex-integration, or fleet-dispatch-schema; this
+    # write-time full report makes their current health visible but does not
+    # claim that the canonical-write gate resolves their consumer-sync backlog.
+    python3 "$REPO_ROOT/pipeline/reconcile_l1.py" --gate homelab-canon
 else
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
 fi

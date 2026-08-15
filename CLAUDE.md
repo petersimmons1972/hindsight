@@ -23,6 +23,15 @@ repo exists and what the guard enforces.
 - **An `enforcement` value of `null` is a correct answer.** Do not invent a test
   or hook path to fill a field. A fabricated mechanism is worse than an honest
   gap, because it reads as covered.
+- **Never `Edit`/`Write` `catalog/failure-modes.md`, `catalog/id-ledger.txt`,
+  `catalog/criticality.jsonl`, `docs/POINTER.md`, or `docs/HIGH.md` directly.**
+  Write through `bin/add-failure-mode.sh` (tags criticality at filing time and
+  regenerates the pointer files for you); read through
+  `bin/query-failure-modes.sh` (never `Read`/`cat` `docs/HIGH.md` whole — it's
+  query-only by design). A hand-edit sitting uncommitted in the working tree is
+  exactly how two agents collide on this repo: the pre-commit hook catches
+  drift between `criticality.jsonl` and the pointer files at commit time, but
+  nothing catches it before then, so use the scripts even for a quick fix.
 
 ## Working on the guard
 

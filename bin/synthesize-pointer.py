@@ -132,6 +132,9 @@ def main() -> int:
     critical = dedup_family(critical, fm_to_cluster, cluster_rep)
     high = dedup_family(high, fm_to_cluster, cluster_rep)
 
+    POINTER_OUT.parent.mkdir(parents=True, exist_ok=True)
+    HIGH_OUT.parent.mkdir(parents=True, exist_ok=True)
+
     pointer_lines = [
         "# hindsight — CRITICAL pointer",
         "",

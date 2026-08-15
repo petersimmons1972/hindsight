@@ -175,6 +175,7 @@ make_staged_repo() {
   cp "$TOOL" "$STAGE/bin/add-failure-mode.sh"
   cp "$ROOT/.githooks/pre-commit" "$STAGE/.githooks/pre-commit"
   cp "$ROOT/bin/similar-causes.py" "$STAGE/bin/similar-causes.py"
+  cp "$ROOT/bin/synthesize-pointer.py" "$STAGE/bin/synthesize-pointer.py"
   printf '%s\n' '| FM-001 | A | old | old | Judgment |' >"$STAGE/catalog/failure-modes.md"
   printf '%s\n' 'FM-001' >"$STAGE/catalog/id-ledger.txt"
   printf '%s\n' '{"id":"seed","instance":"terminal success proof finished","source_path":"fixture"}' \
@@ -310,6 +311,27 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
     bash "$STAGE/bin/add-failure-mode.sh" --undo "$journal"
   [ "$status" -eq 0 ]
   [ ! -s "$STAGE/catalog/criticality.jsonl" ]
+}
+
+@test "canonical add regenerates POINTER.md/HIGH.md and undo reverts them too" {
+  make_staged_repo
+  trace="$WORK/pointer-trace"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t CRITICAL "pointer sync on write" --recurrence-of none
+
+  [ "$status" -eq 0 ]
+  [ -f "$STAGE/docs/POINTER.md" ]
+  [ -f "$STAGE/docs/HIGH.md" ]
+  grep -Fq 'FM-002' "$STAGE/docs/POINTER.md"
+
+  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
+  [ -n "$journal" ]
+  run env CATALOG="$STAGE/catalog/failure-modes.md" \
+    bash "$STAGE/bin/add-failure-mode.sh" --undo "$journal"
+  [ "$status" -eq 0 ]
+  [ ! -e "$STAGE/docs/POINTER.md" ]
+  [ ! -e "$STAGE/docs/HIGH.md" ]
 }
 
 @test "dot-dot canonical catalog alias still runs the whole loop" {
@@ -643,4 +665,35 @@ PY
   run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]
   [ -z "$(git -C "$STAGE" diff --name-only)" ]
+}
+
+@test "pre-commit fails loud when criticality.jsonl changes but pointer files are stale" {
+  make_staged_repo
+  mkdir -p "$STAGE/docs"
+  printf '%s\n' '{"fm_id":"FM-001","tier":"CRITICAL","generality":"BROAD","rationale":"seed","evidence":"seed","mechanize_action":"n/a","scored_by":"seed","date":"2026-01-01"}' \
+    >"$STAGE/catalog/criticality.jsonl"
+  ( cd "$STAGE" && python3 bin/synthesize-pointer.py >/dev/null )
+  git -C "$STAGE" init -q
+  git -C "$STAGE" config user.name fixture
+  git -C "$STAGE" config user.email fixture@example.invalid
+  git -C "$STAGE" add .
+  git -C "$STAGE" commit -q --no-verify -m baseline
+
+  # Hand-edit criticality.jsonl without regenerating the pointer files -- the
+  # exact drift a hand-edit (rather than add-failure-mode.sh) can introduce.
+  # The tier flips CRITICAL -> HIGH so the rendered output actually changes
+  # (POINTER.md loses the entry, HIGH.md gains it), not just an unrendered
+  # field like rationale.
+  printf '%s\n' '{"fm_id":"FM-001","tier":"HIGH","generality":"BROAD","rationale":"hand-edited","evidence":"hand-edited, not resynthesized","mechanize_action":"n/a","scored_by":"hand-edit","date":"2026-01-02"}' \
+    >"$STAGE/catalog/criticality.jsonl"
+  git -C "$STAGE" add catalog/criticality.jsonl
+
+  run bash "$STAGE/.githooks/pre-commit"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"docs/POINTER.md / docs/HIGH.md are stale"* ]]
+
+  ( cd "$STAGE" && python3 bin/synthesize-pointer.py >/dev/null )
+  git -C "$STAGE" add docs/POINTER.md docs/HIGH.md
+  run bash "$STAGE/.githooks/pre-commit"
+  [ "$status" -eq 0 ]
 }

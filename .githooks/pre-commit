@@ -30,38 +30,58 @@ fi
 # Derived artifacts only need regeneration when a canonical input changed.
 # This hook is also called directly by add-failure-mode.sh after its write; in
 # that path the working-tree diff makes the full loop run before success.
+# This used to be an early `exit 0` for the whole hook when the catalog was
+# unchanged -- wrapped in an `if` instead so the criticality.jsonl / pointer-
+# file check below always runs too, independent of whether the catalog itself
+# changed in this commit.
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    && git -C "$REPO_ROOT" diff --quiet -- catalog/failure-modes.md catalog/id-ledger.txt \
-    && git -C "$REPO_ROOT" diff --cached --quiet -- catalog/failure-modes.md catalog/id-ledger.txt; then
-    exit 0
+    && { ! git -C "$REPO_ROOT" diff --quiet -- catalog/failure-modes.md catalog/id-ledger.txt \
+         || ! git -C "$REPO_ROOT" diff --cached --quiet -- catalog/failure-modes.md catalog/id-ledger.txt; }; then
+    python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
+    python3 "$REPO_ROOT/pipeline/cluster.py"
+    # Reconcile ONLY the two L1 sources the regeneration above actually writes --
+    # the same two named in GENERATED below. The unscoped run also reads four
+    # sibling repos this commit never touched, so a backlog in any of them made
+    # EVERY commit that changed the catalog impossible (issue #73). A scoped run
+    # prints the sources it skipped, so the narrowing is never silent.
+    #
+    # CI (guard.yml) reconciles homelab-canon only -- the one source its runner
+    # checks out. fleet-dispatch-schema is scoped here for this hook's own
+    # regenerated-artifact check, but CI does NOT verify it, and CI does NOT
+    # verify fleet-main, fleet-orch, or claude-codex-integration either. There is
+    # no unscoped run left that humans or CI use for corpus-wide drift; that gap
+    # is a known, ledgered limitation, not something this hook or CI covers.
+    python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
+        --source homelab-canon --source fleet-dispatch-schema
+
+    GENERATED=(
+        pipeline/L1/homelab-canon.jsonl
+        pipeline/L1/fleet-dispatch-schema.jsonl
+        pipeline/L2/clusters.jsonl
+    )
+    if ! git -C "$REPO_ROOT" diff --quiet -- "${GENERATED[@]}"; then
+        echo "ERROR: ingest regenerated required artifacts that are not staged." >&2
+        echo "Stage these exact files, review them, and retry the commit:" >&2
+        printf '  %s\n' "${GENERATED[@]}" >&2
+        exit 1
+    fi
 fi
 
-python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
-python3 "$REPO_ROOT/pipeline/cluster.py"
-# Reconcile ONLY the two L1 sources the regeneration above actually writes --
-# the same two named in GENERATED below. The unscoped run also reads four
-# sibling repos this commit never touched, so a backlog in any of them made
-# EVERY commit that changed the catalog impossible (issue #73). A scoped run
-# prints the sources it skipped, so the narrowing is never silent.
-#
-# CI (guard.yml) reconciles homelab-canon only -- the one source its runner
-# checks out. fleet-dispatch-schema is scoped here for this hook's own
-# regenerated-artifact check, but CI does NOT verify it, and CI does NOT
-# verify fleet-main, fleet-orch, or claude-codex-integration either. There is
-# no unscoped run left that humans or CI use for corpus-wide drift; that gap
-# is a known, ledgered limitation, not something this hook or CI covers.
-python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
-    --source homelab-canon --source fleet-dispatch-schema
-
-GENERATED=(
-    pipeline/L1/homelab-canon.jsonl
-    pipeline/L1/fleet-dispatch-schema.jsonl
-    pipeline/L2/clusters.jsonl
-)
+# docs/POINTER.md and docs/HIGH.md are derived from catalog/criticality.jsonl
+# by bin/synthesize-pointer.py. add-failure-mode.sh already regenerates them
+# on every canonical write, but a hand-edit of criticality.jsonl (or a commit
+# that forgot to re-stage the regenerated files) would otherwise let them
+# drift silently -- this is the same "regenerate and diff" pattern as
+# GENERATED above, scoped to criticality.jsonl instead of the catalog.
 if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    && ! git -C "$REPO_ROOT" diff --quiet -- "${GENERATED[@]}"; then
-    echo "ERROR: ingest regenerated required artifacts that are not staged." >&2
-    echo "Stage these exact files, review them, and retry the commit:" >&2
-    printf '  %s\n' "${GENERATED[@]}" >&2
-    exit 1
+    && { ! git -C "$REPO_ROOT" diff --quiet -- catalog/criticality.jsonl \
+         || ! git -C "$REPO_ROOT" diff --cached --quiet -- catalog/criticality.jsonl; }; then
+    python3 "$REPO_ROOT/bin/synthesize-pointer.py"
+    POINTER_GENERATED=(docs/POINTER.md docs/HIGH.md)
+    if ! git -C "$REPO_ROOT" diff --quiet -- "${POINTER_GENERATED[@]}"; then
+        echo "ERROR: catalog/criticality.jsonl changed but docs/POINTER.md / docs/HIGH.md are stale." >&2
+        echo "Stage these exact files, review them, and retry the commit:" >&2
+        printf '  %s\n' "${POINTER_GENERATED[@]}" >&2
+        exit 1
+    fi
 fi

@@ -64,6 +64,8 @@ restore_journal() {
             "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
             "$REPO_ROOT/pipeline/L2/clusters.jsonl"
             "$REPO_ROOT/catalog/criticality.jsonl"
+            "$REPO_ROOT/docs/POINTER.md"
+            "$REPO_ROOT/docs/HIGH.md"
         )
     fi
 
@@ -431,6 +433,8 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
     snapshot_file "$CRITICALITY"
+    snapshot_file "$REPO_ROOT/docs/POINTER.md"
+    snapshot_file "$REPO_ROOT/docs/HIGH.md"
 fi
 
 printf 'UNDO: CATALOG=%q bash %q --undo %q\n' "$CATALOG" "$0" "$JOURNAL"
@@ -520,6 +524,12 @@ PYEOF
     # write-time full report makes their current health visible but does not
     # claim that the canonical-write gate resolves their consumer-sync backlog.
     python3 "$REPO_ROOT/pipeline/reconcile_l1.py" --gate homelab-canon
+
+    # Keep the curated pointer files in sync with criticality.jsonl on every
+    # canonical write -- a second manual step here is exactly how POINTER.md/
+    # HIGH.md would silently drift out of date. Deterministic and idempotent,
+    # so re-running it is always safe.
+    python3 "$REPO_ROOT/bin/synthesize-pointer.py"
 else
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG" >/dev/null
 fi

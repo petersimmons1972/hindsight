@@ -9,6 +9,11 @@
 #   -c CLASS    Bug class letter (A-L) or explicit bug-class label.
 #   -i ISSUE    GitHub issue number (appended to the concrete-instance column).
 #   -a          Mark the row as automatable (`Auto?` = 🤖).
+#   -t TIER     Criticality tier: CRITICAL|HIGH|MEDIUM|LOW. Required for the
+#               canonical catalog; recorded in catalog/criticality.jsonl at
+#               filing time so the backlog never regrows untriaged. Generality
+#               defaults to NARROW (unassessed for cross-repo applicability);
+#               hindsight-triage may upgrade it later.
 #   --recurrence-of c-NNN|none
 #               Record the human recurrence decision after corpus review.
 #   --undo DIR  Restore every file recorded in a prior run's undo journal.
@@ -58,6 +63,7 @@ restore_journal() {
             "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
             "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
             "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+            "$REPO_ROOT/catalog/criticality.jsonl"
         )
     fi
 
@@ -196,6 +202,8 @@ fi
 CLASS=""
 ISSUE=""
 AUTO=0
+TIER=""
+TIER_SEEN=0
 RECURRENCE_OF=""
 RECURRENCE_SEEN=0
 POSITIONAL=()
@@ -211,6 +219,14 @@ while [[ $# -gt 0 ]]; do
             ISSUE="$2"; shift 2
             ;;
         -a|--auto)  AUTO=1; shift ;;
+        -t|--tier)
+            [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
+            case "${2^^}" in
+                CRITICAL|HIGH|MEDIUM|LOW) TIER="${2^^}" ;;
+                *) echo "ERROR: -t/--tier accepts CRITICAL, HIGH, MEDIUM, or LOW" >&2; exit 1 ;;
+            esac
+            TIER_SEEN=1; shift 2
+            ;;
         --recurrence-of)
             [[ $# -ge 2 ]] || {
                 echo "ERROR: --recurrence-of requires c-NNN or none" >&2
@@ -342,6 +358,10 @@ if [[ "$CATALOG" == "$CANONICAL_CATALOG" ]]; then
         echo "ERROR: canonical ingest requires the complete sibling-repository topology; no files were written" >&2
         exit 1
     }
+    [[ $TIER_SEEN -eq 1 ]] || {
+        echo "ERROR: -t/--tier is required for the canonical catalog (CRITICAL|HIGH|MEDIUM|LOW)" >&2
+        exit 1
+    }
 fi
 
 FM_ID="$(python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
@@ -402,12 +422,15 @@ snapshot_file() {
     fi
 }
 
+CRITICALITY="$REPO_ROOT/catalog/criticality.jsonl"
+
 snapshot_file "$CATALOG"
 snapshot_file "$LEDGER"
 if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+    snapshot_file "$CRITICALITY"
 fi
 
 printf 'UNDO: CATALOG=%q bash %q --undo %q\n' "$CATALOG" "$0" "$JOURNAL"
@@ -457,6 +480,31 @@ PYEOF
 printf '%s\n' "$FM_ID" >> "$LEDGER"
 
 if [[ $RUN_FULL_LOOP -eq 1 ]]; then
+    # Tag the new row's criticality at filing time so the backlog cannot regrow
+    # untriaged. generality is NARROW by default (cross-repo applicability is
+    # unassessed); hindsight-triage may upgrade both fields later, but every
+    # canonical row now has a tier the moment it exists.
+    python3 - "$CRITICALITY" "$FM_ID" "$TIER" "$TITLE" "$DESC" <<'PYEOF'
+import datetime
+import json
+import sys
+
+path, fm_id, tier, title, desc = sys.argv[1:6]
+evidence = f"{title} {desc}".strip()
+row = {
+    "fm_id": fm_id,
+    "tier": tier,
+    "generality": "NARROW",
+    "rationale": "filed at creation time",
+    "evidence": evidence,
+    "mechanize_action": "n/a",
+    "scored_by": "add-failure-mode.sh (write-time)",
+    "date": datetime.date.today().isoformat(),
+}
+with open(path, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(row) + "\n")
+PYEOF
+
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
     python3 "$REPO_ROOT/pipeline/cluster.py"
@@ -483,6 +531,7 @@ trap - EXIT
 
 echo "add-failure-mode: ${FM_ID} appended to ${CATALOG}"
 echo "  class: ${BUG_CLASS}"
+[[ -n "$TIER" ]]   && echo "  tier: ${TIER} (recorded in ${CRITICALITY})"
 [[ -n "$ISSUE" ]]  && echo "  issue: #${ISSUE}"
 echo "  recurrence_of: ${RECURRENCE_OF}"
 echo "  table:  ${TABLE_ROW}"

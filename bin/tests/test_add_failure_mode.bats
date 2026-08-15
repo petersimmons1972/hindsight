@@ -244,7 +244,7 @@ PY
   l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A "terminal success proof finished" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "terminal success proof finished" --recurrence-of none
 
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
@@ -262,12 +262,62 @@ PY
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
 }
 
+@test "canonical add without -t is rejected before any write" {
+  make_staged_repo
+  catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
+  ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$WORK/no-tier-trace" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A "missing tier" --recurrence-of none
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"-t/--tier is required"* ]]
+  [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
+  [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
+  [ ! -e "$WORK/no-tier-trace" ]
+}
+
+@test "-t rejects an unknown tier value" {
+  run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
+    bash "$TOOL" -c A -t URGENT "bogus tier" --recurrence-of none
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"CRITICAL, HIGH, MEDIUM, or LOW"* ]]
+}
+
+@test "canonical add records tier in criticality.jsonl and undo reverts it" {
+  make_staged_repo
+  trace="$WORK/tier-trace"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t CRITICAL "tier recorded at filing time" --recurrence-of none
+
+  [ "$status" -eq 0 ]
+  [ -f "$STAGE/catalog/criticality.jsonl" ]
+  add_output="$output"
+  run python3 -c "
+import json
+row = json.loads(open('$STAGE/catalog/criticality.jsonl').read().splitlines()[-1])
+assert row['fm_id'] == 'FM-002', row
+assert row['tier'] == 'CRITICAL', row
+assert row['generality'] == 'NARROW', row
+assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
+"
+  [ "$status" -eq 0 ]
+
+  journal="$(printf '%s\n' "$add_output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
+  [ -n "$journal" ]
+  run env CATALOG="$STAGE/catalog/failure-modes.md" \
+    bash "$STAGE/bin/add-failure-mode.sh" --undo "$journal"
+  [ "$status" -eq 0 ]
+  [ ! -s "$STAGE/catalog/criticality.jsonl" ]
+}
+
 @test "dot-dot canonical catalog alias still runs the whole loop" {
   make_staged_repo
   trace="$WORK/dotdot-trace"
 
   run env CATALOG="$STAGE/catalog/../catalog/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A "dot dot alias" --recurrence-of c-001
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "dot dot alias" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
@@ -280,7 +330,7 @@ PY
   trace="$WORK/symlink-trace"
 
   run env CATALOG="$WORK/catalog-link/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A "symlink alias" --recurrence-of c-001
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "symlink alias" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
@@ -443,7 +493,7 @@ PY
   l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A "full loop no stub" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "full loop no stub" --recurrence-of none
 
   [ "$status" -eq 0 ]
   grep -Fq '| FM-002 |' "$STAGE/catalog/failure-modes.md"
@@ -481,7 +531,7 @@ PY
   make_real_reconcile_repo
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A "unrelated backlog must not block" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "unrelated backlog must not block" \
       --recurrence-of none
 
   [ "$status" -eq 0 ]
@@ -508,7 +558,7 @@ PY
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" LOSSY=1 \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A "lossy extraction must still fail" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "lossy extraction must still fail" \
       --recurrence-of none
 
   [ "$status" -ne 0 ]

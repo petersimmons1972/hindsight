@@ -1,0 +1,74 @@
+# hindsight — HIGH pointer (QUERY ONLY -- do not load this file whole)
+
+Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
+
+68 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+
+- **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
+- **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
+- **FM-14** [BROAD] Health probe must query the real dependency (e.g. `SELECT 1`); return 503 on any required dep failure
+- **FM-15** [BROAD] Pin every container image to a digest or immutable tag; CI lint blocks `:latest` in manifests
+- **FM-16** [BROAD] Clean up session-created containers+volumes after every test/build (delta-only); watch `docker system df` headroom; NEVER global-prune a shared host
+- **FM-18** [BROAD] Any script/wrapper that calls a child must propagate the child's exit code; wrappers are audited for unconditional `exit 0`
+- **FM-24** [BROAD] Run per-table DELETEs in separate autocommit statements; scale the live service to 0 first
+- **FM-29** [BROAD] Probe a remote toolchain in a fresh LOGIN shell (`ssh host bash -lc 'command -v X'`); a binary on disk but off the login `PATH` is a `/etc/profile.d` gap, not an absent tool
+- **FM-33** [BROAD] Every periodic-maintenance method (reaper/GC/sweeper) must have a call site in the daemon loop AND a test that asserts the loop invokes it (or that its effect occurs end-to-end). Grep: each exported `Reap*`/`GC*`/`Sweep*` has a non-test caller. Distrust comments that claim a routine "also runs" — verify the call.
+- **FM-34** [BROAD] Do NOT pin the harnesses (founder directive: keep them current). Instead make the integration RESILIENT: (1) a tiny harness-contract smoke test exercising the exact `codex exec`/`hermes chat` invocation the poller uses, run on a schedule + after any detected version change; (2) fail-LOUD on interface breakage (non-zero exit / changed flags surface an alert, never a silent exit-0 — see FM-18); (3) re-probe capabilities/version rather than assuming (ASK-don't-infer); (4) record the observed harness version each cycle so a break correlates to an update.
+- **FM-35** [BROAD] A service that multi-host producers must reach needs a PORTABLE resolvable endpoint (split-horizon DNS / a real A record — fleet-dispatch#6) before it is treated as the coordination path. Pre-fire reachability probe: resolve + TCP-connect the endpoint and fail fast with "not reachable from this host" rather than a confusing dial error mid-enqueue.
+- **FM-39** [BROAD] Startup asserts every stateful path is a mounted volume; restart-persistence test must pass
+- **FM-42** [BROAD] Default-deny egress; see FM-43 (FM-RC-07) for the hostname-filtering proxy requirement
+- **FM-52** [BROAD] Installer aborts on any step failure (`set -e`); genuine `--dry-run`; idempotent
+- **FM-62** [BROAD] Arm the guard: add the active host's `host:namespace` line to `fleet-hosts.txt`; a same-namespace second claimant must be rejected loudly (tests: guard armed + intruder rejected)
+- **FM-64** [BROAD] echo ""` for required inputs. Test: empty/errored prefetch → failed disposition, runner never launched
+- **FM-66** [BROAD] The delivery/routing decision must read the SAME key the producer set (capability / explicit enqueue field), not a side-channel (GitHub label) the producing path doesn't populate. Check: the signal the consumer branches on is one the producer is contractually required to set
+- **FM-67** [BROAD] Capture FULL agent/consult output to a file (no inline `tail`/`head` in the consult command); read back with offset/limit. For background tasks the redirect target holds the full stream — never pre-truncate at the source
+- **FM-68** [BROAD] Feed headless-agent prompts via STDIN (heredoc/pipe), not a positional arg through env-decode. Wrap every remote agent invocation in `timeout`. Never block on a background agent task without a bounded deadline + a no-output tripwire
+- **FM-80** [BROAD] A liveness renewer must tolerate transient failures across the full TTL grace (ceil(TTL/interval) consecutive misses) before declaring loss, with a regression test injecting a transient mid-run failure.
+- **FM-93** [BROAD] Run `git fetch` + `git status -sb` before trusting recon of a local repo; verify claims against `git show origin/main:<path>` / `git ls-tree origin/main`, never the working tree alone.
+- **FM-110** [BROAD] Every '# pragma: no cover' live binding has at least one real (non-faked) smoke test that actually invokes it; and after editing an import block in a formatter-hooked repo, grep-confirm the import survived the hook.
+- **FM-124** [BROAD] Verify claimed fixes exist in the merged tree, not just in the PR description
+- **FM-129** [BROAD] `scripts/lib/concealment-scan.sh` (+ `concealment_scan.py` port) is checked in `codex-poll.sh`'s `launch_coded_issue` and `grok-attach.sh`'s `run_work` before any codex/grok exec; a match quarantines the item (`needs-input`, never silent-drop) and captures the raw payload verbatim for forensics
+- **FM-134** [BROAD] **Automated semantic detection: none; manual signal: review the persisted `done` report. Current mitigation: none.** Proposed: reject terminal `done` unless the comment is non-empty, non-placeholder, and task-relevant; retain an explicit failed-validation state and cover the acceptance boundary with adversarial fixtures.
+- **FM-144** [BROAD] Lease dir unreadable/unwritable (e.g. systemd `ProtectHome=read-only` with default `CODEX_POLL_LEASE_DIR=${HOME}/.cache/...` not overridden to a ReadWritePath); reconciler scans empty store → classifies EVERY in-progress issue as `ORPHAN_NO_LEASE` → mass force-requeue of all live work
+- **FM-147** [BROAD] A multi-target writer must refuse to overwrite any existing file it did not author (no GENERATED marker), and must namespace its target path to avoid colliding with a name a consumer may already own.
+- **FM-150** [BROAD] A PR check with no conclusion must be treated as RED, never merged as green; assert every required check reports a conclusion, not merely an absence of failure
+- **FM-153** [BROAD] Validate a measurement instrument against a known-good and a known-bad input before trusting any count it produces
+- **FM-154** [BROAD] A fix that reaches green by editing the data its check reads has not fixed what the check found; re-run with the data reverted and the verdict must not flip
+- **FM-157** [BROAD] A floor the same change can lower is not a floor; lowering must require an explicit flag and a recorded reason
+- **FM-158** [BROAD] A mechanism verified only in the developer's environment is unverified in the environment that gates; a result from one environment is not a result
+- **FM-159** [BROAD] A harvester that rewrites its own output destroys rows it cannot regenerate; carry forward every row the source cannot reproduce and report the count
+- **FM-160** [BROAD] Never divide an acceptance rate by actors that produced no verdict; failing a check and never reporting one are different defects and sharing a denominator hides the second inside the first
+- **FM-163** [BROAD] A test suite that exercises library functions but never the CLI exit-code layer leaves the part the gate actually reads unverified
+- **FM-165** [BROAD] A skip condition computed from the defect it skips for silently changes which tests run at the moment the defect is fixed
+- **FM-166** [BROAD] A wait loop keyed on the absence of in-progress work treats not-yet-started as finished
+- **FM-168** [BROAD] An empty option value is not an absent one: falsy input must be a usage error, never a silent fallback to a default or a relative path
+- **FM-179** [BROAD] Two checks are independent only if they do not share an upstream input; enumerating escape paths is not enough, enumerate the shared inputs
+- **FM-182** [BROAD] A test asserting a value ABSENT from output that must contain a superstring of it can only pass when the code is broken; assert on parsed structure, not substrings of serialised output
+- **FM-187** [BROAD] Joining two agent-produced record sets on a free-text field drops rows whenever the second agent rewords; the join must pair positionally or fuzzily and must report its unpaired count as an alarm, never as absence
+- **FM-188** [BROAD] A test fixture that writes the config to BOTH candidate paths AND exports the env override means no test ever exercises the shipped default path
+- **FM-191** [BROAD] Before launching any trusted interpreter or harness from a process that will cd into an agent-writable worktree, strip non-absolute PATH components and resolve binaries only from absolute trusted directories
+- **FM-199** [BROAD] A dispatch work-item reaching state=done means THAT ITEM finished, not that the referenced issue was resolved; mirroring item state onto an issue label manufactures a completion signal that no artifact backs. Completion must be asserted from the default branch, never from a label or receipt
+- **FM-224** [BROAD] Kill-by-pattern instead of kill-by-PID, recurring INSIDE the session that had just re-learned it. A subagent that itself reported 'pkill -f matched its own shell; killed stray PIDs by PID' as a live lesson mid-round then ended its run by pattern-killing 19 idle-wait sleepers found via a broad pgrep sweep -- flagged by the harness security layer because a pattern match across the system is not limited to processes the agent created. Nothing of value died this time (a concurrent codex re-review dispatch survived, verified by process check), but the containment was luck, not construction. The standing rule (feedback-kill-by-pid-never-by-name) already covers it; the new information is that having JUST learned the lesson in the same context does not prevent the recurrence when cleanup happens at wind-down, where attention is cheapest. Dispatch briefs that authorize background sleepers should require the agent to record spawned PIDs at spawn time and kill exactly that list at exit
+- **FM-225** [BROAD] A fixture that derives its expected schema from mutable live state cannot detect schema drift; pin an immutable committed contract and assert key order
+- **FM-236** [BROAD] A ledger that only writes start and success records a failure as an absence; count the gap between starts and results, because a dead agent leaves no row at all
+- **FM-244** [BROAD] A structural validation guard must decide with the consumer's own parser, fail closed on any node type or tag it does not positively understand, reject explicit tags a format has no legitimate need for, and -- when parsers are unavoidably different -- fail on resolved-document disagreement between them
+- **FM-246** [BROAD] A gate over configuration must parse the config and inspect executable positions, not grep raw text -- a grep-shaped gate is satisfiable by a comment that changes nothing executable
+- **FM-01** [NARROW] Grep aliases for role/routing words; confirm advertised name == persisted identity
+- **FM-04** [NARROW] Render ExecStart with real substitutions; diff against post-install listing
+- **FM-17** [NARROW] Every namespace used by a manifest set must have a `00-namespace.yaml` in the same apply bundle; CI dry-run on a clean cluster
+- **FM-27** [NARROW] Verify embedding endpoint returns 200 on /v1/models before scaling reembed or releasing claims
+- **FM-28** [NARROW] NetworkPolicy egress must use `podSelector`/`namespaceSelector`, never a hardcoded IP
+- **FM-31** [NARROW] Validate target repo ∈ `config/target-repos.txt` AND node toolchain matches BEFORE authoring the handoff plan, not after
+- **FM-46** [NARROW] Atomic credential write; documented rotation/revoke path; restart-persistence test
+- **FM-50** [NARROW] Healthcheck actually returns healthy in the boot test; assert `[unix_http_server]` present in supervisord config
+- **FM-56** [NARROW] Resolve actual network name; parameterize; assert network exists with expected name at startup
+- **FM-59** [NARROW] Installer env-file denylist + `sanitize_env_file`; test asserts no host-path vars in env-file skeleton
+- **FM-60** [NARROW] Guard compares `lease_owner == POLLER_ID` (not actor); test asserts container identity passes and host identity passes; foreign poller rejected
+- **FM-61** [NARROW] Container context disables inner sandbox (`--dangerously-bypass-approvals-and-sandbox`, gated on CODEX_INNER_SANDBOX=off set only in Dockerfile); container hardening NOT weakened; tests assert container→bypass-on, host→bypass-off
+- **FM-72** [NARROW] Use stable `sha256("${repo}#${number}")` for brief_id; `decide()` always matches by `issue_ref` (stable) not brief_id
+- **FM-73** [NARROW] Call `emit_strike()` before `requeue_issue()`; call `reset_strike()` only on confirmed success
+- **FM-81** [NARROW] bats setup() must keep errexit ON (units-under-test invoked via run, which absorbs their status); a canary test ending in bare false must FAIL. Grep test setup files for 'set +e'.
+- **FM-90** [NARROW] `OLLA_EXCLUDED_HOSTS` in `olla.yaml` is a **temporary manual circuit breaker only**. Whenever it is set: (a) open a tracking issue referencing the underlying problem, (b) comment the issue number inline in `olla.yaml`, (c) remove the exclusion in the same PR that resolves the underlying issue. `grep OLLA_EXCLUDED_HOSTS olla.yaml` returning non-empty with no associated issue comment = stale circuit breaker. Removal procedure: remove key from ConfigMap → `kubectl apply` → `kubectl rollout restart deployment/olla -n ai-fleet`.
+- **FM-118** [NARROW] grep 'Active Profile'` — an `iec958`/digital profile selected over `analog` is the smell. One-time fix: `pactl set-card-profile <card> input:analog-stereo`. Permanent fix: WirePlumber 0.5 drop-in (`~/.config/wireplumber/wireplumber.conf.d/51-c930e-analog.conf`) with a `monitor.alsa.rules` match setting `api.acp.auto-profile=false` + `device.profile="input:analog-stereo"`, then `systemctl --user restart wireplumber`. Never treat a passing local recording as proof remote audio is clean.
+- **FM-162** [NARROW] Modifying the shared checkout while a dispatch is running invalidates that run; the harness cannot distinguish the coordinator's writes from its agent's
+- **FM-183** [NARROW] Composing an external checker means inheriting its side effects; a checker that mutates its own baseline turns a second run into a different question, and a documented read-only mode that invokes it is not read-only

@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-68 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+70 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -72,3 +72,5 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-118** [NARROW] grep 'Active Profile'` — an `iec958`/digital profile selected over `analog` is the smell. One-time fix: `pactl set-card-profile <card> input:analog-stereo`. Permanent fix: WirePlumber 0.5 drop-in (`~/.config/wireplumber/wireplumber.conf.d/51-c930e-analog.conf`) with a `monitor.alsa.rules` match setting `api.acp.auto-profile=false` + `device.profile="input:analog-stereo"`, then `systemctl --user restart wireplumber`. Never treat a passing local recording as proof remote audio is clean.
 - **FM-162** [NARROW] Modifying the shared checkout while a dispatch is running invalidates that run; the harness cannot distinguish the coordinator's writes from its agent's
 - **FM-183** [NARROW] Composing an external checker means inheriting its side effects; a checker that mutates its own baseline turns a second run into a different question, and a documented read-only mode that invokes it is not read-only
+- **FM-274** [NARROW] A lookup tool's zero-result path must state that no match is not an all-clear; a silent empty result is read as clearance by the agent that asked
+- **FM-276** [NARROW] Safety-critical guidance must be selected by tags assigned at filing time, never by keyword-matching the guidance text against the task text; the two are written in different vocabularies and the miss is silent

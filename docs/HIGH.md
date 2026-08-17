@@ -2,9 +2,10 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-74 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+79 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
+- **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
 - **FM-14** [BROAD] Health probe must query the real dependency (e.g. `SELECT 1`); return 503 on any required dep failure
 - **FM-15** [BROAD] Pin every container image to a digest or immutable tag; CI lint blocks `:latest` in manifests
 - **FM-16** [BROAD] Clean up session-created containers+volumes after every test/build (delta-only); watch `docker system df` headroom; NEVER global-prune a shared host
@@ -42,6 +43,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-165** [BROAD] A skip condition computed from the defect it skips for silently changes which tests run at the moment the defect is fixed
 - **FM-166** [BROAD] A wait loop keyed on the absence of in-progress work treats not-yet-started as finished
 - **FM-168** [BROAD] An empty option value is not an absent one: falsy input must be a usage error, never a silent fallback to a default or a relative path
+- **FM-171** [BROAD] Audit a worktree for UNTRACKED files before removing it -- git's safety guarantees cover tracked content only
 - **FM-179** [BROAD] Two checks are independent only if they do not share an upstream input; enumerating escape paths is not enough, enumerate the shared inputs
 - **FM-182** [BROAD] A test asserting a value ABSENT from output that must contain a superstring of it can only pass when the code is broken; assert on parsed structure, not substrings of serialised output
 - **FM-187** [BROAD] Joining two agent-produced record sets on a free-text field drops rows whenever the second agent rewords; the join must pair positionally or fuzzily and must report its unpaired count as an alarm, never as absence
@@ -70,11 +72,14 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-81** [NARROW] bats setup() must keep errexit ON (units-under-test invoked via run, which absorbs their status); a canary test ending in bare false must FAIL. Grep test setup files for 'set +e'.
 - **FM-86** [NARROW] Before patching any k8s Secret, check for a matching ExternalSecret (`kubectl get externalsecret <name> -n <ns>`). If one exists, the ONLY write path is through the external store (Infisical/Vault). Mandatory sequence: (1) update source-of-truth store via MCP/API, (2) annotate ExternalSecret with `force-sync=$(date +%s)` to trigger immediate reconcile, (3) POLL Secret resourceVersion until it changes — never proceed until confirmed, (4) restart the deployment ONLY after the Secret reflects the new value, (5) run a smoke test that proves the running application received the new config. Also applies to token authorization splits: verify BOTH `produces` (enqueue) and `consumes` (claim) fields contain required capabilities — missing either yields different HTTP errors (403 vs `{"empty":true}`).
 - **FM-118** [NARROW] grep 'Active Profile'` — an `iec958`/digital profile selected over `analog` is the smell. One-time fix: `pactl set-card-profile <card> input:analog-stereo`. Permanent fix: WirePlumber 0.5 drop-in (`~/.config/wireplumber/wireplumber.conf.d/51-c930e-analog.conf`) with a `monitor.alsa.rules` match setting `api.acp.auto-profile=false` + `device.profile="input:analog-stereo"`, then `systemctl --user restart wireplumber`. Never treat a passing local recording as proof remote audio is clean.
-- **FM-152** [NARROW] A path-existence check must resolve each path against its own source repo; resolving against the checker's root manufactures phantoms
-- **FM-162** [NARROW] Modifying the shared checkout while a dispatch is running invalidates that run; the harness cannot distinguish the coordinator's writes from its agent's
 - **FM-183** [NARROW] Composing an external checker means inheriting its side effects; a checker that mutates its own baseline turns a second run into a different question, and a documented read-only mode that invokes it is not read-only
 - **FM-274** [NARROW] A lookup tool's zero-result path must state that no match is not an all-clear; a silent empty result is read as clearance by the agent that asked
 - **FM-282** [NARROW] pev's per-round review agents are all pinned to the same model as the coordinator, defeating cross-vendor independence
 - **FM-286** [NARROW] Detection flag computed but no branch consumes it, so the gate stays open
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
-- **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
+- **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
+- **FM-310** [NARROW] Acceptance gate defaults to a hardcoded checkout, so every in-lane run tests the coordinator's tree instead of the agent's
+- **FM-329** [NARROW] Acceptance gate for issue-411-gate.sh used three static fixtures with fixed byte sizes; reviewer defeated it with a wc -c case statement returning correct answers for all three without parsing
+- **FM-330** [NARROW] Two review rounds on fleet PR 548 (rounds 1-2) wrote correct verdict files but posted nothing to GitHub because the reviewing App identity was the PR author and GitHub forbids self-approval, so the step degraded silently instead of erroring
+- **FM-333** [NARROW] The 2026-07-20/30 campaign filed FM-300..FM-327 with recurrence_of: none in 26 of 28 rows while pipeline/L2/clusters.jsonl c-028 lists hc-FM-320..hc-FM-327 (and more) as members, so the catalog's own recurrence field disagrees with its own clustering and hides that most of those failures were recurrences of the same gate-points-at-wrong-artifact shape
+- **FM-335** [NARROW] Table-scoped exit-code uniqueness invariant misses raw hard-coded producers outside the table, letting colliding exit codes ship undetected

@@ -14,6 +14,14 @@ merge.  A 0.10 dense / 0.90 lexical cosine blend at 0.20 produced 180 clusters
 (largest 34) and recovered 6/7 completion, 6/7 shared-checkout, 4/4
 fail-silent, 3/3 dedup-key, and 2/2 convergence records with every required
 precision separation.  The sparse TF-IDF default remains 0.17.
+
+hindsight#118 (2026-08-18): a fixed absolute threshold alone chains clusters
+as the corpus grows -- the largest emitted cluster went from 26 members at
+582 entries to 83 at 671, and two hand-verified families were welded
+together under the covers.  Average-link agglomeration is now density-aware
+on top of the absolute threshold: see ``COHESION_DECAY_FACTOR`` and
+``SIZE_CAP_FRACTION`` in ``_cluster_indices`` for the two independent
+brakes that replace "lower the threshold" as the fix.
 """
 from __future__ import annotations
 
@@ -41,6 +49,27 @@ DEFAULT_EMBEDDING_URL = "http://192.168.0.98:8004"
 LINKAGE = "average"
 HTTP_DENSE_WEIGHT = 0.10
 MAX_CLUSTER_FRACTION = 0.40
+# hindsight#118: a fixed absolute similarity threshold chains clusters
+# together once a family has fully self-merged, because residual
+# background similarity between otherwise-distinct families can still
+# clear the absolute bar even though it is far weaker than the cohesion
+# that formed the family in the first place (largest cluster went from
+# 26@582 entries to 83@671 under the old scheme). Track each forming
+# cluster's own cohesion floor (the weakest merge score used to build it)
+# and refuse any further merge whose score has decayed below this
+# fraction of that floor, even when the merge still clears the absolute
+# threshold. This makes linkage density-aware and scale-aware: it reads
+# each cluster's own achieved cohesion rather than a corpus-wide constant,
+# so the bar a merge must clear rises and falls with what that cluster has
+# actually demonstrated, not with corpus size.
+COHESION_DECAY_FACTOR = 0.3
+# A second, independent brake on the same failure mode: cap how large any
+# single cluster may grow *during* agglomeration (not just checked after
+# the fact), expressed relative to corpus size so the bound tracks scale
+# rather than pinning a literal count. The floor keeps small corpora (and
+# a single large legitimate family) from being capped away.
+SIZE_CAP_FRACTION = 0.06
+SIZE_CAP_FLOOR = 20
 REQUIRED_FIELDS = frozenset(
     {"id", "source_path", "source_anchor", "instance", "check", "enforcement", "auto", "first_seen"}
 )
@@ -660,7 +689,19 @@ def _label(entry: Entry) -> str:
 
 
 def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]]:
-    """Perform deterministic average-link agglomeration from a cosine matrix."""
+    """Perform deterministic average-link agglomeration from a cosine matrix.
+
+    Density-aware (hindsight#118): each active cluster carries a cohesion
+    floor -- the weakest average-link score used to build it so far. A
+    candidate merge must clear both the absolute threshold AND
+    ``COHESION_DECAY_FACTOR`` of the tighter side's floor. A singleton has
+    no floor yet, so its first merge is gated by the absolute threshold
+    alone, exactly as before. Once two clusters with real internal cohesion
+    exist, a merge that would sharply dilute either one is refused even
+    though it still clears the absolute bar -- this is what stops one
+    weak, corpus-scale-dependent bridge from chaining distinct families
+    together.
+    """
     count = similarity.shape[0]
     if count == 0:
         return []
@@ -669,6 +710,9 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
     active = np.ones(count, dtype=bool)
     sizes = np.ones(count, dtype=np.int32)
     members = [[index] for index in range(count)]
+    cohesion: list[float | None] = [None] * count
+    blocked = np.zeros((count, count), dtype=bool)
+    size_cap = max(SIZE_CAP_FLOOR, math.ceil(SIZE_CAP_FRACTION * count))
 
     while True:
         denominator = sizes[:, None] * sizes[None, :]
@@ -676,6 +720,7 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
         inactive = ~active
         averages[inactive, :] = -np.inf
         averages[:, inactive] = -np.inf
+        averages[blocked] = -np.inf
         np.fill_diagonal(averages, -np.inf)
         flattened = int(np.argmax(averages))
         left, right = divmod(flattened, count)
@@ -684,12 +729,35 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
             break
         if left > right:
             left, right = right, left
+
+        if sizes[left] + sizes[right] > size_cap:
+            blocked[left, right] = True
+            blocked[right, left] = True
+            continue
+
+        reference: float | None = None
+        for index in (left, right):
+            if cohesion[index] is not None:
+                reference = cohesion[index] if reference is None else min(reference, cohesion[index])
+        if reference is not None and best < COHESION_DECAY_FACTOR * reference:
+            # This specific pair fails the density-aware floor -- exclude
+            # only this candidate and keep searching; nothing else about
+            # the partition changes.
+            blocked[left, right] = True
+            blocked[right, left] = True
+            continue
+
         members[left].extend(members[right])
         members[left].sort()
         sizes[left] += sizes[right]
         sums[left, :] += sums[right, :]
         sums[:, left] = sums[left, :]
+        cohesion[left] = best if reference is None else min(reference, best)
         active[right] = False
+        # 'right' is absorbed into 'left': any pair already blocked against
+        # either survivor stays blocked against the merged cluster.
+        blocked[left, :] |= blocked[right, :]
+        blocked[:, left] |= blocked[:, right]
 
     return [members[index] for index in range(count) if active[index]]
 

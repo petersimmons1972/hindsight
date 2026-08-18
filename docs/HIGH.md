@@ -47,6 +47,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-188** [BROAD] A test fixture that writes the config to BOTH candidate paths AND exports the env override means no test ever exercises the shipped default path
 - **FM-191** [BROAD] Before launching any trusted interpreter or harness from a process that will cd into an agent-writable worktree, strip non-absolute PATH components and resolve binaries only from absolute trusted directories
 - **FM-199** [BROAD] A dispatch work-item reaching state=done means THAT ITEM finished, not that the referenced issue was resolved; mirroring item state onto an issue label manufactures a completion signal that no artifact backs. Completion must be asserted from the default branch, never from a label or receipt
+- **FM-224** [BROAD] Kill-by-pattern instead of kill-by-PID, recurring INSIDE the session that had just re-learned it. A subagent that itself reported 'pkill -f matched its own shell; killed stray PIDs by PID' as a live lesson mid-round then ended its run by pattern-killing 19 idle-wait sleepers found via a broad pgrep sweep -- flagged by the harness security layer because a pattern match across the system is not limited to processes the agent created. Nothing of value died this time (a concurrent codex re-review dispatch survived, verified by process check), but the containment was luck, not construction. The standing rule (feedback-kill-by-pid-never-by-name) already covers it; the new information is that having JUST learned the lesson in the same context does not prevent the recurrence when cleanup happens at wind-down, where attention is cheapest. Dispatch briefs that authorize background sleepers should require the agent to record spawned PIDs at spawn time and kill exactly that list at exit
 - **FM-225** [BROAD] A fixture that derives its expected schema from mutable live state cannot detect schema drift; pin an immutable committed contract and assert key order
 - **FM-236** [BROAD] A ledger that only writes start and success records a failure as an absence; count the gap between starts and results, because a dead agent leaves no row at all
 - **FM-244** [BROAD] A structural validation guard must decide with the consumer's own parser, fail closed on any node type or tag it does not positively understand, reject explicit tags a format has no legitimate need for, and -- when parsers are unavoidably different -- fail on resolved-document disagreement between them
@@ -72,10 +73,11 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-183** [NARROW] Composing an external checker means inheriting its side effects; a checker that mutates its own baseline turns a second run into a different question, and a documented read-only mode that invokes it is not read-only
 - **FM-274** [NARROW] A lookup tool's zero-result path must state that no match is not an all-clear; a silent empty result is read as clearance by the agent that asked
 - **FM-276** [NARROW] Safety-critical guidance must be selected by tags assigned at filing time, never by keyword-matching the guidance text against the task text; the two are written in different vocabularies and the miss is silent
+- **FM-278** [NARROW] Branch-name shape shadows binding identity in task resolution
 - **FM-282** [NARROW] pev's per-round review agents are all pinned to the same model as the coordinator, defeating cross-vendor independence
 - **FM-286** [NARROW] Detection flag computed but no branch consumes it, so the gate stays open
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
-- **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
+- **FM-304** [NARROW] A characterization test must be mutation-verified against the specific refactor slip it claims to lock, or it passes green while failing to notice that exact change
 - **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
 - **FM-310** [NARROW] Acceptance gate defaults to a hardcoded checkout, so every in-lane run tests the coordinator's tree instead of the agent's
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
@@ -85,7 +87,5 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-335** [NARROW] Table-scoped exit-code uniqueness invariant misses raw hard-coded producers outside the table, letting colliding exit codes ship undetected
 - **FM-343** [NARROW] cli-dispatch start's documented exit-code contract disagrees with its actual behavior on fully-delivered lanes
 - **FM-344** [NARROW] Widening an acceptance grammar to match a parser exposed a downstream consumer that still assumed the narrower set
-- **FM-345** [NARROW] Ruled for-each-ref glob spec matched almost no refs under FNM_PATHNAME globbing; single-segment fixtures masked the defect
 - **FM-350** [NARROW] Cleanup glob matched the harness's own scratch directory and deleted it mid-session
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft
-- **FM-357** [NARROW] Local suite green from source tree while installed-copy path was broken

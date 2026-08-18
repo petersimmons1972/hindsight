@@ -812,15 +812,21 @@ def _assert_fixture_contract(clusters: list[object]) -> None:
     assignments = _assignments(clusters)
     families = {family["key"]: family["members"] for family in fixture["families"]}
 
-    for family, members in families.items():
-        assigned = [assignments[member] for member in members]
-        largest = max(assigned.count(cluster_id) for cluster_id in set(assigned))
-        assert largest / len(members) >= fixture["assertions"]["recall"]["min_fraction_together"], family
-
+    # Precision is asserted FIRST, deliberately (hindsight#118). While recall
+    # came first, a chaining partition that had welded two distinct families
+    # together always tripped the recall assertion on some scattered family
+    # before the precision assertion ever ran, so the merge -- the more
+    # damaging half of the contract -- was invisible in the failure report.
+    # Both assertions still hold; only their order changed.
     for left, right in fixture["assertions"]["precision"]["must_not_merge"]:
         assert {
             assignments[member] for member in families[left]
         }.isdisjoint({assignments[member] for member in families[right]}), (left, right)
+
+    for family, members in families.items():
+        assigned = [assignments[member] for member in members]
+        largest = max(assigned.count(cluster_id) for cluster_id in set(assigned))
+        assert largest / len(members) >= fixture["assertions"]["recall"]["min_fraction_together"], family
 
     completion = families["completion-signal"]
     completion_cluster = max(

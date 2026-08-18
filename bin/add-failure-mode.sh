@@ -63,6 +63,7 @@ restore_journal() {
             "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
             "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
             "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+            "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
             "$REPO_ROOT/catalog/criticality.jsonl"
             "$REPO_ROOT/docs/POINTER.md"
             "$REPO_ROOT/docs/HIGH.md"
@@ -432,6 +433,7 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
+    snapshot_file "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
     snapshot_file "$CRITICALITY"
     snapshot_file "$REPO_ROOT/docs/POINTER.md"
     snapshot_file "$REPO_ROOT/docs/HIGH.md"
@@ -511,7 +513,61 @@ PYEOF
 
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
-    python3 "$REPO_ROOT/pipeline/cluster.py"
+
+    # Release the L2 embedding snapshot through the sanctioned controlled
+    # command (hindsight#108). A canonical add grows pipeline/L1, so the
+    # committed pipeline/L2/embedding-snapshot.json must be re-derived from it
+    # in the same write, or catalog-guard's replay check (pipeline/replay_l2.py)
+    # goes red the moment CI notices -- after the commit already landed. This is
+    # the only caller of capture_embedding_snapshot.py in the write path; a
+    # scratch-catalog add (RUN_FULL_LOOP=0) never reaches it.
+    python3 "$REPO_ROOT/pipeline/capture_embedding_snapshot.py" \
+        --model "BAAI/bge-m3" --revision "bge-m3-Q8_0.gguf" --dimensions 1024
+
+    # pipeline/L2/clusters.jsonl must be derived from that same freshly
+    # released snapshot -- not from an independent live-embedding run -- so it
+    # is guaranteed replayable from what was just committed.
+    python3 - "$REPO_ROOT" <<'PYEOF'
+import importlib.util
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+code = repo_root / "pipeline" / "cluster.py"
+spec = importlib.util.spec_from_file_location("hindsight_release_cluster", code)
+cl = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = cl
+spec.loader.exec_module(cl)
+
+l1 = repo_root / "pipeline" / "L1"
+snapshot = repo_root / "pipeline" / "L2" / "embedding-snapshot.json"
+clusters_path = repo_root / "pipeline" / "L2" / "clusters.jsonl"
+
+entries = cl.load_entries(l1)
+l1_digest = cl.l1_corpus_digest(l1)
+cluster_digest = cl.cluster_code_config_digest(code)
+matrix = cl.load_embedding_snapshot(
+    snapshot, entries, cl.HTTP_BACKEND_IDENTITY,
+    expected_l1_digest=l1_digest, expected_cluster_digest=cluster_digest,
+)
+threshold = cl.default_threshold("http")
+ordered = sorted(entries, key=lambda entry: entry.id)
+clusters = cl.cluster_entries(ordered, matrix, backend_name="http", threshold=threshold)
+
+
+class _ReleasedBackend:
+    name = "http"
+
+
+cl.write_clusters(clusters_path, clusters, _ReleasedBackend(), threshold, len(entries))
+PYEOF
+
+    # The exact consistency check catalog-guard runs in CI. If the release
+    # somehow still leaves the tree inconsistent (a no-op release, a release
+    # that destroyed its own evidence, etc.) this fails loudly here, before
+    # commit, and the trap below rolls the whole write back.
+    python3 "$REPO_ROOT/pipeline/replay_l2.py"
+
     # Report every L1 source so consumer-sync drift remains a visible health
     # signal, but gate this write only on homelab-canon: it is the sole source
     # derived from the catalog row this loop just wrote. Sibling shortfalls are

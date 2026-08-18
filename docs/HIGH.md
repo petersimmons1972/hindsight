@@ -2,10 +2,9 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-83 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+82 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
-- **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
 - **FM-14** [BROAD] Health probe must query the real dependency (e.g. `SELECT 1`); return 503 on any required dep failure
 - **FM-15** [BROAD] Pin every container image to a digest or immutable tag; CI lint blocks `:latest` in manifests
 - **FM-16** [BROAD] Clean up session-created containers+volumes after every test/build (delta-only); watch `docker system df` headroom; NEVER global-prune a shared host
@@ -48,7 +47,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-188** [BROAD] A test fixture that writes the config to BOTH candidate paths AND exports the env override means no test ever exercises the shipped default path
 - **FM-191** [BROAD] Before launching any trusted interpreter or harness from a process that will cd into an agent-writable worktree, strip non-absolute PATH components and resolve binaries only from absolute trusted directories
 - **FM-199** [BROAD] A dispatch work-item reaching state=done means THAT ITEM finished, not that the referenced issue was resolved; mirroring item state onto an issue label manufactures a completion signal that no artifact backs. Completion must be asserted from the default branch, never from a label or receipt
-- **FM-224** [BROAD] Kill-by-pattern instead of kill-by-PID, recurring INSIDE the session that had just re-learned it. A subagent that itself reported 'pkill -f matched its own shell; killed stray PIDs by PID' as a live lesson mid-round then ended its run by pattern-killing 19 idle-wait sleepers found via a broad pgrep sweep -- flagged by the harness security layer because a pattern match across the system is not limited to processes the agent created. Nothing of value died this time (a concurrent codex re-review dispatch survived, verified by process check), but the containment was luck, not construction. The standing rule (feedback-kill-by-pid-never-by-name) already covers it; the new information is that having JUST learned the lesson in the same context does not prevent the recurrence when cleanup happens at wind-down, where attention is cheapest. Dispatch briefs that authorize background sleepers should require the agent to record spawned PIDs at spawn time and kill exactly that list at exit
 - **FM-225** [BROAD] A fixture that derives its expected schema from mutable live state cannot detect schema drift; pin an immutable committed contract and assert key order
 - **FM-236** [BROAD] A ledger that only writes start and success records a failure as an absence; count the gap between starts and results, because a dead agent leaves no row at all
 - **FM-244** [BROAD] A structural validation guard must decide with the consumer's own parser, fail closed on any node type or tag it does not positively understand, reject explicit tags a format has no legitimate need for, and -- when parsers are unavoidably different -- fail on resolved-document disagreement between them
@@ -69,6 +67,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-81** [NARROW] bats setup() must keep errexit ON (units-under-test invoked via run, which absorbs their status); a canary test ending in bare false must FAIL. Grep test setup files for 'set +e'.
 - **FM-86** [NARROW] Before patching any k8s Secret, check for a matching ExternalSecret (`kubectl get externalsecret <name> -n <ns>`). If one exists, the ONLY write path is through the external store (Infisical/Vault). Mandatory sequence: (1) update source-of-truth store via MCP/API, (2) annotate ExternalSecret with `force-sync=$(date +%s)` to trigger immediate reconcile, (3) POLL Secret resourceVersion until it changes — never proceed until confirmed, (4) restart the deployment ONLY after the Secret reflects the new value, (5) run a smoke test that proves the running application received the new config. Also applies to token authorization splits: verify BOTH `produces` (enqueue) and `consumes` (claim) fields contain required capabilities — missing either yields different HTTP errors (403 vs `{"empty":true}`).
 - **FM-118** [NARROW] grep 'Active Profile'` — an `iec958`/digital profile selected over `analog` is the smell. One-time fix: `pactl set-card-profile <card> input:analog-stereo`. Permanent fix: WirePlumber 0.5 drop-in (`~/.config/wireplumber/wireplumber.conf.d/51-c930e-analog.conf`) with a `monitor.alsa.rules` match setting `api.acp.auto-profile=false` + `device.profile="input:analog-stereo"`, then `systemctl --user restart wireplumber`. Never treat a passing local recording as proof remote audio is clean.
+- **FM-152** [NARROW] A path-existence check must resolve each path against its own source repo; resolving against the checker's root manufactures phantoms
 - **FM-162** [NARROW] Modifying the shared checkout while a dispatch is running invalidates that run; the harness cannot distinguish the coordinator's writes from its agent's
 - **FM-183** [NARROW] Composing an external checker means inheriting its side effects; a checker that mutates its own baseline turns a second run into a different question, and a documented read-only mode that invokes it is not read-only
 - **FM-274** [NARROW] A lookup tool's zero-result path must state that no match is not an all-clear; a silent empty result is read as clearance by the agent that asked
@@ -76,6 +75,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-286** [NARROW] Detection flag computed but no branch consumes it, so the gate stays open
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
 - **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
+- **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
 - **FM-310** [NARROW] Acceptance gate defaults to a hardcoded checkout, so every in-lane run tests the coordinator's tree instead of the agent's
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
 - **FM-329** [NARROW] Acceptance gate for issue-411-gate.sh used three static fixtures with fixed byte sizes; reviewer defeated it with a wc -c case statement returning correct answers for all three without parsing
@@ -85,5 +85,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-343** [NARROW] cli-dispatch start's documented exit-code contract disagrees with its actual behavior on fully-delivered lanes
 - **FM-344** [NARROW] Widening an acceptance grammar to match a parser exposed a downstream consumer that still assumed the narrower set
 - **FM-345** [NARROW] Ruled for-each-ref glob spec matched almost no refs under FNM_PATHNAME globbing; single-segment fixtures masked the defect
-- **FM-350** [NARROW] Cleanup glob matched the harness's own scratch directory and deleted it mid-session
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft

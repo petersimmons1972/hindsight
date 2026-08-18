@@ -61,7 +61,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-31** [NARROW] Validate target repo ∈ `config/target-repos.txt` AND node toolchain matches BEFORE authoring the handoff plan, not after
 - **FM-46** [NARROW] Atomic credential write; documented rotation/revoke path; restart-persistence test
 - **FM-50** [NARROW] Healthcheck actually returns healthy in the boot test; assert `[unix_http_server]` present in supervisord config
-- **FM-56** [NARROW] Resolve actual network name; parameterize; assert network exists with expected name at startup
 - **FM-59** [NARROW] Installer env-file denylist + `sanitize_env_file`; test asserts no host-path vars in env-file skeleton
 - **FM-60** [NARROW] Guard compares `lease_owner == POLLER_ID` (not actor); test asserts container identity passes and host identity passes; foreign poller rejected
 - **FM-61** [NARROW] Container context disables inner sandbox (`--dangerously-bypass-approvals-and-sandbox`, gated on CODEX_INNER_SANDBOX=off set only in Dockerfile); container hardening NOT weakened; tests assert container→bypass-on, host→bypass-off
@@ -85,4 +84,5 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-343** [NARROW] cli-dispatch start's documented exit-code contract disagrees with its actual behavior on fully-delivered lanes
 - **FM-344** [NARROW] Widening an acceptance grammar to match a parser exposed a downstream consumer that still assumed the narrower set
 - **FM-345** [NARROW] Ruled for-each-ref glob spec matched almost no refs under FNM_PATHNAME globbing; single-segment fixtures masked the defect
+- **FM-350** [NARROW] Cleanup glob matched the harness's own scratch directory and deleted it mid-session
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft

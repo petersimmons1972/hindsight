@@ -522,21 +522,41 @@ class HttpEmbeddingBackend:
         return matrix / norms[:, None]
 
 
+class EmbeddingBackendUnavailableError(RuntimeError):
+    """The declared HTTP embedding backend could not be reached.
+
+    A distinct type so callers can tell "the declared backend is down" apart
+    from every other RuntimeError, and so no code path can quietly convert it
+    into a TF-IDF run.
+    """
+
+
 def select_backend(requested: str = "auto") -> EmbeddingBackend:
-    """Choose a backend and make fallback observable to callers and operators."""
+    """Return the DECLARED backend, or fail loudly -- never a silent substitute.
+
+    TF-IDF is returned only when the caller declared ``tfidf``.  When the
+    declared backend is HTTP (``http``, or ``auto`` which prefers it) and the
+    service does not answer, this raises instead of substituting TF-IDF:
+    TF-IDF embeddings diverge from the committed HTTP-fitted snapshot, so a
+    silent substitution produced digest mismatches and recall shortfalls that
+    read as content defects rather than as an unreachable service
+    (hindsight#120).
+    """
     if requested not in {"auto", "http", "tfidf"}:
         raise ValueError(f"unknown backend {requested!r}")
-    if requested in {"auto", "http"}:
-        http = HttpEmbeddingBackend()
-        if http.available:
-            print("cluster backend selected: http", file=sys.stderr)
-            return http
-        if requested == "http":
-            raise RuntimeError("requested HTTP embedding backend is unavailable")
-        print("cluster backend selected: tfidf (HTTP backend unavailable)", file=sys.stderr)
-    else:
+    if requested == "tfidf":
         print("cluster backend selected: tfidf (forced)", file=sys.stderr)
-    return TfidfEmbeddingBackend()
+        return TfidfEmbeddingBackend()
+    http = HttpEmbeddingBackend()
+    if http.available:
+        print("cluster backend selected: http", file=sys.stderr)
+        return http
+    raise EmbeddingBackendUnavailableError(
+        f"declared embedding backend 'http' is unreachable at {http.base_url} "
+        f"(requested={requested!r}); refusing to substitute the tfidf backend, whose "
+        "embeddings diverge from the committed http-fitted snapshot. Declare "
+        "--backend tfidf explicitly if a tfidf run is what you want."
+    )
 
 
 def _validate_backend_identity(identity: object, *, source: str) -> dict[str, object]:

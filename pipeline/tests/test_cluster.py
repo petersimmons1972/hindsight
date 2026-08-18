@@ -1334,3 +1334,65 @@ def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pyt
     assert [timeout for _, timeout in calls[:3]] == [3.0, 3.0, 3.0]
     assert [timeout for _, timeout in calls[3:]] == [120.0, 120.0, 120.0]
     assert len([payload for payload, _ in calls if "content" in payload]) == 3
+
+
+class _UnreachableHttpBackend:
+    """Stand-in for the real probe against a service that never answers."""
+
+    name = "http"
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.available = False
+        self.endpoint = None
+        self.base_url = MODULE.DEFAULT_EMBEDDING_URL
+
+    def embed(self, texts: object) -> object:  # pragma: no cover - must never run
+        raise AssertionError("an unavailable backend must never be asked to embed")
+
+
+@pytest.mark.parametrize("declared", ["http", "auto"])
+def test_unreachable_http_backend_fails_loudly_instead_of_substituting_tfidf(
+    declared: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unreachable declared backend must raise, naming the URL -- never return tfidf.
+
+    Regression for hindsight#120: `auto` used to substitute TfidfEmbeddingBackend
+    whenever the HTTP service did not answer.  Those embeddings diverge from the
+    committed http-fitted snapshot, so the substitution surfaced as an L1 digest
+    mismatch and a recall shortfall -- a content defect that was really an
+    unreachable service.  TF-IDF is now reachable only by declaring it.
+    """
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", _UnreachableHttpBackend)
+    with pytest.raises(MODULE.EmbeddingBackendUnavailableError) as excinfo:
+        MODULE.select_backend(declared)
+    message = str(excinfo.value)
+    assert MODULE.DEFAULT_EMBEDDING_URL in message
+    assert "unreachable" in message
+    assert "tfidf" not in capsys.readouterr().err
+
+
+def test_cli_exits_non_zero_when_the_declared_http_backend_is_unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The executable path must fail, and must not write a tfidf-fitted artifact."""
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", _UnreachableHttpBackend)
+    output = tmp_path / "clusters.jsonl"
+    assert MODULE.main(["--backend", "http", "--output", str(output)]) == 1
+    stderr = capsys.readouterr().err
+    assert MODULE.DEFAULT_EMBEDDING_URL in stderr
+    assert "unreachable" in stderr
+    assert not output.exists()
+
+
+def test_declared_tfidf_is_still_honoured_without_contacting_the_http_service(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fail-loud must not remove the explicitly declared tfidf path."""
+
+    def poisoned(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("declaring tfidf must not probe the HTTP service")
+
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", poisoned)
+    backend = MODULE.select_backend("tfidf")
+    assert isinstance(backend, MODULE.TfidfEmbeddingBackend)
+    assert "cluster backend selected: tfidf (forced)" in capsys.readouterr().err

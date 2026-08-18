@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-85 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+86 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-14** [BROAD] Health probe must query the real dependency (e.g. `SELECT 1`); return 503 on any required dep failure
@@ -77,7 +77,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-282** [NARROW] pev's per-round review agents are all pinned to the same model as the coordinator, defeating cross-vendor independence
 - **FM-286** [NARROW] Detection flag computed but no branch consumes it, so the gate stays open
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
-- **FM-304** [NARROW] A characterization test must be mutation-verified against the specific refactor slip it claims to lock, or it passes green while failing to notice that exact change
+- **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
 - **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
 - **FM-310** [NARROW] Acceptance gate defaults to a hardcoded checkout, so every in-lane run tests the coordinator's tree instead of the agent's
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
@@ -87,5 +87,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-335** [NARROW] Table-scoped exit-code uniqueness invariant misses raw hard-coded producers outside the table, letting colliding exit codes ship undetected
 - **FM-343** [NARROW] cli-dispatch start's documented exit-code contract disagrees with its actual behavior on fully-delivered lanes
 - **FM-344** [NARROW] Widening an acceptance grammar to match a parser exposed a downstream consumer that still assumed the narrower set
+- **FM-345** [NARROW] Ruled for-each-ref glob spec matched almost no refs under FNM_PATHNAME globbing; single-segment fixtures masked the defect
 - **FM-350** [NARROW] Cleanup glob matched the harness's own scratch directory and deleted it mid-session
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft

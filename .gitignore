@@ -7,3 +7,4 @@ pipeline/tmp/
 # It is a local undo artifact, not repo content -- tracking it dirtied the
 # tree on every single use of the tool.
 catalog/*.md.bak
+.workflow-lanes/

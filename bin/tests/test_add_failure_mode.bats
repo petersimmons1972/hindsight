@@ -166,26 +166,118 @@ file_digest() {
 # only where the reconciler is not the subject; every claim about what the add
 # loop does WITH the reconciler is made by a test built on
 # make_real_reconcile_repo, which copies the shipped script in verbatim.
+#
+# Unlike reconcile_l1.py, L2 is deliberately not stubbed: the canonical write
+# now releases an embedding snapshot, replays the real cluster module, ratchets
+# recall baselines, and verifies the result.  The controlled release command is
+# replaced only by the same honest offline stand-in used by
+# test_add_failure_mode_release.py; it imports the staged real cluster.py and
+# produces a deterministic snapshot without contacting an embedding host.
+install_honest_release_fixture() {
+  cat >"$STAGE/pipeline/capture_embedding_snapshot.py" <<'PY'
+#!/usr/bin/env python3
+"""Offline honest stand-in for the controlled embedding-snapshot release."""
+import hashlib
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+import numpy as np
+
+repo = Path(__file__).resolve().parents[1]
+snapshot = repo / "pipeline/L2/embedding-snapshot.json"
+clusters_path = repo / "pipeline/L2/clusters.jsonl"
+l1 = repo / "pipeline/L1"
+code = repo / "pipeline/cluster.py"
+
+spec = importlib.util.spec_from_file_location("hindsight_release_cluster", code)
+cl = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = cl
+spec.loader.exec_module(cl)
+
+entries = cl.load_entries(l1)
+dimensions = int(cl.HTTP_BACKEND_IDENTITY["dimensions"])
+
+
+def deterministic_vector(entry_id):
+    seed = int.from_bytes(hashlib.sha256(entry_id.encode("utf-8")).digest()[:8], "big")
+    vector = np.random.default_rng(seed).normal(size=dimensions)
+    vector /= np.linalg.norm(vector)
+    return [round(float(value), 6) for value in vector]
+
+
+embeddings = {entry.id: deterministic_vector(entry.id) for entry in entries}
+l1_digest = cl.l1_corpus_digest(l1)
+cluster_digest = cl.cluster_code_config_digest(code)
+snapshot.write_text(json.dumps({
+    "schema": cl.SNAPSHOT_SCHEMA,
+    "provenance": {"l1_sha256": l1_digest, "cluster_sha256": cluster_digest},
+    "backend": dict(cl.HTTP_BACKEND_IDENTITY),
+    "embeddings": embeddings,
+}) + "\n", encoding="utf-8")
+
+matrix = cl.load_embedding_snapshot(
+    snapshot, entries, cl.HTTP_BACKEND_IDENTITY,
+    expected_l1_digest=l1_digest, expected_cluster_digest=cluster_digest,
+)
+threshold = cl.default_threshold("http")
+clusters = cl.cluster_entries(sorted(entries, key=lambda entry: entry.id), matrix,
+                              backend_name="http", threshold=threshold)
+
+
+class _Identity:
+    name = "http"
+
+
+cl.write_clusters(clusters_path, clusters, _Identity(), threshold, len(entries))
+trace = os.environ.get("TRACE")
+if trace:
+    with open(trace, "a", encoding="utf-8") as handle:
+        handle.write("release\n")
+print(f"release stand-in: {len(entries)} entries, {len(clusters)} clusters")
+PY
+  chmod +x "$STAGE/pipeline/capture_embedding_snapshot.py"
+}
+
 make_staged_repo() {
   STAGE="$WORK/stage"
   mkdir -p "$STAGE/bin" "$STAGE/.githooks" "$STAGE/guard" \
     "$STAGE/catalog" "$STAGE/pipeline/L1" "$STAGE/pipeline/L2" \
+    "$STAGE/pipeline/tests/fixtures" \
     "$WORK/fleet/orchestration" "$WORK/fleet-dispatch/migrations" \
     "$WORK/claude-codex/docs"
   cp "$TOOL" "$STAGE/bin/add-failure-mode.sh"
   cp "$ROOT/.githooks/pre-commit" "$STAGE/.githooks/pre-commit"
+  # The copied hook's direct cluster invocation is a live HTTP operation in a
+  # production checkout. Keep its regeneration/staging contract hermetic here
+  # by selecting the shipped cluster module's explicit offline backend; the
+  # canonical add tests above still exercise the HTTP-snapshot release path.
+  sed -i 's|pipeline/cluster.py"|pipeline/cluster.py" --backend tfidf|' \
+    "$STAGE/.githooks/pre-commit"
   cp "$ROOT/bin/similar-causes.py" "$STAGE/bin/similar-causes.py"
   cp "$ROOT/bin/synthesize-pointer.py" "$STAGE/bin/synthesize-pointer.py"
+  cp "$ROOT/pipeline/cluster.py" "$STAGE/pipeline/cluster.py"
+  cp "$ROOT/pipeline/replay_l2.py" "$STAGE/pipeline/replay_l2.py"
+  cp "$ROOT/pipeline/recall_baselines.py" "$STAGE/pipeline/recall_baselines.py"
+  cp "$ROOT/pipeline/tests/fixtures/recurrence_ground_truth.json" \
+    "$STAGE/pipeline/tests/fixtures/recurrence_ground_truth.json"
   printf '%s\n' '| FM-001 | A | old | old | Judgment |' >"$STAGE/catalog/failure-modes.md"
   printf '%s\n' 'FM-001' >"$STAGE/catalog/id-ledger.txt"
-  printf '%s\n' '{"id":"seed","instance":"terminal success proof finished","source_path":"fixture"}' \
-    >"$STAGE/pipeline/L1/seed.jsonl"
-  printf '%s\n' 'old-l1-canon' >"$STAGE/pipeline/L1/homelab-canon.jsonl"
-  printf '%s\n' 'old-l1-schema' >"$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl"
   printf '%s\n' \
-    '{"_meta":{"backend":"fixture"}}' \
-    '{"cluster_id":"c-001","members":["seed"]}' \
-    >"$STAGE/pipeline/L2/clusters.jsonl"
+    '{"id":"seed-a","instance":"terminal success proof finished","source_path":"fixture","source_anchor":"fixture:1","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    '{"id":"seed-b","instance":"configuration parser preserved an unsafe default","source_path":"fixture","source_anchor":"fixture:2","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    '{"id":"seed-c","instance":"rollback journal did not restore generated evidence","source_path":"fixture","source_anchor":"fixture:3","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    '{"id":"seed-d","instance":"dependency timeout was reported as a completed verdict","source_path":"fixture","source_anchor":"fixture:4","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    '{"id":"seed-e","instance":"a duplicate key folded separate occurrences together","source_path":"fixture","source_anchor":"fixture:5","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    >"$STAGE/pipeline/L1/seed.jsonl"
+  printf '%s\n' '{"id":"FM-001","instance":"old canonical row","source_path":"catalog","source_anchor":"catalog:1","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    >"$STAGE/pipeline/L1/homelab-canon.jsonl"
+  printf '%s\n' '{"id":"fixture_failure","instance":"old schema row","source_path":"migration","source_anchor":"migration:1","check":null,"enforcement":null,"auto":"machine","first_seen":null}' \
+    >"$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl"
+  printf '%s\n' '{"schema":"hindsight.recall-baselines/v1","baselines":{},"overrides":[]}' \
+    >"$STAGE/pipeline/L2/recall-baselines.json"
   printf '%s\n' '## OPS-1' >"$WORK/fleet/FAILURE-MODES.md"
   printf '%s\n' '## OPS-2' >"$WORK/fleet/orchestration/FAILURE-MODES.md"
   printf '%s\n' '## CI-1' >"$WORK/fleet/CODING-INVARIANTS.md"
@@ -206,29 +298,23 @@ root = Path(__file__).resolve().parents[1]
 catalog = root / "catalog/failure-modes.md"
 if "FM-002" not in catalog.read_text():
     raise SystemExit("catalog row missing before extract")
-(root / "pipeline/L1/homelab-canon.jsonl").write_text("new-l1-canon\n")
-(root / "pipeline/L1/fleet-dispatch-schema.jsonl").write_text("new-l1-schema\n")
+(root / "pipeline/L1/homelab-canon.jsonl").write_text(
+    '{"id":"FM-002","instance":"new canonical row","source_path":"catalog","source_anchor":"catalog:2","check":null,"enforcement":null,"auto":"judgment","first_seen":null}\n')
+(root / "pipeline/L1/fleet-dispatch-schema.jsonl").write_text(
+    '{"id":"fixture_failure","instance":"new schema row","source_path":"migration","source_anchor":"migration:1","check":null,"enforcement":null,"auto":"machine","first_seen":null}\n')
 with open(os.environ["TRACE"], "a") as handle:
     handle.write("extract\n")
 PY
-  cat >"$STAGE/pipeline/cluster.py" <<'PY'
-import os
-import sys
-from pathlib import Path
-root = Path(__file__).resolve().parents[1]
-if len(sys.argv) != 1:
-    raise SystemExit("the ingest loop must use the repository's default L2 backend")
-if Path(os.environ["TRACE"]).read_text().splitlines() != ["extract"]:
-    raise SystemExit("extract did not run first")
-(root / "pipeline/L2/clusters.jsonl").write_text("new-l2\n")
-with open(os.environ["TRACE"], "a") as handle:
-    handle.write("l2\n")
-PY
+  install_honest_release_fixture
+  # Seed a replayable baseline so recurrence validation, undo, and the real
+  # replay check all start from the same production-format L2 artifacts.
+  python3 "$STAGE/pipeline/capture_embedding_snapshot.py" >/dev/null
   cat >"$STAGE/pipeline/reconcile_l1.py" <<'PY'
 import os
 from pathlib import Path
-if Path(os.environ["TRACE"]).read_text().splitlines() != ["extract", "l2"]:
-    raise SystemExit("catalog to extract to L2 order broken")
+trace = Path(os.environ["TRACE"]).read_text().splitlines()
+if trace not in (["extract", "release"], ["extract"]):
+    raise SystemExit("catalog regeneration order broken")
 with open(os.environ["TRACE"], "a") as handle:
     handle.write("reconcile\n")
 print("COMPLETE: 0 enumerable entries unaccounted for")
@@ -243,13 +329,15 @@ PY
   l1_canon_before="$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")"
   l1_schema_before="$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")"
   l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
+  recall_baselines_before="$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
     bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "terminal success proof finished" --recurrence-of none
 
   [ "$status" -eq 0 ]
-  [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
   [[ "$output" == *"COMPLETE"* ]]
+  [[ "$output" == *"replay-l2: PASS"* ]]
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
 
@@ -261,6 +349,7 @@ PY
   [ "$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")" = "$l1_canon_before" ]
   [ "$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")" = "$l1_schema_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
+  [ "$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")" = "$recall_baselines_before" ]
 }
 
 @test "canonical add without -t is rejected before any write" {
@@ -342,7 +431,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
     bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "dot dot alias" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
-  [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
   [[ "$output" == *"COMPLETE"* ]]
 }
 
@@ -355,7 +444,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
     bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH "symlink alias" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
-  [ "$(tr '\n' ' ' <"$trace")" = "extract l2 reconcile " ]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
   [[ "$output" == *"COMPLETE"* ]]
 }
 
@@ -452,15 +541,15 @@ make_real_reconcile_repo() {
   # missing OPS-99, so this source -- which the add never touches -- is SHORT.
   printf '%s\n' '## OPS-2' '## OPS-99' >"$WORK/fleet/orchestration/FAILURE-MODES.md"
   printf '%s\n' \
-    '{"id":"OPS-1","instance":"fleet main entry","source_path":"fixture"}' \
+    '{"id":"OPS-1","instance":"fleet main entry","source_path":"fixture","source_anchor":"fixture:1","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
     >"$STAGE/pipeline/L1/fleet-main.jsonl"
   printf '%s\n' \
-    '{"id":"OPS-2","instance":"orch entry","source_path":"fixture"}' \
-    '{"id":"CI-1","instance":"invariant entry","source_path":"fixture"}' \
-    '{"id":"FM-1","instance":"coding entry","source_path":"fixture"}' \
+    '{"id":"OPS-2","instance":"orch entry","source_path":"fixture","source_anchor":"fixture:2","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    '{"id":"CI-1","instance":"invariant entry","source_path":"fixture","source_anchor":"fixture:3","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
+    '{"id":"FM-1","instance":"coding entry","source_path":"fixture","source_anchor":"fixture:4","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
     >"$STAGE/pipeline/L1/fleet-orch.jsonl"
   printf '%s\n' \
-    '{"id":"FM-001","instance":"integration entry","source_path":"fixture"}' \
+    '{"id":"claude-fm-001","instance":"integration entry","source_path":"fixture","source_anchor":"FM-001","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
     >"$STAGE/pipeline/L1/claude-codex-integration.jsonl"
 
   # A faithful extractor: it derives homelab-canon from the catalog it was just
@@ -478,25 +567,30 @@ if os.environ.get("LOSSY") == "1":
     ids = ids[:-1]
 (root / "pipeline/L1/homelab-canon.jsonl").write_text(
     "".join(json.dumps({"id": i, "instance": "canon row",
-                        "source_path": "catalog"}) + "\n" for i in ids))
+                        "source_path": "catalog", "source_anchor": "catalog:1",
+                        "check": None, "enforcement": None, "auto": "judgment",
+                        "first_seen": None}) + "\n" for i in ids))
 (root / "pipeline/L1/fleet-dispatch-schema.jsonl").write_text(
     json.dumps({"id": "fixture_failure", "instance": "schema class",
-                "source_path": "migration"}) + "\n")
-PY
-  cat >"$STAGE/pipeline/cluster.py" <<'PY'
-from pathlib import Path
-root = Path(__file__).resolve().parents[1]
-(root / "pipeline/L2/clusters.jsonl").write_text(
-    '{"_meta":{"backend":"fixture"}}\n{"cluster_id":"c-001","members":["seed"]}\n')
+                "source_path": "migration", "source_anchor": "migration:1",
+                "check": None, "enforcement": None, "auto": "machine",
+                "first_seen": None}) + "\n")
 PY
 }
 
-@test "the real-reconciler fixture uses the shipped script byte for byte" {
-  # If this ever drifts, every test below is testing a copy of the reconciler
-  # rather than the reconciler -- the stub problem wearing a different hat.
+@test "the full-loop fixture uses the shipped L2 and reconciler modules byte for byte" {
+  # If these ever drift, every test below is testing a copy of a production
+  # dependency rather than that dependency -- the stub problem wearing a
+  # different hat. The release command is the one intentional stand-in.
   make_real_reconcile_repo
   [ "$(file_digest "$STAGE/pipeline/reconcile_l1.py")" \
     = "$(file_digest "$ROOT/pipeline/reconcile_l1.py")" ]
+  [ "$(file_digest "$STAGE/pipeline/cluster.py")" \
+    = "$(file_digest "$ROOT/pipeline/cluster.py")" ]
+  [ "$(file_digest "$STAGE/pipeline/replay_l2.py")" \
+    = "$(file_digest "$ROOT/pipeline/replay_l2.py")" ]
+  [ "$(file_digest "$STAGE/pipeline/recall_baselines.py")" \
+    = "$(file_digest "$ROOT/pipeline/recall_baselines.py")" ]
   ! grep -Fq 'COMPLETE: 0 enumerable entries unaccounted for' \
     "$STAGE/pipeline/reconcile_l1.py"
 }

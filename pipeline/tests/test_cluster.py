@@ -847,7 +847,10 @@ def _assert_fixture_contract(clusters: list[object], backend: str) -> None:
         assigned = [assignments[member] for member in members]
         largest = max(assigned.count(cluster_id) for cluster_id in set(assigned))
         recorded = baselines[family]["fraction"]
-        assert largest / len(members) >= recorded, (
+        # 1e-9 tolerance: baseline and measurement are the same ratio of the
+        # same small integers, round-tripped through JSON. See the matching
+        # tolerance in recall_baselines.find_drops.
+        assert largest / len(members) >= recorded - 1e-9, (
             f"{family} on {backend}: recall {largest}/{len(members)} fell below the "
             f"recorded baseline {recorded:.6f} (target "
             f"{fixture['assertions']['recall']['min_fraction_together']}). Do not "

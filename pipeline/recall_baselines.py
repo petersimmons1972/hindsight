@@ -89,7 +89,11 @@ def recall_from_assignments(
         measured[family] = {
             "together": largest,
             "members": len(members),
-            "fraction": round(largest / len(members), 6),
+            # Deliberately NOT rounded. round(6/7, 6) == 0.857143 is *greater*
+            # than 6/7, so a rounded baseline compares as a drop against the
+            # very measurement that produced it -- the ratchet would fire on
+            # nothing but float noise on its own recorded value.
+            "fraction": largest / len(members),
         }
     return measured
 
@@ -164,7 +168,10 @@ def find_drops(
                 continue
             was = float(recorded_family["fraction"])
             now = float(stats["fraction"])
-            if now < was:
+            # Tolerance, not equality: these are ratios of small integers that
+            # round-trip through JSON. A ratchet that fires on the last bit of a
+            # float is a ratchet that gets disabled by whoever it wakes up.
+            if now < was - 1e-9:
                 drops.append((backend_name, family, was, now))
     return sorted(drops)
 

@@ -64,6 +64,7 @@ restore_journal() {
             "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
             "$REPO_ROOT/pipeline/L2/clusters.jsonl"
             "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
+            "$REPO_ROOT/pipeline/L2/recall-baselines.json"
             "$REPO_ROOT/catalog/criticality.jsonl"
             "$REPO_ROOT/docs/POINTER.md"
             "$REPO_ROOT/docs/HIGH.md"

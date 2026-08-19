@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-85 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+84 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -77,7 +77,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
 - **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
 - **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
-- **FM-310** [NARROW] Acceptance gate defaults to a hardcoded checkout, so every in-lane run tests the coordinator's tree instead of the agent's
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
 - **FM-329** [NARROW] Acceptance gate for issue-411-gate.sh used three static fixtures with fixed byte sizes; reviewer defeated it with a wc -c case statement returning correct answers for all three without parsing
 - **FM-330** [NARROW] Two review rounds on fleet PR 548 (rounds 1-2) wrote correct verdict files but posted nothing to GitHub because the reviewing App identity was the PR author and GitHub forbids self-approval, so the step degraded silently instead of erroring
@@ -88,4 +87,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-345** [NARROW] Ruled for-each-ref glob spec matched almost no refs under FNM_PATHNAME globbing; single-segment fixtures masked the defect
 - **FM-350** [NARROW] Cleanup glob matched the harness's own scratch directory and deleted it mid-session
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft
-- **FM-357** [NARROW] Local suite green from source tree while installed-copy path was broken
+- **FM-363** [NARROW] PR#124's bats fixture (test_add_failure_mode.bats) never updated for new write-path deps added by the same PR, causing 8/237 real CI failures

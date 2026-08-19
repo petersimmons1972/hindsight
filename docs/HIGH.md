@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-84 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+85 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -86,5 +86,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-343** [NARROW] cli-dispatch start's documented exit-code contract disagrees with its actual behavior on fully-delivered lanes
 - **FM-344** [NARROW] Widening an acceptance grammar to match a parser exposed a downstream consumer that still assumed the narrower set
 - **FM-345** [NARROW] Ruled for-each-ref glob spec matched almost no refs under FNM_PATHNAME globbing; single-segment fixtures masked the defect
+- **FM-350** [NARROW] Cleanup glob matched the harness's own scratch directory and deleted it mid-session
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft
 - **FM-357** [NARROW] Local suite green from source tree while installed-copy path was broken

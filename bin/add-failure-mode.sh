@@ -434,6 +434,7 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
+    snapshot_file "$REPO_ROOT/pipeline/L2/recall-baselines.json"
     snapshot_file "$CRITICALITY"
     snapshot_file "$REPO_ROOT/docs/POINTER.md"
     snapshot_file "$REPO_ROOT/docs/HIGH.md"
@@ -561,6 +562,22 @@ class _ReleasedBackend:
 
 cl.write_clusters(clusters_path, clusters, _ReleasedBackend(), threshold, len(entries))
 PYEOF
+
+    # Ratchet the ground-truth recall baselines against the partition just
+    # written (founder ruling 2026-08-19, hindsight#121). A canonical add grows
+    # the corpus, and corpus growth is exactly what degraded
+    # shared-mutable-checkout below the old absolute 0.75 floor. This records
+    # the new per-(family,backend) recall -- and REFUSES the write if any family
+    # dropped, so a regression cannot ride in on a routine catalog add. Measured
+    # against `released` only: the live backends are re-measured by the test
+    # suite, and an add must not depend on the embedding host being up twice.
+    # To accept a drop deliberately:
+    #   pipeline/recall_baselines.py --update --allow-drop --reason "..."
+    RECALL_BASELINE_ARGS=(--update --backend released)
+    if [[ -n "${HINDSIGHT_ALLOW_RECALL_DROP_REASON:-}" ]]; then
+        RECALL_BASELINE_ARGS+=(--allow-drop --reason "$HINDSIGHT_ALLOW_RECALL_DROP_REASON")
+    fi
+    python3 "$REPO_ROOT/pipeline/recall_baselines.py" "${RECALL_BASELINE_ARGS[@]}"
 
     # The exact consistency check catalog-guard runs in CI. If the release
     # somehow still leaves the tree inconsistent (a no-op release, a release

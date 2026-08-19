@@ -878,10 +878,31 @@ def test_ground_truth_contract_with_forced_tfidf_backend() -> None:
     _assert_fixture_contract(clusters, "tfidf")
 
 
+def test_released_http_snapshot_meets_the_ground_truth_contract_offline() -> None:
+    """The released HTTP calibration keeps precision without sacrificing recall.
+
+    This deterministic adversarial gate prevents a future threshold relaxation
+    from reabsorbing a completion-signal incident into the broad
+    shared-mutable-checkout cluster.  It replays the released HTTP vectors, so
+    the contract remains testable even when the authorised embedding service
+    is unavailable.
+    """
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    vectors = MODULE.load_embedding_snapshot(
+        ROOT / "pipeline" / "L2" / "embedding-snapshot.json",
+        entries,
+        MODULE.HTTP_BACKEND_IDENTITY,
+        expected_l1_digest=MODULE.l1_corpus_digest(ROOT / "pipeline" / "L1"),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(ROOT / "pipeline" / "cluster.py"),
+    )
+    clusters = MODULE.cluster_entries(entries, vectors, backend_name="http")
+    _assert_fixture_contract(clusters, "http")
+
+
 def test_each_backend_has_an_explicit_calibrated_default_threshold() -> None:
     """A dense embedding backend must not inherit sparse TF-IDF's cutoff."""
     assert MODULE.default_threshold("tfidf") == 0.17
-    assert MODULE.default_threshold("http") == 0.20
+    assert MODULE.default_threshold("http") == 0.22
 
 
 def test_active_http_backend_meets_the_ground_truth_contract_when_reachable() -> None:

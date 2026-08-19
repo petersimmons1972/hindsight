@@ -10,10 +10,12 @@ Thresholds are calibrated per backend because cosine values from the local
 dense service have a much higher baseline than sparse TF-IDF.  On 2026-08-01,
 the authorised HTTP endpoint clustered all 458 L1 entries at raw cosine 0.17;
 no raw-dense threshold recovered every fixture family without an incorrect
-merge.  A 0.10 dense / 0.90 lexical cosine blend at 0.20 produced 180 clusters
-(largest 34) and recovered 6/7 completion, 6/7 shared-checkout, 4/4
-fail-silent, 3/3 dedup-key, and 2/2 convergence records with every required
-precision separation.  The sparse TF-IDF default remains 0.17.
+merge.  At the current 683-entry corpus, the 0.10 dense / 0.90 lexical blend
+at 0.20 let a 98-member average-link cluster join a completion-signal incident
+to shared-checkout incidents.  Raising the HTTP cutoff to 0.22 is the first
+measured 0.005 increment that restores every required precision separation
+while preserving every recorded HTTP recall baseline; 0.225 regresses
+dedup-identity-key recall.  The sparse TF-IDF default remains 0.17.
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ from urllib.request import Request, urlopen
 
 import numpy as np
 
-BACKEND_DEFAULT_THRESHOLDS = {"tfidf": 0.17, "http": 0.20}
+BACKEND_DEFAULT_THRESHOLDS = {"tfidf": 0.17, "http": 0.22}
 # Retained as the sparse fallback's public compatibility constant.  Call
 # default_threshold() for a selected backend rather than reusing this value.
 DEFAULT_THRESHOLD = BACKEND_DEFAULT_THRESHOLDS["tfidf"]

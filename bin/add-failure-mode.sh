@@ -17,7 +17,7 @@
 #   --recurrence-of c-NNN|none
 #               Record the human recurrence decision after corpus review.
 #   --undo DIR  Restore every file recorded in a prior run's undo journal.
-#   -h          Show this help.
+#   -h          Show this help and exit successfully.
 #
 # TITLE is the check statement / rule (one sentence).
 # DESCRIPTION is optional concrete-instance context for the catalog row.
@@ -41,7 +41,7 @@ CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
 
 usage() {
     grep '^#' "$0" | sed 's/^# \?//'
-    exit 1
+    exit "${1:-1}"
 }
 
 restore_journal() {
@@ -247,7 +247,7 @@ while [[ $# -gt 0 ]]; do
             RECURRENCE_OF="$2"; shift 2
             RECURRENCE_SEEN=1
             ;;
-        -h|--help)  usage ;;
+        -h|--help)  usage 0 ;;
         --)
             shift
             while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done

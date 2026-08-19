@@ -25,6 +25,18 @@ file_digest() {
   sha256sum "$1" | awk '{print $1}'
 }
 
+@test "help prints usage and exits successfully without writing" {
+  catalog_before="$(file_digest "$CATALOG")"
+  ledger_before="$(file_digest "$LEDGER")"
+
+  run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" bash "$TOOL" --help
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage:"* ]]
+  [ "$(file_digest "$CATALOG")" = "$catalog_before" ]
+  [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
+}
+
 @test "missing recurrence decision prints advisory candidates and writes nothing" {
   catalog_before="$(file_digest "$CATALOG")"
   ledger_before="$(file_digest "$LEDGER")"

@@ -123,7 +123,7 @@ def test_report_module_exists():
     [
         ("completion-signal", COMPLETION_SIGNAL, 6, 2, False),
         ("shared-mutable-checkout", SHARED_CHECKOUT, 7, 1, True),
-        ("dedup-identity-key", DEDUP_IDENTITY_KEY, 3, 1, False),
+        ("dedup-identity-key", DEDUP_IDENTITY_KEY, 3, 1, True),
     ],
 )
 def test_ground_truth_family_is_reported_as_one_recurrence(
@@ -132,10 +132,11 @@ def test_ground_truth_family_is_reported_as_one_recurrence(
     """Every named member must appear in the SAME reported group.
 
     `baseline_gated` families are the exception, under the founder ruling of
-    2026-08-19 (hindsight#121): `shared-mutable-checkout` fragmented on the
-    released partition through corpus growth alone, so "all members in one
-    group" is currently unsatisfiable and would only ever be satisfied by
-    hand-editing this list. For those the bar is the RECORDED baseline in
+    2026-08-19 (hindsight#121): `shared-mutable-checkout` and
+    `dedup-identity-key` fragmented on the released partition through corpus
+    growth alone, so "all members in one group" is currently unsatisfiable
+    and would only ever be satisfied by hand-editing this list. For those the
+    bar is the RECORDED baseline in
     `pipeline/L2/recall-baselines.json` under the `released` backend -- the
     fraction of the family sitting in its largest single group may not fall
     below what was last recorded. Everything else here is unchanged: the

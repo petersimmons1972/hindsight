@@ -16,6 +16,23 @@ assert REPLAY_SPEC and REPLAY_SPEC.loader
 REPLAY = importlib.util.module_from_spec(REPLAY_SPEC)
 sys.modules[REPLAY_SPEC.name] = REPLAY
 REPLAY_SPEC.loader.exec_module(REPLAY)
+
+
+@pytest.mark.parametrize("record_id", ["hc-FM-379", "hc-FM-382"])
+def test_process_self_match_catalog_rows_keep_lesson_in_check(record_id: str) -> None:
+    """A table delimiter in narrative text must not shift it into the Check cell."""
+    records = [
+        json.loads(line)
+        for line in (ROOT / "pipeline" / "L1" / "homelab-canon.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    record = next(item for item in records if item["id"] == record_id)
+
+    assert "`ps -eo` piped to `awk` variant" in record["instance"]
+    assert record["check"].startswith("A process check must match on a token")
+
+
 def test_committed_snapshot_replays_through_real_default_loader(capsys) -> None:
     assert REPLAY.main([]) == 0 and "PASS: 696 entries, 276 clusters" in capsys.readouterr().out
 def _record(record_id: str) -> dict[str, object]:

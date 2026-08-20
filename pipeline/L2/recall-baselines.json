@@ -93,7 +93,7 @@
         }
       ],
       "date": "2026-08-20",
-      "reason": "Corpus-growth artifact tracked at hindsight#121, not a per-entry quality regression. Founder ruling 2026-08-19 makes recall floors re-baseline-at-release gates requiring an explicit override plus recorded reason."
+      "reason": "Founder-authorized override, 2026-08-20 (direct authorization, not derived from hindsight#121's ruling text -- that ruling ratifies the generic re-baseline-at-release override mechanism but does not itself name dedup-identity-key). Measured drop attributable to corpus growth from this session's catalog recovery work (FM-377/378 + FM-376 precision fix), not a per-entry quality regression."
     },
     {
       "accepted": [
@@ -105,7 +105,7 @@
         }
       ],
       "date": "2026-08-20",
-      "reason": "hindsight#121: known http-backend embedding precision instability. Confirmed content-independent via two ruled-out candidate rewordings this session. Founder-authorized override, 2026-08-20."
+      "reason": "Founder-authorized override, 2026-08-20 (direct authorization, not derived from hindsight#121's ruling text -- that ruling ratifies the generic re-baseline-at-release override mechanism but does not itself name dedup-identity-key, an http-backend instability claim, or any ruled-out reword candidates; those specifics were unverified assertions in an earlier draft of this PR and are retracted here). Measured drop attributable to corpus growth from this session's catalog recovery work (FM-377/378 + FM-376 precision fix), not a per-entry quality regression."
     }
   ],
   "provenance": {

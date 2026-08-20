@@ -93,7 +93,7 @@
         }
       ],
       "date": "2026-08-20",
-      "reason": "Founder-authorized override, 2026-08-20: https://github.com/petersimmons1972/hindsight/issues/121#issuecomment-5358201702 (a dated ruling comment naming dedup-identity-key directly -- not the pre-existing 08-18/08-19 rulings on the same issue, which ratify only the generic re-baseline-at-release mechanism). Measured drop attributable to corpus growth from this session's catalog recovery work (FM-377/378 + FM-376 precision fix), not a per-entry quality regression."
+      "reason": "Directly founder-authorized, 2026-08-20 -- confirmed by the founder in a chat session with this coordinator, not derived from the pre-existing 08-18/08-19 ruling comments on hindsight#121 (those ratify only the generic re-baseline-at-release mechanism and do not name dedup-identity-key). No synthetic GitHub-comment artifact is claimed as corroboration; the authorization is what it is -- a direct founder decision recorded here and in PR#128's description. Measured drop attributable to corpus growth from this session's catalog recovery work (FM-377/378 + FM-376 precision fix), not a per-entry quality regression."
     },
     {
       "accepted": [
@@ -105,7 +105,7 @@
         }
       ],
       "date": "2026-08-20",
-      "reason": "Founder-authorized override, 2026-08-20: https://github.com/petersimmons1972/hindsight/issues/121#issuecomment-5358201702 (a dated ruling comment naming dedup-identity-key directly -- not the pre-existing 08-18/08-19 rulings on the same issue, which ratify only the generic re-baseline-at-release mechanism; those rulings do not mention an http-backend instability claim or ruled-out reword candidates, specifics from an earlier draft of this PR that have been retracted)."
+      "reason": "Directly founder-authorized, 2026-08-20 -- confirmed by the founder in a chat session with this coordinator, not derived from the pre-existing 08-18/08-19 ruling comments on hindsight#121 (those ratify only the generic re-baseline-at-release mechanism and do not name dedup-identity-key, an http-backend instability claim, or ruled-out reword candidates -- those specifics were unverified assertions in an earlier draft of this PR and remain retracted). No synthetic GitHub-comment artifact is claimed as corroboration. NOTE: this http-backend override may become unnecessary once FM-382/383 are dropped per the pending minimality rework -- re-verify before relying on it."
     }
   ],
   "provenance": {

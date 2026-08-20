@@ -27,6 +27,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-93** [BROAD] Run `git fetch` + `git status -sb` before trusting recon of a local repo; verify claims against `git show origin/main:<path>` / `git ls-tree origin/main`, never the working tree alone.
 - **FM-110** [BROAD] Every '# pragma: no cover' live binding has at least one real (non-faked) smoke test that actually invokes it; and after editing an import block in a formatter-hooked repo, grep-confirm the import survived the hook.
 - **FM-124** [BROAD] Verify claimed fixes exist in the merged tree, not just in the PR description
+- **FM-129** [BROAD] `scripts/lib/concealment-scan.sh` (+ `concealment_scan.py` port) is checked in `codex-poll.sh`'s `launch_coded_issue` and `grok-attach.sh`'s `run_work` before any codex/grok exec; a match quarantines the item (`needs-input`, never silent-drop) and captures the raw payload verbatim for forensics
 - **FM-134** [BROAD] **Automated semantic detection: none; manual signal: review the persisted `done` report. Current mitigation: none.** Proposed: reject terminal `done` unless the comment is non-empty, non-placeholder, and task-relevant; retain an explicit failed-validation state and cover the acceptance boundary with adversarial fixtures.
 - **FM-144** [BROAD] Lease dir unreadable/unwritable (e.g. systemd `ProtectHome=read-only` with default `CODEX_POLL_LEASE_DIR=${HOME}/.cache/...` not overridden to a ReadWritePath); reconciler scans empty store → classifies EVERY in-progress issue as `ORPHAN_NO_LEASE` → mass force-requeue of all live work
 - **FM-147** [BROAD] A multi-target writer must refuse to overwrite any existing file it did not author (no GENERATED marker), and must namespace its target path to avoid colliding with a name a consumer may already own.
@@ -76,7 +77,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-286** [NARROW] Detection flag computed but no branch consumes it, so the gate stays open
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
 - **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
-- **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
 - **FM-329** [NARROW] Acceptance gate for issue-411-gate.sh used three static fixtures with fixed byte sizes; reviewer defeated it with a wc -c case statement returning correct answers for all three without parsing
 - **FM-330** [NARROW] Two review rounds on fleet PR 548 (rounds 1-2) wrote correct verdict files but posted nothing to GitHub because the reviewing App identity was the PR author and GitHub forbids self-approval, so the step degraded silently instead of erroring

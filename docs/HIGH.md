@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-96 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+97 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -100,3 +100,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft
 - **FM-363** [NARROW] PR#124's bats fixture (test_add_failure_mode.bats) never updated for new write-path deps added by the same PR, causing 8/237 real CI failures
 - **FM-367** [NARROW] SHA-pinned CI poller reported green on a partially-registered check set (1 of 14 checks)
+- **FM-375** [NARROW] A workload that fetches its own runtime from the internet on every start has an undeclared external dependency that only surfaces when it is finally restarted

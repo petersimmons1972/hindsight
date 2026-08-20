@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-12 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
+13 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
 
 - **FM-21** [BROAD] Destructive DB/API methods must enforce their own guard (require explicit force flag or confirmation token at the method boundary)
 - **FM-25** [BROAD] Never TRUNCATE a shared-project table; use scoped DELETE or dump/restore only the target project rows
@@ -11,6 +11,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-176** [BROAD] A test may read a document; a destructive script may not. Deriving paths at runtime from a document turns a static command into a program with whole-repo blast radius
 - **FM-185** [BROAD] Any overwrite of an unversioned file must be temp-write plus atomic rename plus fsync; a truncate-and-write that fails leaves the target destroyed while the exit code says nothing was written
 - **FM-222** [BROAD] When specifying a fix for a swallowed or ignored error, state the post-condition on the ARTIFACT -- the file, the row count, the bytes on disk, the instruction the operator receives -- never the internal step imagined to produce it. 'Record the failure into state, which the caller already drains' is satisfiable, faithfully and correctly, by code that records the damage and then proceeds to cause it. 'After any run in which a repair failed, the count of valid parseable rows in the file must be at least its pre-run count' is not. The asymmetry is that a bookkeeping instruction is satisfied by an observation, while a post-condition is satisfied only by an outcome. A second, sharper form of the same error: an ABORT path is frequently load-bearing precisely BECAUSE it does nothing. Repairing the abort so it reports properly can convert a data-preserving refusal into a data-destroying continue, which is strictly worse than the swallowed error it was written to fix. For any repair to an abort, ask what aborting used to protect and whether the new path still protects it
+- **FM-284** [NARROW] A shared safety function (destination_deliver) wired for only one of two production callers, leaving the other silently unverified
 - **FM-285** [NARROW] MERGE-only-if-every-lens-PASS gate is vacuously true when filter(Boolean) leaves zero lenses
 - **FM-292** [NARROW] Harness credential inherited at spawn, never re-synced (6th recurrence; recurrence of hc-FM-232)
 - **FM-300** [NARROW] An acceptance runner that strips a background-guard shim from PATH must re-arm the guard for the ITEM command, or genuinely backgrounded work escapes refusal and reports exit 0

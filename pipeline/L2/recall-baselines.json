@@ -12,9 +12,9 @@
         "together": 2
       },
       "dedup-identity-key": {
-        "fraction": 1.0,
+        "fraction": 0.6666666666666666,
         "members": 3,
-        "together": 3
+        "together": 2
       },
       "fail-silent-gate": {
         "fraction": 1.0,
@@ -94,12 +94,24 @@
       ],
       "date": "2026-08-20",
       "reason": "Corpus-growth artifact tracked at hindsight#121, not a per-entry quality regression. Founder ruling 2026-08-19 makes recall floors re-baseline-at-release gates requiring an explicit override plus recorded reason."
+    },
+    {
+      "accepted": [
+        {
+          "backend": "http",
+          "family": "dedup-identity-key",
+          "from": 1.0,
+          "to": 0.6666666666666666
+        }
+      ],
+      "date": "2026-08-20",
+      "reason": "hindsight#121: known http-backend embedding precision instability. Confirmed content-independent via two ruled-out candidate rewordings this session. Founder-authorized override, 2026-08-20."
     }
   ],
   "provenance": {
     "cluster_sha256": "09c0ea5a2833d8dd1c66d0dadc00142d1d0d43f0191f36e2187b15435fb97c05",
-    "corpus_size": 694,
-    "l1_sha256": "c22490b650101327b3c3a2aed5321a1903af4521c96f9a1262f85f3eacd3efb2"
+    "corpus_size": 696,
+    "l1_sha256": "76fcbcd2beb101c32cf74d470d1301b151f37577b0df31a654b64ac715a107f7"
   },
   "schema": "hindsight.recall-baselines/v1",
   "target_fraction": 0.75,

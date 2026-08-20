@@ -113,7 +113,7 @@ def test_vector_id_binding_mutation_reports_partition(replay_case, capsys) -> No
     # from cross-cluster fleet-OPS-14 moves their binding; the test never searches.
     assert payload["embeddings"]["pub-fm-08"] != payload["embeddings"]["fleet-OPS-14"]
     payload["embeddings"]["pub-fm-08"] = payload["embeddings"]["fleet-OPS-14"]
-    assert len(payload["embeddings"]) == 691
+    assert len(payload["embeddings"]) == 696
     case["snapshot"].write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
     assert _run(case) == 1
@@ -149,6 +149,6 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     assert REPLAY.main([]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert captured.out == "replay-l2: PASS: 691 entries, 273 clusters\n"
+    assert captured.out == "replay-l2: PASS: 696 entries, 276 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

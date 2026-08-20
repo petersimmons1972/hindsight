@@ -40,7 +40,23 @@ jobs:
       - name: Run bats tests
         run: bats guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)
-        run: bats bin/tests/*.bats
+        # FM-361 claimed this step needs sibling repos (fleet, claude-codex,
+        # fleet-dispatch) checked out and is persistently red on main without
+        # them. Verified false by direct CI evidence (2026-08-19): a diagnostic
+        # run of THIS exact step against the current main-based tree passed
+        # 237/237, siblings absent, no checkout added -- see the catalog note
+        # this PR files. bin/tests/test_add_failure_mode.bats's canonical-add
+        # loop tests were never reading real sibling repos; make_staged_repo /
+        # make_real_reconcile_repo build a complete synthetic fleet/claude-codex/
+        # fleet-dispatch topology under the test's own tmpdir, which is what the
+        # tool actually walks (it resolves siblings relative to itself, not to
+        # any fixed workstation path). --print-output-on-failure is added here
+        # only so a REAL future regression in this step prints $output instead
+        # of just "[ "$status" -eq 0 ]' failed", which is what made the original
+        # misdiagnosis possible -- the evidence for FM-361 was misattributed
+        # from a different branch's unrelated failure and from main runs where
+        # this step never actually executed (see catalog note).
+        run: bats --print-output-on-failure bin/tests/*.bats
       - name: Reconcile L1 corpus (declared reduced check)
         # CI checks out only this repo, so four of the five sources are not on
         # disk here. The old form ran all five and waived the resulting PARTIAL,

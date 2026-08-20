@@ -85,8 +85,8 @@
   "overrides": [],
   "provenance": {
     "cluster_sha256": "09c0ea5a2833d8dd1c66d0dadc00142d1d0d43f0191f36e2187b15435fb97c05",
-    "corpus_size": 684,
-    "l1_sha256": "2ac8fd80b0124cc8168dbe4b6f9e3eee16344ee2c04326ba27eeb84c0b9004d6"
+    "corpus_size": 685,
+    "l1_sha256": "3bda3beb4cad0ef7da7de2560311b4548ce1547ee707e8a951e8208e3e95dc9d"
   },
   "schema": "hindsight.recall-baselines/v1",
   "target_fraction": 0.75,

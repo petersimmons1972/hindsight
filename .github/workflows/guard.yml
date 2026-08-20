@@ -37,6 +37,14 @@ jobs:
         run: python3 -m pytest guard/tests/ pipeline/tests/ -q
       - name: Replay committed L2 offline
         run: python3 pipeline/replay_l2.py
+      - name: Verify recall baselines against the committed partition
+        # Founder ruling 2026-08-19 (hindsight#121): ground-truth recall is
+        # gated by pipeline/L2/recall-baselines.json, not by an absolute floor.
+        # This asserts the committed baselines still describe the committed
+        # clusters.jsonl and that no family regressed below them. Scoped to
+        # `released` deliberately -- the live tfidf/http re-measurements belong
+        # to the test suite; this runner must not depend on the embedding host.
+        run: python3 pipeline/recall_baselines.py --backend released
       - name: Run bats tests
         run: bats guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)

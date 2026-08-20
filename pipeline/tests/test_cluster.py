@@ -37,6 +37,13 @@ CAPTURE = importlib.util.module_from_spec(CAPTURE_SPEC)
 sys.modules[CAPTURE_SPEC.name] = CAPTURE
 CAPTURE_SPEC.loader.exec_module(CAPTURE)
 
+BASELINES_PATH = ROOT / "pipeline" / "recall_baselines.py"
+BASELINES_SPEC = importlib.util.spec_from_file_location("hindsight_recall_baselines", BASELINES_PATH)
+assert BASELINES_SPEC and BASELINES_SPEC.loader
+BASELINES = importlib.util.module_from_spec(BASELINES_SPEC)
+sys.modules[BASELINES_SPEC.name] = BASELINES
+BASELINES_SPEC.loader.exec_module(BASELINES)
+
 
 def _corpus_marker_texts() -> list[str]:
     """The exact text `_cause_shape_markers` is ever allowed to see: instance,
@@ -807,15 +814,49 @@ def test_capture_refuses_redirect_without_contacting_unauthorized_destination(
     assert output.read_bytes() == b"prior"
 
 
-def _assert_fixture_contract(clusters: list[object]) -> None:
+def _assert_fixture_contract(clusters: list[object], backend: str) -> None:
+    """Precision absolutely; recall against the RECORDED per-backend baseline.
+
+    Founder ruling 2026-08-19 (hindsight#121). Recall was previously asserted
+    against the fixture's absolute `min_fraction_together` of 0.75. Corpus growth
+    alone (673 -> 678 entries, no code change) pushed `shared-mutable-checkout`
+    below that on BOTH backends, so the absolute floor had become a number that
+    could only be hand-lowered -- exactly the "floors never lower without a
+    measured justification" failure this repo catalogues.
+
+    The gate is now `pipeline/L2/recall-baselines.json`: current recall must be
+    at least the recorded baseline for this (family, backend). It is a ratchet --
+    recall may rise and the release path re-records it, but it may never fall
+    without `recall_baselines.py --update --allow-drop --reason "..."`, which
+    writes the reason into the artifact. 0.75 stays the aspirational TARGET (see
+    the fixture and `recall_baselines.TARGET_FRACTION`); it is not the gate.
+
+    Precision (`must_not_merge`) and the completion-signal headline are unchanged
+    and remain absolute: they are what stops recall being satisfied trivially.
+    """
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assignments = _assignments(clusters)
     families = {family["key"]: family["members"] for family in fixture["families"]}
+    baselines = BASELINES.load_artifact()["baselines"].get(backend)
+    assert baselines, (
+        f"no recorded recall baselines for backend {backend!r} in "
+        f"{BASELINES.DEFAULT_ARTIFACT}; run pipeline/recall_baselines.py --update"
+    )
 
     for family, members in families.items():
         assigned = [assignments[member] for member in members]
         largest = max(assigned.count(cluster_id) for cluster_id in set(assigned))
-        assert largest / len(members) >= fixture["assertions"]["recall"]["min_fraction_together"], family
+        recorded = baselines[family]["fraction"]
+        # 1e-9 tolerance: baseline and measurement are the same ratio of the
+        # same small integers, round-tripped through JSON. See the matching
+        # tolerance in recall_baselines.find_drops.
+        assert largest / len(members) >= recorded - 1e-9, (
+            f"{family} on {backend}: recall {largest}/{len(members)} fell below the "
+            f"recorded baseline {recorded:.6f} (target "
+            f"{fixture['assertions']['recall']['min_fraction_together']}). Do not "
+            f"edit this test -- investigate, or re-baseline deliberately via "
+            f"pipeline/recall_baselines.py --update --allow-drop --reason '...'."
+        )
 
     for left, right in fixture["assertions"]["precision"]["must_not_merge"]:
         assert {
@@ -834,13 +875,34 @@ def test_ground_truth_contract_with_forced_tfidf_backend() -> None:
     """Fallback output is held to the same recall and precision gate as HTTP."""
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
     clusters = MODULE.cluster_entries_from_backend(entries, MODULE.TfidfEmbeddingBackend())
-    _assert_fixture_contract(clusters)
+    _assert_fixture_contract(clusters, "tfidf")
+
+
+def test_released_http_snapshot_meets_the_ground_truth_contract_offline() -> None:
+    """The released HTTP calibration keeps precision without sacrificing recall.
+
+    This deterministic adversarial gate prevents a future threshold relaxation
+    from reabsorbing a completion-signal incident into the broad
+    shared-mutable-checkout cluster.  It replays the released HTTP vectors, so
+    the contract remains testable even when the authorised embedding service
+    is unavailable.
+    """
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    vectors = MODULE.load_embedding_snapshot(
+        ROOT / "pipeline" / "L2" / "embedding-snapshot.json",
+        entries,
+        MODULE.HTTP_BACKEND_IDENTITY,
+        expected_l1_digest=MODULE.l1_corpus_digest(ROOT / "pipeline" / "L1"),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(ROOT / "pipeline" / "cluster.py"),
+    )
+    clusters = MODULE.cluster_entries(entries, vectors, backend_name="http")
+    _assert_fixture_contract(clusters, "http")
 
 
 def test_each_backend_has_an_explicit_calibrated_default_threshold() -> None:
     """A dense embedding backend must not inherit sparse TF-IDF's cutoff."""
     assert MODULE.default_threshold("tfidf") == 0.17
-    assert MODULE.default_threshold("http") == 0.20
+    assert MODULE.default_threshold("http") == 0.22
 
 
 def test_active_http_backend_meets_the_ground_truth_contract_when_reachable() -> None:
@@ -851,7 +913,7 @@ def test_active_http_backend_meets_the_ground_truth_contract_when_reachable() ->
 
     entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
     clusters = MODULE.cluster_entries_from_backend(entries, backend)
-    _assert_fixture_contract(clusters)
+    _assert_fixture_contract(clusters, "http")
 
 
 def test_degenerate_uniform_embeddings_fail_loudly_instead_of_emitting_one_cluster() -> None:
@@ -1030,7 +1092,7 @@ def test_false_positive_novel_failure_does_not_join_an_existing_family() -> None
         [*entries, novel_session_confusion, novel_control], MODULE.TfidfEmbeddingBackend()
     )
     assignments = _assignments(clusters)
-    _assert_fixture_contract(clusters)
+    _assert_fixture_contract(clusters, "tfidf")
 
     completion_cluster_ids = {assignments[member] for member in families["completion-signal"]}
     assert assignments["novel-SES-1"] not in completion_cluster_ids
@@ -1334,3 +1396,65 @@ def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pyt
     assert [timeout for _, timeout in calls[:3]] == [3.0, 3.0, 3.0]
     assert [timeout for _, timeout in calls[3:]] == [120.0, 120.0, 120.0]
     assert len([payload for payload, _ in calls if "content" in payload]) == 3
+
+
+class _UnreachableHttpBackend:
+    """Stand-in for the real probe against a service that never answers."""
+
+    name = "http"
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.available = False
+        self.endpoint = None
+        self.base_url = MODULE.DEFAULT_EMBEDDING_URL
+
+    def embed(self, texts: object) -> object:  # pragma: no cover - must never run
+        raise AssertionError("an unavailable backend must never be asked to embed")
+
+
+@pytest.mark.parametrize("declared", ["http", "auto"])
+def test_unreachable_http_backend_fails_loudly_instead_of_substituting_tfidf(
+    declared: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unreachable declared backend must raise, naming the URL -- never return tfidf.
+
+    Regression for hindsight#120: `auto` used to substitute TfidfEmbeddingBackend
+    whenever the HTTP service did not answer.  Those embeddings diverge from the
+    committed http-fitted snapshot, so the substitution surfaced as an L1 digest
+    mismatch and a recall shortfall -- a content defect that was really an
+    unreachable service.  TF-IDF is now reachable only by declaring it.
+    """
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", _UnreachableHttpBackend)
+    with pytest.raises(MODULE.EmbeddingBackendUnavailableError) as excinfo:
+        MODULE.select_backend(declared)
+    message = str(excinfo.value)
+    assert MODULE.DEFAULT_EMBEDDING_URL in message
+    assert "unreachable" in message
+    assert "tfidf" not in capsys.readouterr().err
+
+
+def test_cli_exits_non_zero_when_the_declared_http_backend_is_unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The executable path must fail, and must not write a tfidf-fitted artifact."""
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", _UnreachableHttpBackend)
+    output = tmp_path / "clusters.jsonl"
+    assert MODULE.main(["--backend", "http", "--output", str(output)]) == 1
+    stderr = capsys.readouterr().err
+    assert MODULE.DEFAULT_EMBEDDING_URL in stderr
+    assert "unreachable" in stderr
+    assert not output.exists()
+
+
+def test_declared_tfidf_is_still_honoured_without_contacting_the_http_service(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Fail-loud must not remove the explicitly declared tfidf path."""
+
+    def poisoned(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("declaring tfidf must not probe the HTTP service")
+
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", poisoned)
+    backend = MODULE.select_backend("tfidf")
+    assert isinstance(backend, MODULE.TfidfEmbeddingBackend)
+    assert "cluster backend selected: tfidf (forced)" in capsys.readouterr().err

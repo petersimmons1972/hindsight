@@ -1,0 +1,94 @@
+{
+  "baselines": {
+    "http": {
+      "completion-signal": {
+        "fraction": 0.8571428571428571,
+        "members": 7,
+        "together": 6
+      },
+      "convergence-not-corroboration": {
+        "fraction": 1.0,
+        "members": 2,
+        "together": 2
+      },
+      "dedup-identity-key": {
+        "fraction": 1.0,
+        "members": 3,
+        "together": 3
+      },
+      "fail-silent-gate": {
+        "fraction": 1.0,
+        "members": 4,
+        "together": 4
+      },
+      "shared-mutable-checkout": {
+        "fraction": 0.7142857142857143,
+        "members": 7,
+        "together": 5
+      }
+    },
+    "released": {
+      "completion-signal": {
+        "fraction": 0.8571428571428571,
+        "members": 7,
+        "together": 6
+      },
+      "convergence-not-corroboration": {
+        "fraction": 1.0,
+        "members": 2,
+        "together": 2
+      },
+      "dedup-identity-key": {
+        "fraction": 1.0,
+        "members": 3,
+        "together": 3
+      },
+      "fail-silent-gate": {
+        "fraction": 1.0,
+        "members": 4,
+        "together": 4
+      },
+      "shared-mutable-checkout": {
+        "fraction": 0.7142857142857143,
+        "members": 7,
+        "together": 5
+      }
+    },
+    "tfidf": {
+      "completion-signal": {
+        "fraction": 0.8571428571428571,
+        "members": 7,
+        "together": 6
+      },
+      "convergence-not-corroboration": {
+        "fraction": 1.0,
+        "members": 2,
+        "together": 2
+      },
+      "dedup-identity-key": {
+        "fraction": 1.0,
+        "members": 3,
+        "together": 3
+      },
+      "fail-silent-gate": {
+        "fraction": 1.0,
+        "members": 4,
+        "together": 4
+      },
+      "shared-mutable-checkout": {
+        "fraction": 0.7142857142857143,
+        "members": 7,
+        "together": 5
+      }
+    }
+  },
+  "overrides": [],
+  "provenance": {
+    "cluster_sha256": "09c0ea5a2833d8dd1c66d0dadc00142d1d0d43f0191f36e2187b15435fb97c05",
+    "corpus_size": 689,
+    "l1_sha256": "0ba6d35736273241b64a985337a3da9c96bed1f7fa88e3a7e6610d2d7f4ef52c"
+  },
+  "schema": "hindsight.recall-baselines/v1",
+  "target_fraction": 0.75,
+  "target_note": "0.75 is the aspirational recall target from pipeline/tests/fixtures/recurrence_ground_truth.json. The GATE is the recorded baseline below; see hindsight#121."
+}

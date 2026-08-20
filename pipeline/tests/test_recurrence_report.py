@@ -26,6 +26,15 @@ REPO = Path(__file__).resolve().parents[2]
 REPORT = REPO / "pipeline" / "recurrence_report.py"
 PINNED_CLUSTERS = REPO / "pipeline" / "L2" / "clusters.jsonl"
 
+import importlib.util  # noqa: E402  (kept beside the path constants it uses)
+
+_BASELINES_SPEC = importlib.util.spec_from_file_location(
+    "hindsight_recall_baselines_rr", REPO / "pipeline" / "recall_baselines.py"
+)
+BASELINES = importlib.util.module_from_spec(_BASELINES_SPEC)
+sys.modules[_BASELINES_SPEC.name] = BASELINES
+_BASELINES_SPEC.loader.exec_module(BASELINES)
+
 # --- ground truth, measured from the pinned artifact on 2026-08-02 -----------
 # Members are named individually rather than by count so that a cluster which
 # merely happens to be large cannot satisfy a family assertion.
@@ -110,28 +119,55 @@ def test_report_module_exists():
 
 
 @pytest.mark.parametrize(
-    "family,members,min_size,min_repos",
+    "family,members,min_size,min_repos,baseline_gated",
     [
-        ("completion-signal", COMPLETION_SIGNAL, 6, 2),
-        ("shared-mutable-checkout", SHARED_CHECKOUT, 7, 1),
-        ("dedup-identity-key", DEDUP_IDENTITY_KEY, 3, 1),
+        ("completion-signal", COMPLETION_SIGNAL, 6, 2, False),
+        ("shared-mutable-checkout", SHARED_CHECKOUT, 7, 1, True),
+        ("dedup-identity-key", DEDUP_IDENTITY_KEY, 3, 1, False),
     ],
 )
 def test_ground_truth_family_is_reported_as_one_recurrence(
-    family, members, min_size, min_repos
+    family, members, min_size, min_repos, baseline_gated
 ):
-    """Every named member must appear in the SAME reported group."""
+    """Every named member must appear in the SAME reported group.
+
+    `baseline_gated` families are the exception, under the founder ruling of
+    2026-08-19 (hindsight#121): `shared-mutable-checkout` fragmented on the
+    released partition through corpus growth alone, so "all members in one
+    group" is currently unsatisfiable and would only ever be satisfied by
+    hand-editing this list. For those the bar is the RECORDED baseline in
+    `pipeline/L2/recall-baselines.json` under the `released` backend -- the
+    fraction of the family sitting in its largest single group may not fall
+    below what was last recorded. Everything else here is unchanged: the
+    non-gated families still owe the strict single-group answer, and the
+    size/repo assertions apply to the group either way.
+
+    Lowering a baseline requires
+    `pipeline/recall_baselines.py --update --allow-drop --reason "..."`, not an
+    edit here. hindsight#121 tracks getting this family back to one group.
+    """
     res = run_report("--format", "json")
     assert res.returncode == 0, f"report failed: {res.stderr}"
     groups = json.loads(res.stdout)
 
     holding = [g for g in groups if set(members) <= set(g["members"])]
-    assert holding, (
-        f"no reported group contains all of {family}: {members}. "
-        f"Members were split across groups, so the report would understate "
-        f"this recurrence."
-    )
-    g = holding[0]
+    if baseline_gated and not holding:
+        recorded = BASELINES.load_artifact()["baselines"]["released"][family]["fraction"]
+        by_group = [(len(set(members) & set(g["members"])), g) for g in groups]
+        held, g = max(by_group, key=lambda pair: pair[0])
+        assert held / len(members) >= recorded, (
+            f"{family}: largest reported group holds {held}/{len(members)} of the "
+            f"family, below the recorded baseline {recorded:.6f}. Do not edit this "
+            f"list -- investigate, or re-baseline deliberately via "
+            f"pipeline/recall_baselines.py --update --allow-drop --reason '...'."
+        )
+    else:
+        assert holding, (
+            f"no reported group contains all of {family}: {members}. "
+            f"Members were split across groups, so the report would understate "
+            f"this recurrence."
+        )
+        g = holding[0]
     assert g["size"] >= min_size, f"{family}: size {g['size']} < {min_size}"
     assert len(g["source_repos"]) >= min_repos, (
         f"{family}: spans {len(g['source_repos'])} repos, expected >= {min_repos}"

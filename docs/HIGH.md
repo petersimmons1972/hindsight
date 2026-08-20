@@ -100,4 +100,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft
 - **FM-363** [NARROW] PR#124's bats fixture (test_add_failure_mode.bats) never updated for new write-path deps added by the same PR, causing 8/237 real CI failures
 - **FM-367** [NARROW] SHA-pinned CI poller reported green on a partially-registered check set (1 of 14 checks)
-- **FM-375** [NARROW] A workload that fetches its own runtime from the internet on every start has an undeclared external dependency that only surfaces when it is finally restarted
+- **FM-378** [NARROW] A workload that fetches its own runtime from the internet on every start has an undeclared external dependency that only surfaces when it is finally restarted

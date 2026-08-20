@@ -17,7 +17,7 @@ REPLAY = importlib.util.module_from_spec(REPLAY_SPEC)
 sys.modules[REPLAY_SPEC.name] = REPLAY
 REPLAY_SPEC.loader.exec_module(REPLAY)
 def test_committed_snapshot_replays_through_real_default_loader(capsys) -> None:
-    assert REPLAY.main([]) == 0 and "PASS: 698 entries, 277 clusters" in capsys.readouterr().out
+    assert REPLAY.main([]) == 0 and "PASS: 698 entries, 280 clusters" in capsys.readouterr().out
 def _record(record_id: str) -> dict[str, object]:
     return {
         "id": record_id, "source_path": f"repo/{record_id}", "source_anchor": "line 1",

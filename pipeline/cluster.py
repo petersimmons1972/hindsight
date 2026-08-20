@@ -43,6 +43,37 @@ DEFAULT_EMBEDDING_URL = "http://192.168.0.98:8004"
 LINKAGE = "average"
 HTTP_DENSE_WEIGHT = 0.10
 MAX_CLUSTER_FRACTION = 0.40
+# Hard ceiling on how many members one cluster may hold, enforced DURING
+# agglomeration rather than checked afterwards. Founder ruling 2026-08-20
+# (hindsight#130): a 102-member cluster is the defect, not the contract it
+# breaks.
+#
+# Why a cap and not a higher threshold: average-link keeps absorbing whatever
+# is nearest, so a large cluster's centroid drifts and it becomes MORE
+# attractive as it grows. c-052 had reached 102/698 holding hc-FM-162 through
+# hc-FM-385 nearly continuously -- it was not a family, it was a sink, and it
+# had begun pulling members out of genuine families (a `completion-signal`
+# member landed in it, colliding with `shared-mutable-checkout` and breaking
+# the must_not_merge precision contract).
+#
+# Why 40, and why absolute rather than a fraction of the corpus:
+#   - The largest ground-truth family is 7 members, so 40 leaves 5.7x headroom
+#     and cannot threaten a legitimate family.
+#   - Measured sweep at 698 entries: every cap from 25 to 60 yields ZERO
+#     precision violations and ZERO recall drops below the recorded baselines.
+#     40 sits mid-band, not on an edge, so this is not a value tuned until a
+#     test flipped. The cliff is at 20, where `shared-mutable-checkout` starts
+#     shredding (0.429 vs its 0.714 baseline).
+#   - A FRACTION would re-admit the blob as the corpus grows: 7% of 2,000
+#     entries is 140 members again. The real constraint is human review -- a
+#     recurrence family has to be small enough for a person to read -- and that
+#     does not scale with corpus size.
+#
+# MAX_CLUSTER_FRACTION stays as a separate degeneracy alarm. With this cap in
+# force it can no longer fire for any corpus above ~100 entries, which is the
+# point: the cap prevents, the fraction guard is the belt-and-braces that
+# catches a future change removing or misapplying the cap.
+MAX_CLUSTER_MEMBERS = 40
 REQUIRED_FIELDS = frozenset(
     {"id", "source_path", "source_anchor", "instance", "check", "enforcement", "auto", "first_seen"}
 )
@@ -681,8 +712,20 @@ def _label(entry: Entry) -> str:
     return SPACE_RE.sub(" ", sentence).strip()[:120] or "unlabelled root cause"
 
 
-def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]]:
-    """Perform deterministic average-link agglomeration from a cosine matrix."""
+def _cluster_indices(
+    similarity: np.ndarray, threshold: float, max_members: int | None = MAX_CLUSTER_MEMBERS
+) -> list[list[int]]:
+    """Perform deterministic average-link agglomeration from a cosine matrix.
+
+    A merge that would push a cluster past ``max_members`` is refused and the
+    pair is blocked permanently, rather than stopping agglomeration entirely --
+    the other candidate pairs are still worth merging. Blocking is safe to make
+    permanent because cluster sizes only ever grow, so a pair that is too large
+    now can never become small enough later.
+
+    Pass ``max_members=None`` to restore the unbounded behaviour (used by the
+    tests that characterise the blob this cap exists to prevent).
+    """
     count = similarity.shape[0]
     if count == 0:
         return []
@@ -690,6 +733,7 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
     np.fill_diagonal(sums, 0.0)
     active = np.ones(count, dtype=bool)
     sizes = np.ones(count, dtype=np.int32)
+    blocked = np.zeros((count, count), dtype=bool)
     members = [[index] for index in range(count)]
 
     while True:
@@ -699,6 +743,7 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
         averages[inactive, :] = -np.inf
         averages[:, inactive] = -np.inf
         np.fill_diagonal(averages, -np.inf)
+        averages[blocked] = -np.inf
         flattened = int(np.argmax(averages))
         left, right = divmod(flattened, count)
         best = averages[left, right]
@@ -706,6 +751,12 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
             break
         if left > right:
             left, right = right, left
+        if max_members is not None and sizes[left] + sizes[right] > max_members:
+            # Refuse this merge, keep agglomerating everything else. Symmetric
+            # so the pair stays blocked whichever index survives.
+            blocked[left, right] = True
+            blocked[right, left] = True
+            continue
         members[left].extend(members[right])
         members[left].sort()
         sizes[left] += sizes[right]
@@ -717,7 +768,11 @@ def _cluster_indices(similarity: np.ndarray, threshold: float) -> list[list[int]
 
 
 def _assert_non_degenerate(
-    assignments: Sequence[Sequence[int]], backend_name: str, threshold: float, entry_count: int
+    assignments: Sequence[Sequence[int]],
+    backend_name: str,
+    threshold: float,
+    entry_count: int,
+    max_members: int | None = MAX_CLUSTER_MEMBERS,
 ) -> None:
     """Reject collapse patterns that turn recurrence output into empty signal.
 
@@ -730,6 +785,32 @@ def _assert_non_degenerate(
     L2 output. A degeneracy guard that only catches absurd inputs (threshold
     0, -0.1, 1.5) is decorative; this must catch plausible ones too.
     """
+    # MAX_CLUSTER_MEMBERS defeats the single-largest test on its own: a
+    # degenerate threshold no longer builds one mega-cluster, it builds MANY
+    # clusters pinned at exactly the cap, and each of those is comfortably
+    # under MAX_CLUSTER_FRACTION. Measured: threshold 0.05 used to produce a
+    # 440+/458 mega-cluster and fail loudly; with the cap it produced capped
+    # clusters and exit 0, silently writing the wrong output -- re-introducing
+    # precisely the defect this guard was added to close.
+    #
+    # So saturation is measured in AGGREGATE. Clusters sitting exactly at the
+    # cap are ones agglomeration wanted to grow further; if they collectively
+    # hold more than MAX_CLUSTER_FRACTION of the corpus, the threshold is
+    # swallowing it whatever the per-cluster sizes look like. At the calibrated
+    # 0.17 this is one 40/698 cluster (5.7%), nowhere near the bound.
+    if max_members is not None:
+        saturated = sum(len(group) for group in assignments if len(group) >= max_members)
+        saturated_fraction = saturated / entry_count
+        if saturated_fraction > MAX_CLUSTER_FRACTION:
+            raise RuntimeError(
+                "degenerate clustering for backend "
+                f"{backend_name!r} at threshold {threshold:.2f}: "
+                f"{saturated}/{entry_count} ({saturated_fraction:.1%}) of the corpus sits in "
+                f"clusters pinned at the {max_members}-member cap, exceeding the "
+                f"{MAX_CLUSTER_FRACTION:.0%} bound -- the cap is masking a threshold that "
+                "would otherwise collapse the corpus"
+            )
+
     largest_cluster = max(len(group) for group in assignments)
     largest_fraction = largest_cluster / entry_count
     # A singleton can never be "degenerate" regardless of what fraction of a
@@ -792,6 +873,7 @@ def cluster_entries(
         )
     assignments = _cluster_indices(_similarity_matrix(texts, embeddings, backend_name), threshold)
     _assert_non_degenerate(assignments, backend_name, threshold, len(ordered))
+
 
     groups = [[ordered[index] for index in group] for group in assignments]
     groups.sort(key=lambda group: group[0].id)

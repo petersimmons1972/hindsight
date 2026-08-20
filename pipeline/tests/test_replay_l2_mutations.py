@@ -149,6 +149,6 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     assert REPLAY.main([]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert captured.out == "replay-l2: PASS: 698 entries, 277 clusters\n"
+    assert captured.out == "replay-l2: PASS: 698 entries, 280 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

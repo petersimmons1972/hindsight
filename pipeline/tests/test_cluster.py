@@ -941,7 +941,9 @@ def test_degenerate_uniform_embeddings_fail_loudly_instead_of_emitting_one_clust
         MODULE.cluster_entries_from_backend(entries, UniformEmbeddingBackend())
 
 
-def test_plausible_low_threshold_is_rejected_not_silently_written(tmp_path: Path) -> None:
+def test_plausible_low_threshold_is_rejected_not_silently_written(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """A threshold in the tuned neighbourhood that swallows the corpus must fail loud.
 
     The prior degeneracy guard only fired on absurd inputs (0, -0.1, 1.5).
@@ -954,6 +956,7 @@ def test_plausible_low_threshold_is_rejected_not_silently_written(tmp_path: Path
         ["--backend", "tfidf", "--threshold", "0.05", "--output", str(output)]
     )
     assert exit_code == 1
+    assert "clusters pinned at the 40-member cap, exceeding the 40% bound" in capsys.readouterr().err
     assert not output.exists()
 
 

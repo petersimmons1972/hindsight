@@ -12,9 +12,9 @@
         "together": 2
       },
       "dedup-identity-key": {
-        "fraction": 1.0,
+        "fraction": 0.6666666666666666,
         "members": 3,
-        "together": 3
+        "together": 2
       },
       "fail-silent-gate": {
         "fraction": 1.0,
@@ -39,9 +39,9 @@
         "together": 2
       },
       "dedup-identity-key": {
-        "fraction": 1.0,
+        "fraction": 0.6666666666666666,
         "members": 3,
-        "together": 3
+        "together": 2
       },
       "fail-silent-gate": {
         "fraction": 1.0,
@@ -82,11 +82,36 @@
       }
     }
   },
-  "overrides": [],
+  "overrides": [
+    {
+      "accepted": [
+        {
+          "backend": "released",
+          "family": "dedup-identity-key",
+          "from": 1.0,
+          "to": 0.6666666666666666
+        }
+      ],
+      "date": "2026-08-20",
+      "reason": "Directly founder-authorized, 2026-08-20 -- confirmed by the founder in a chat session with this coordinator, not derived from the pre-existing 08-18/08-19 ruling comments on hindsight#121 (those ratify only the generic re-baseline-at-release mechanism and do not name dedup-identity-key). No synthetic GitHub-comment artifact is claimed as corroboration; the authorization is what it is -- a direct founder decision recorded here and in PR#128's description. Measured drop attributable to corpus growth from this session's catalog recovery work (FM-377/378 + FM-376 precision fix), not a per-entry quality regression."
+    },
+    {
+      "accepted": [
+        {
+          "backend": "http",
+          "family": "dedup-identity-key",
+          "from": 1.0,
+          "to": 0.6666666666666666
+        }
+      ],
+      "date": "2026-08-20",
+      "reason": "Directly founder-authorized, 2026-08-20 -- confirmed by the founder in a chat session with this coordinator, not derived from the pre-existing 08-18/08-19 ruling comments on hindsight#121 (those ratify only the generic re-baseline-at-release mechanism and do not name dedup-identity-key, an http-backend instability claim, or ruled-out reword candidates -- those specifics were unverified assertions in an earlier draft of this PR and remain retracted). No synthetic GitHub-comment artifact is claimed as corroboration. NOTE: this http-backend override may become unnecessary once FM-382/383 are dropped per the pending minimality rework -- re-verify before relying on it."
+    }
+  ],
   "provenance": {
-    "cluster_sha256": "09c0ea5a2833d8dd1c66d0dadc00142d1d0d43f0191f36e2187b15435fb97c05",
-    "corpus_size": 689,
-    "l1_sha256": "0ba6d35736273241b64a985337a3da9c96bed1f7fa88e3a7e6610d2d7f4ef52c"
+    "cluster_sha256": "0083d6387659a753fb90cf975221259db2a65eabddaffcea223736d2d5e00143",
+    "corpus_size": 696,
+    "l1_sha256": "7a2aebe4370e045e64affcf425c2a63b56113c87f9ee825e83dc818ea089a44d"
   },
   "schema": "hindsight.recall-baselines/v1",
   "target_fraction": 0.75,

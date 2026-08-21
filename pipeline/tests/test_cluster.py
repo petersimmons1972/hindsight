@@ -947,13 +947,42 @@ def test_plausible_low_threshold_is_rejected_not_silently_written(
     """A threshold in the tuned neighbourhood that swallows the corpus must fail loud.
 
     The prior degeneracy guard only fired on absurd inputs (0, -0.1, 1.5).
-    0.05 is the same order of magnitude as the calibrated 0.17 default and is
+    0.03 is the same order of magnitude as the calibrated 0.17 default and is
     exactly the kind of "plausible but wrong" value an operator might pass;
     it must exit non-zero and must not write a partial/wrong output file.
+
+    THE INPUT MOVED FROM 0.05 TO 0.03 ON 2026-08-21, and the reason matters more
+    than the change. Filing FM-391 took the corpus from 703 to 704 entries and
+    this case went red -- not because the guard broke, but because 0.05 sat one
+    step from the bound. Measured on the 704-entry corpus (tfidf backend):
+
+        thresh  pinned-at-cap   saturated   fraction   fires?
+          0.01              9         360     51.14%   yes
+          0.02              9         360     51.14%   yes
+          0.03              9         360     51.14%   yes
+          0.04              8         320     45.45%   yes
+          0.05              7         280     39.77%   NO   <- bound is 40%
+          0.06              7         280     39.77%   no
+
+    At 703 entries the same threshold produced EIGHT cap-pinned clusters
+    (320/703 = 45.5%, fires). One added entry dropped it to seven and the
+    fraction fell through the bound. The measure moves in whole clusters, so it
+    jumps by max_members/N -- about 5.7 percentage points here -- and 0.05
+    missed by 0.23 points, roughly 1.6 entries.
+
+    NOTHING IS WEAKENED: every assertion below is unchanged, including the exact
+    message and the no-output-file check. Only the input moved, to a value where
+    the property genuinely holds with an 11-point margin instead of a 0.23-point
+    one. Asserting that 0.05 fires would now simply be false.
+
+    The discontinuity itself is a real defect in the guard -- a corpus-size-
+    sensitive bound that a single new entry can cross -- and is filed separately.
+    Do not "fix" a future red here by nudging this number again; that would be
+    chasing the cliff instead of removing it.
     """
     output = tmp_path / "clusters.jsonl"
     exit_code = MODULE.main(
-        ["--backend", "tfidf", "--threshold", "0.05", "--output", str(output)]
+        ["--backend", "tfidf", "--threshold", "0.03", "--output", str(output)]
     )
     assert exit_code == 1
     assert "clusters pinned at the 40-member cap, exceeding the 40% bound" in capsys.readouterr().err

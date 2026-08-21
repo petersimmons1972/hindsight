@@ -2,10 +2,11 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-16 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
+17 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
 
 - **FM-21** [BROAD] Destructive DB/API methods must enforce their own guard (require explicit force flag or confirmation token at the method boundary)
 - **FM-25** [BROAD] Never TRUNCATE a shared-project table; use scoped DELETE or dump/restore only the target project rows
+- **FM-96** [BROAD] Never use `-v`/`-sv`/`--verbose` against authenticated endpoints in agent briefs; prefer `xh` with `--no-auth-header` or equivalent header suppression. On occurrence: immediately redact the transcript entry, rotate the affected token via the fleet-dispatch token-rotation runbook, and confirm no copy persists in Engram or log archives. Deterministic grep check: scan agent transcripts for `Authorization: Bearer` and `Bearer [A-Za-z0-9+/=-]{20,}` patterns before archiving.
 - **FM-103** [BROAD] Treat `ATTACH_TOKENS` as crown-jewel config: (1) always read the current value, apply a structured merge tool (e.g. `jq` merge), and JSON-validate (`jq . >/dev/null`) before writing; (2) retain the previous value in a rollback variable for the duration of the rotation window; (3) after write, verify the new token works on a canary request before the old token is invalidated; (4) enforce supervised edits only — no raw `kubectl edit`. Cross-ref FM-86 (ESO-managed secret write path).
 - **FM-146** [BROAD] A destructive multi-target command must have NO implicit default target: --apply without an explicit --config refuses, and an unrecognized argument aborts instead of falling through to defaults.
 - **FM-176** [BROAD] A test may read a document; a destructive script may not. Deriving paths at runtime from a document turns a static command into a program with whole-repo blast radius

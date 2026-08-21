@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-15 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
+16 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
 
 - **FM-21** [BROAD] Destructive DB/API methods must enforce their own guard (require explicit force flag or confirmation token at the method boundary)
 - **FM-25** [BROAD] Never TRUNCATE a shared-project table; use scoped DELETE or dump/restore only the target project rows
@@ -17,6 +17,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-292** [NARROW] Harness credential inherited at spawn, never re-synced (6th recurrence; recurrence of hc-FM-232)
 - **FM-300** [NARROW] An acceptance runner that strips a background-guard shim from PATH must re-arm the guard for the ITEM command, or genuinely backgrounded work escapes refusal and reports exit 0
 - **FM-301** [NARROW] A review lane's GitHub identity must match its harness, and it must fail closed rather than borrow an ambient token, or cross-vendor independence becomes unverifiable
+- **FM-326** [NARROW] The campaign abort detector was run concurrently with other test suites, so it manufactured the emergency it exists to detect
 - **FM-328** [NARROW] Coordinator ran the acceptance gate against lane commit b1f1ea6, saw pass, then squash-and-force-pushed 7c5177b built from an older tree, reverting the verified fix -- nothing compared the scored tree to the shipped tree
 - **FM-361** [NARROW] catalog-guard's bin/tests/*.bats step is persistently red on main — needs sibling-repo checkout
 

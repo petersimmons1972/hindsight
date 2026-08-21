@@ -989,14 +989,55 @@ def test_plausible_low_threshold_is_rejected_not_silently_written(
     assert not output.exists()
 
 
-def test_default_backend_selection_meets_cluster_cardinality_bounds(tmp_path: Path) -> None:
-    """Exercise whatever backend `auto` actually selects, on the real corpus.
+def test_default_backend_selection_meets_cluster_cardinality_bounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the unforced `auto` path against the committed HTTP snapshot.
 
     Forcing tfidf in every other test means a collapsing or constant-vector
     default (HTTP) backend could ship silently.  This runs the CLI with the
     real, unforced default backend selection and checks the written output's
-    cluster cardinality directly, regardless of which backend answered.
+    cluster cardinality directly.
+
+    Embeddings come from the committed http-fitted snapshot, not a live call
+    (hindsight#140). Production still refuses to substitute tfidf when the
+    declared HTTP backend is unreachable; this test does not relax that
+    refusal, does not skip, and must not contact the network. urlopen is
+    poisoned so a future edit that re-couples this test to the GPU host
+    fails with AssertionError instead of a flake.
     """
+    entries = MODULE.load_entries(ROOT / "pipeline" / "L1")
+    snapshot = MODULE.load_embedding_snapshot(
+        ROOT / "pipeline" / "L2" / "embedding-snapshot.json",
+        entries,
+        MODULE.HTTP_BACKEND_IDENTITY,
+        expected_l1_digest=MODULE.l1_corpus_digest(ROOT / "pipeline" / "L1"),
+        expected_cluster_digest=MODULE.cluster_code_config_digest(ROOT / "pipeline" / "cluster.py"),
+    )
+
+    class SnapshotHttpBackend:
+        name = "http"
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.available = True
+            self.endpoint = "/v1/embeddings"
+            self.base_url = MODULE.DEFAULT_EMBEDDING_URL
+
+        def embed(self, texts: object) -> np.ndarray:
+            count = len(texts)  # type: ignore[arg-type]
+            assert count == snapshot.shape[0], (
+                f"snapshot rows {snapshot.shape[0]} != embed request {count}"
+            )
+            return snapshot.copy()
+
+    def poison_urlopen(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError(
+            "default-path cardinality must not contact the live embedding service"
+        )
+
+    monkeypatch.setattr(MODULE, "HttpEmbeddingBackend", SnapshotHttpBackend)
+    monkeypatch.setattr(MODULE, "urlopen", poison_urlopen)
+
     output = tmp_path / "clusters.jsonl"
     assert MODULE.main(["--output", str(output)]) == 0
     rows = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
@@ -1004,6 +1045,7 @@ def test_default_backend_selection_meets_cluster_cardinality_bounds(tmp_path: Pa
     clusters = rows[1:]
     sizes = [cluster["size"] for cluster in clusters]
     largest_fraction = max(sizes) / meta["entry_count"]
+    assert meta["backend"] == "http"
     assert largest_fraction <= MODULE.MAX_CLUSTER_FRACTION, (
         f"backend {meta['backend']!r} produced a {largest_fraction:.1%} cluster on the default path"
     )

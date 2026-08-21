@@ -8,11 +8,14 @@ header explicitly says the lookup does not determine duplication, and a
 populated corpus with no candidates is a successful measurement. Missing,
 empty, or unreadable corpus input is an operational error and stops the add.
 
-After reviewing the candidates, record one of the two accepted decisions:
+After reviewing the candidates, record a recurrence decision and a disposition
+(`mechanize`, `brief-inject`, or `advisory`). `--disposition` is required.
+`--recurrence-of c-NNN` names a cluster id and force-promotes the disposition
+to `mechanize` regardless of the flag; `--recurrence-of none` does not.
 
 ```bash
-bin/add-failure-mode.sh -c A "failure description" --recurrence-of c-001
-bin/add-failure-mode.sh -c A "failure description" --recurrence-of none
+bin/add-failure-mode.sh -c A "failure description" --disposition advisory --recurrence-of c-001
+bin/add-failure-mode.sh -c A "failure description" --disposition advisory --recurrence-of none
 ```
 
 Omitting `--recurrence-of`, or passing anything except `c-NNN` or `none`, exits

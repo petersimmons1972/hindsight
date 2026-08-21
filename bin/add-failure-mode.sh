@@ -14,8 +14,13 @@
 #               filing time so the backlog never regrows untriaged. Generality
 #               defaults to NARROW (unassessed for cross-repo applicability);
 #               hindsight-triage may upgrade it later.
+#   --disposition mechanize|brief-inject|advisory
+#               Required. Closed set. Recorded in catalog/criticality.jsonl.
+#               A filing with --recurrence-of c-NNN is force-promoted to
+#               mechanize regardless of this flag (--recurrence-of none is not).
 #   --recurrence-of c-NNN|none
 #               Record the human recurrence decision after corpus review.
+#               c-NNN is a cluster id, not an FM id.
 #   --undo DIR  Restore every file recorded in a prior run's undo journal.
 #   -h          Show this help and exit successfully.
 #
@@ -28,6 +33,8 @@
 # Environment:
 #   CATALOG     Override catalog path (default: <repo>/catalog/failure-modes.md).
 #               Useful for testing: CATALOG=/tmp/fms-test.md add-failure-mode.sh ...
+#   CRITICALITY Override criticality JSONL (default: sibling of CATALOG).
+#               Scratch catalogs therefore never write catalog/criticality.jsonl.
 #   CORPUS      Override the L1 corpus directory consulted before writing.
 #   CLUSTERS    Override the L2 clusters artifact used to validate c-NNN.
 #
@@ -52,12 +59,13 @@ restore_journal() {
         return 1
     }
 
-    local requested_catalog canonical_catalog requested_ledger
+    local requested_catalog canonical_catalog requested_ledger requested_criticality
     requested_catalog="$(realpath -m -- "$CATALOG")"
     canonical_catalog="$(realpath -m -- "$REPO_ROOT/catalog/failure-modes.md")"
     requested_ledger="$(dirname "$requested_catalog")/id-ledger.txt"
+    requested_criticality="$(realpath -m -- "${CRITICALITY:-$(dirname "$requested_catalog")/criticality.jsonl}")"
 
-    local -a expected=("$requested_catalog" "$requested_ledger")
+    local -a expected=("$requested_catalog" "$requested_ledger" "$requested_criticality")
     if [[ "$requested_catalog" == "$canonical_catalog" ]]; then
         expected+=(
             "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
@@ -65,7 +73,6 @@ restore_journal() {
             "$REPO_ROOT/pipeline/L2/clusters.jsonl"
             "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
             "$REPO_ROOT/pipeline/L2/recall-baselines.json"
-            "$REPO_ROOT/catalog/criticality.jsonl"
             "$REPO_ROOT/docs/POINTER.md"
             "$REPO_ROOT/docs/HIGH.md"
             "$REPO_ROOT/pipeline/tests/test_replay_l2.py"
@@ -210,9 +217,12 @@ ISSUE=""
 AUTO=0
 TIER=""
 TIER_SEEN=0
+DISPOSITION=""
+DISPOSITION_SEEN=0
 RECURRENCE_OF=""
 RECURRENCE_SEEN=0
 POSITIONAL=()
+DISPOSITION_VALUES="mechanize, brief-inject, or advisory"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -232,6 +242,25 @@ while [[ $# -gt 0 ]]; do
                 *) echo "ERROR: -t/--tier accepts CRITICAL, HIGH, MEDIUM, or LOW" >&2; exit 1 ;;
             esac
             TIER_SEEN=1; shift 2
+            ;;
+        --disposition)
+            [[ $# -ge 2 ]] || {
+                echo "ERROR: --disposition requires $DISPOSITION_VALUES" >&2
+                exit 1
+            }
+            [[ $DISPOSITION_SEEN -eq 0 ]] || {
+                echo "ERROR: --disposition may be given once; accepted values are $DISPOSITION_VALUES" >&2
+                exit 1
+            }
+            case "$2" in
+                mechanize|brief-inject|advisory) DISPOSITION="$2" ;;
+                *)
+                    echo "ERROR: --disposition accepts $DISPOSITION_VALUES" >&2
+                    exit 1
+                    ;;
+            esac
+            DISPOSITION_SEEN=1
+            shift 2
             ;;
         --recurrence-of)
             [[ $# -ge 2 ]] || {
@@ -258,6 +287,11 @@ while [[ $# -gt 0 ]]; do
         *)           POSITIONAL+=("$1"); shift ;;
     esac
 done
+
+[[ $DISPOSITION_SEEN -eq 1 ]] || {
+    echo "ERROR: --disposition is required; accepted values are $DISPOSITION_VALUES" >&2
+    exit 1
+}
 
 [[ ${#POSITIONAL[@]} -le 2 ]] || {
     echo "ERROR: expected TITLE and optional DESCRIPTION" >&2
@@ -339,6 +373,15 @@ except (json.JSONDecodeError, ValueError) as exc:
 if wanted not in found:
     raise SystemExit(f"ERROR: recurrence cluster {wanted} does not exist in clusters artifact: {path}")
 PYEOF
+fi
+
+# A recurrence against a live cluster is the second time this cause has
+# been catalogued. That filing is force-promoted to mechanize even if the
+# caller asked for brief-inject or advisory: a repeated FM costs tokens
+# forever until a guard exists.
+EFFECTIVE_DISPOSITION="$DISPOSITION"
+if [[ "$RECURRENCE_OF" != "none" ]]; then
+    EFFECTIVE_DISPOSITION="mechanize"
 fi
 
 CANONICAL_CATALOG="$(realpath -e -- "$REPO_ROOT/catalog/failure-modes.md")"
@@ -428,17 +471,17 @@ snapshot_file() {
     fi
 }
 
-CRITICALITY="$REPO_ROOT/catalog/criticality.jsonl"
+CRITICALITY="${CRITICALITY:-$(dirname "$CATALOG")/criticality.jsonl}"
 
 snapshot_file "$CATALOG"
 snapshot_file "$LEDGER"
+snapshot_file "$CRITICALITY"
 if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
     snapshot_file "$REPO_ROOT/pipeline/L2/recall-baselines.json"
-    snapshot_file "$CRITICALITY"
     snapshot_file "$REPO_ROOT/docs/POINTER.md"
     snapshot_file "$REPO_ROOT/docs/HIGH.md"
     snapshot_file "$REPO_ROOT/pipeline/tests/test_replay_l2.py"
@@ -491,32 +534,33 @@ PYEOF
 # happened, which is precisely the failure the ledger exists to catch.
 printf '%s\n' "$FM_ID" >> "$LEDGER"
 
-if [[ $RUN_FULL_LOOP -eq 1 ]]; then
-    # Tag the new row's criticality at filing time so the backlog cannot regrow
-    # untriaged. generality is NARROW by default (cross-repo applicability is
-    # unassessed); hindsight-triage may upgrade both fields later, but every
-    # canonical row now has a tier the moment it exists.
-    python3 - "$CRITICALITY" "$FM_ID" "$TIER" "$TITLE" "$DESC" <<'PYEOF'
+# Disposition (and tier, when supplied) are recorded beside the catalog so a
+# scratch CATALOG override never writes the real catalog/criticality.jsonl.
+# Existing rows without a disposition field are pre-O2; readers must tolerate
+# their absence rather than treating it as mechanize.
+python3 - "$CRITICALITY" "$FM_ID" "${TIER:-}" "$TITLE" "$DESC" "$EFFECTIVE_DISPOSITION" <<'PYEOF'
 import datetime
 import json
 import sys
 
-path, fm_id, tier, title, desc = sys.argv[1:6]
+path, fm_id, tier, title, desc, disposition = sys.argv[1:7]
 evidence = f"{title} {desc}".strip()
 row = {
     "fm_id": fm_id,
-    "tier": tier,
+    "tier": tier or None,
     "generality": "NARROW",
     "rationale": "filed at creation time",
     "evidence": evidence,
     "mechanize_action": "n/a",
     "scored_by": "add-failure-mode.sh (write-time)",
     "date": datetime.date.today().isoformat(),
+    "disposition": disposition,
 }
 with open(path, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PYEOF
 
+if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
 
@@ -689,4 +733,9 @@ echo "  class: ${BUG_CLASS}"
 [[ -n "$TIER" ]]   && echo "  tier: ${TIER} (recorded in ${CRITICALITY})"
 [[ -n "$ISSUE" ]]  && echo "  issue: #${ISSUE}"
 echo "  recurrence_of: ${RECURRENCE_OF}"
+if [[ "$EFFECTIVE_DISPOSITION" != "$DISPOSITION" ]]; then
+    echo "  disposition: ${EFFECTIVE_DISPOSITION} (force-promoted from ${DISPOSITION} by --recurrence-of ${RECURRENCE_OF})"
+else
+    echo "  disposition: ${EFFECTIVE_DISPOSITION}"
+fi
 echo "  table:  ${TABLE_ROW}"

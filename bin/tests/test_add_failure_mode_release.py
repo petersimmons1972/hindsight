@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -44,6 +45,10 @@ SNAPSHOT_REL = Path("pipeline") / "L2" / "embedding-snapshot.json"
 CLUSTERS_REL = Path("pipeline") / "L2" / "clusters.jsonl"
 CATALOG_REL = Path("catalog") / "failure-modes.md"
 LEDGER_REL = Path("catalog") / "id-ledger.txt"
+PIN_RELATIVES = (
+    Path("pipeline") / "tests" / "test_replay_l2.py",
+    Path("pipeline") / "tests" / "test_replay_l2_mutations.py",
+)
 MARKER_NAME = ".release-invocations"
 
 COPY_IGNORE = shutil.ignore_patterns(".git", ".workflow-lanes", "__pycache__", "*.pyc", ".venv")
@@ -224,6 +229,33 @@ def _release_invocations(repo: Path) -> list[str]:
     return [line for line in marker.read_text(encoding="utf-8").splitlines()]
 
 
+def _reported_counts(output: str) -> tuple[int, int]:
+    matches = re.findall(r"replay-l2: PASS: (\d+) entries, (\d+) clusters", output)
+    assert len(matches) == 1, output
+    return tuple(map(int, matches[0]))
+
+
+def _pinned_counts(repo: Path) -> tuple[tuple[int, int], tuple[int, int], int]:
+    replay_source = (repo / PIN_RELATIVES[0]).read_text(encoding="utf-8")
+    mutations_source = (repo / PIN_RELATIVES[1]).read_text(encoding="utf-8")
+    replay_matches = re.findall(
+        r'assert REPLAY\.main\(\[\]\) == 0 and "PASS: (\d+) entries, (\d+) clusters"',
+        replay_source,
+    )
+    exact_matches = re.findall(
+        r'replay-l2: PASS: (\d+) entries, (\d+) clusters\\n', mutations_source
+    )
+    embedding_matches = re.findall(r'len\(payload\["embeddings"\]\) == (\d+)', mutations_source)
+    assert len(replay_matches) == len(exact_matches) == len(embedding_matches) == 1
+    return (*map(lambda pair: tuple(map(int, pair)), (replay_matches[0], exact_matches[0])), int(embedding_matches[0]))
+
+
+def _undo_dir(output: str) -> Path:
+    match = re.search(r"^UNDO: .* --undo (.+)$", output, flags=re.MULTILINE)
+    assert match, output
+    return Path(match.group(1))
+
+
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -316,6 +348,75 @@ def test_successful_canonical_add_invokes_the_controlled_release_command(sandbox
         "sanctioned release command inside the write path, not from a manual "
         "second step a human is trusted to remember",
         added,
+    )
+
+
+def test_successful_canonical_add_derives_all_replay_pins_and_undo_restores_them(sandbox) -> None:
+    repo = sandbox("honest")
+    pin_paths = [repo / relative for relative in PIN_RELATIVES]
+    pins_before = {path: _digest(path) for path in pin_paths}
+
+    added = _add(repo, "the filing transaction must derive every replay pin")
+    assert added.returncode == 0, _report("the canonical add itself failed", added)
+    entries, clusters = _reported_counts(added.stdout)
+    replay_pin, exact_pin, embedding_pin = _pinned_counts(repo)
+    assert replay_pin == (entries, clusters)
+    assert exact_pin == (entries, clusters)
+    assert embedding_pin == entries
+
+    undo = _run(
+        ["bash", str(repo / "bin" / "add-failure-mode.sh"), "--undo", str(_undo_dir(added.stdout))],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert undo.returncode == 0, _report("undo did not restore the filing transaction", undo)
+    assert {path: _digest(path) for path in pin_paths} == pins_before
+
+
+def test_unlocatable_replay_pin_fails_loudly_without_partial_write(sandbox) -> None:
+    repo = sandbox("honest")
+    broken_pin = repo / PIN_RELATIVES[0]
+    broken_pin.write_text("pin intentionally unavailable\n", encoding="utf-8")
+    protected = [
+        repo / CATALOG_REL,
+        repo / LEDGER_REL,
+        repo / "pipeline" / "L1" / "homelab-canon.jsonl",
+        repo / SNAPSHOT_REL,
+        repo / CLUSTERS_REL,
+        *(repo / relative for relative in PIN_RELATIVES),
+    ]
+    before = {path: _digest(path) for path in protected}
+
+    added = _add(repo, "a missing replay pin must abort the whole filing transaction")
+    assert added.returncode != 0, _report("the add accepted an unlocatable replay pin", added)
+    assert "replay pin" in added.stdout.lower()
+    assert {path: _digest(path) for path in protected} == before
+
+
+def test_external_corpus_drift_still_fails_the_literal_replay_pins(sandbox) -> None:
+    repo = sandbox("honest")
+    added = _add(repo, "the pins must remain independent replay oracles")
+    assert added.returncode == 0, _report("the canonical add itself failed", added)
+
+    corpus = repo / "pipeline" / "L1" / "homelab-canon.jsonl"
+    corpus.write_text(corpus.read_text(encoding="utf-8").replace('"instance"', '"instance_x"', 1), encoding="utf-8")
+    replay_tests = _run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "pipeline/tests/test_replay_l2.py::test_committed_snapshot_replays_through_real_default_loader",
+            "pipeline/tests/test_replay_l2_mutations.py::test_default_committed_replay_succeeds_with_network_poisoned",
+        ],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert replay_tests.returncode != 0, _report(
+        "corpus drift made the replay pins tautological instead of failing", replay_tests
+    )
+    assert "2 failed" in replay_tests.stdout, _report(
+        "both literal replay-pin tests must reject corpus drift", replay_tests
     )
 
 

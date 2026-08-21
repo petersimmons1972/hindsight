@@ -110,8 +110,8 @@
   ],
   "provenance": {
     "cluster_sha256": "0083d6387659a753fb90cf975221259db2a65eabddaffcea223736d2d5e00143",
-    "corpus_size": 698,
-    "l1_sha256": "f525c89d004c24d38bdd7b170b9694600794af7e4be57642572dc9f9c7cbf603"
+    "corpus_size": 703,
+    "l1_sha256": "73f51acbbce2a826e5a76a46f9d18b2343d80a22a676da88e7eb0ffed9c6d4f5"
   },
   "schema": "hindsight.recall-baselines/v1",
   "target_fraction": 0.75,

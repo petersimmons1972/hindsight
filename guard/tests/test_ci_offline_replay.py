@@ -32,7 +32,7 @@ ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "3a20f34f6d2745876c25c6e4f87623c145cd6e519a0a9b8814924febe2b48b54"
+INTENDED_WORKFLOW_SHA256 = "0bc7256ccf80ec4135f226015b71d2b0fcf5463690d9ce9b202a1fde21264341"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -126,6 +126,31 @@ def _sentences(block: str) -> list[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", flat) if s.strip()]
 
 
+def _top_level_block(workflow: str, key: str) -> str:
+    """Return the YAML block for a top-level mapping key, including its header.
+
+    Stops at the next non-comment top-level key. An absent key fails loudly
+    rather than returning empty — an empty block would make 'push is scoped'
+    vacuously true.
+    """
+    lines = workflow.splitlines()
+    start = next(
+        (
+            i for i, line in enumerate(lines)
+            if not line.startswith((" ", "\t")) and (line == f"{key}:" or line.startswith(f"{key}:"))
+        ),
+        None,
+    )
+    assert start is not None, f"guard.yml has no top-level {key!r} key"
+    collected = [lines[start]]
+    for line in lines[start + 1 :]:
+        if line.startswith("#") or line.startswith((" ", "\t")) or not line.strip():
+            collected.append(line)
+            continue
+        break
+    return "\n".join(collected)
+
+
 # ── the workflow pin ─────────────────────────────────────────────────────────
 
 def test_pinned_workflow_evidence_source_must_be_present() -> None:
@@ -175,6 +200,37 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     }
     lowered_workflow = workflow.lower()
     assert not [token for token in sorted(forbidden) if token.lower() in lowered_workflow]
+
+
+def test_catalog_guard_push_is_scoped_to_main_only() -> None:
+    """Unfiltered `on.push` duplicates every PR run (hindsight#123).
+
+    Merge gating reads the PR's statusCheckRollup, so pull_request runs are
+    what actually gate a merge. Scoping push to main loses no gating coverage.
+    The push trigger itself must remain — main still needs post-merge coverage.
+    """
+    on_block = _top_level_block(_read(WORKFLOW), "on")
+    assert re.search(r"(?m)^  push:\n    branches:\s*\[main\]\s*$", on_block), (
+        "guard.yml on.push must be scoped to main; an unfiltered push "
+        "duplicates every pull_request run on the same commit"
+    )
+    assert re.search(r"(?m)^  pull_request:\s*$", on_block), (
+        "guard.yml must keep on.pull_request — that is the merge gate"
+    )
+    assert re.search(r"(?m)^  push:\n  [A-Za-z]", on_block) is None, (
+        "guard.yml still has an unfiltered on.push (no branches child)"
+    )
+
+
+def test_catalog_guard_cancels_superseded_runs() -> None:
+    """Without concurrency, a superseded push occupies the runner (hindsight#123)."""
+    block = _top_level_block(_read(WORKFLOW), "concurrency")
+    assert "${{ github.workflow }}-${{ github.ref }}" in block, (
+        "concurrency.group must be keyed on the workflow and the ref"
+    )
+    assert re.search(r"(?m)^  cancel-in-progress:\s*true\s*$", block), (
+        "concurrency.cancel-in-progress must be true so superseded runs die"
+    )
 
 
 # ── what CI's reconcile step actually covers ─────────────────────────────────

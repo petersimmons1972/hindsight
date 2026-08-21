@@ -1,8 +1,16 @@
 name: catalog-guard
 
+# Merge gating reads the PR's statusCheckRollup, so pull_request runs are
+# what actually gate a merge. Scoping push to main loses no gating coverage;
+# main still needs the push trigger for post-merge coverage (hindsight#123).
 on:
   push:
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   guard:

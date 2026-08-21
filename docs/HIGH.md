@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-99 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+100 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -88,6 +88,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-293** [NARROW] A synthetic child wrapper cannot certify the lifecycle of the real dispatched harness
 - **FM-302** [NARROW] A lane that completes its work but cannot commit must report a status distinct from 'the agent failed', naming the recoverable artifact
 - **FM-304** [NARROW] A characterization test must be mutation-verified against the specific refactor slip it claims to lock, or it passes green while failing to notice that exact change
+- **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
 - **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
 - **FM-329** [NARROW] Acceptance gate for issue-411-gate.sh used three static fixtures with fixed byte sizes; reviewer defeated it with a wc -c case statement returning correct answers for all three without parsing

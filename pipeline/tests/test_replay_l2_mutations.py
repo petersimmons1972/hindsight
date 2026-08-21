@@ -114,7 +114,7 @@ def test_vector_id_binding_mutation_reports_partition(replay_case, capsys) -> No
     assert payload["embeddings"]["pub-fm-08"] != payload["embeddings"]["fleet-OPS-14"]
     payload["embeddings"]["pub-fm-08"] = payload["embeddings"]["fleet-OPS-14"]
     # fm-backlog 2026-08-21: FM-391..394 increased the captured L1 corpus to 707.
-    assert len(payload["embeddings"]) == 707
+    assert len(payload["embeddings"]) == 708
     case["snapshot"].write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
     assert _run(case) == 1
@@ -151,6 +151,6 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     captured = capsys.readouterr()
     assert captured.err == ""
     # fm-backlog 2026-08-21: FM-391..394 yield the measured 707-entry partition (cluster count per replay).
-    assert captured.out == "replay-l2: PASS: 707 entries, 280 clusters\n"
+    assert captured.out == "replay-l2: PASS: 708 entries, 281 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

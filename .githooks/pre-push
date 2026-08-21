@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# pre-push -- FM-266 accident-stopper (hindsight#111).
+#
+# THIS HOOK IS NOT A SECURITY BOUNDARY. `git push --no-verify` skips it
+# entirely, and so does any push made from a clone whose core.hooksPath does
+# not point here. It stops an accident; it does not stop a decision.
+#
+# WHERE IT LIVES AND WHY: this file is in the REPO's own `.githooks/`, checked
+# in, alongside the existing pre-commit hook. It is deliberately NOT installed
+# into ~/.config/git/hooks, which on this machine is the GLOBAL core.hooksPath
+# shared by every repository -- writing a repo-specific guard there would fire
+# it in unrelated repos, and an installer already clobbered that shared
+# directory once by accident (FM-408). Nothing in this change touches it.
+#
+# It reaches the guard only via `git rev-parse --show-toplevel`, and no-ops if
+# bin/check-reset-soft-commit.sh is not present there. So even if this file is
+# ever copied into a shared hooks directory, it is a silent no-op in every repo
+# that does not ship the guard.
+#
+# ACTIVATION (per clone, one command, no global config):
+#     git config core.hooksPath .githooks
+# This is git CONFIG, not committed content: until someone runs it in a clone,
+# this hook does not exist as far as git is concerned. That is deliberate.
+#
+# MEASURED on this machine (git 2.43.0, 2026-08-21), because it is a footgun:
+# `core.hooksPath` is shared by a checkout and ALL of its linked worktrees, and
+# here it is set to the ABSOLUTE path /home/psimmons/projects/hindsight/.githooks.
+# So a worktree runs the MAIN checkout's copy of this file, not its own -- which
+# means this hook does not guard a worktree until it is merged and present in
+# the main checkout. It is written to survive that: it locates the guard through
+# `git rev-parse --show-toplevel`, so the main checkout's copy still inspects the
+# WORKTREE being pushed from. (A relative `.githooks` value resolves per-worktree
+# instead -- also verified. Either way the hook body is correct.)
+
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$REPO_ROOT" ] || exit 0
+
+GUARD="$REPO_ROOT/bin/check-reset-soft-commit.sh"
+# Not our repo (or guard removed): degrade to a no-op rather than to an error.
+[ -x "$GUARD" ] || exit 0
+
+# stdin: <local_ref> <local_sha> <remote_ref> <remote_sha> per ref.
+TIP_ARGS=()
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    [ -n "${local_sha:-}" ] || continue
+    # All-zero local sha == branch deletion; nothing to inspect.
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+    TIP_ARGS+=(--push-tip "$local_sha")
+done
+
+# No refs on stdin (e.g. an invocation with nothing to push): nothing to check.
+[ ${#TIP_ARGS[@]} -gt 0 ] || exit 0
+
+# Capture the guard's own exit code. NOT `if ! guard; then status=$?` -- inside
+# that branch $? is the `if` test's status (always 0), which is precisely the
+# "reported an inner command's status" mistake this repo keeps re-learning.
+status=0
+bash "$GUARD" "${TIP_ARGS[@]}" || status=$?
+
+if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 2 ]; then
+        echo "pre-push: BLOCKED by the FM-266 guard (see above)." >&2
+        echo "pre-push: this hook is bypassable with --no-verify; if you do" >&2
+        echo "pre-push: that, diff the commit against its parent yourself." >&2
+    else
+        echo "pre-push: FM-266 guard errored (exit $status); refusing to push." >&2
+    fi
+    exit 1
+fi
+
+exit 0

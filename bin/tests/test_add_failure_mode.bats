@@ -80,6 +80,33 @@ file_digest() {
   [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
 }
 
+@test "printed UNDO command propagates CRITICALITY override so verbatim rollback owns the override path" {
+  crit="$WORK/override-criticality.jsonl"
+  catalog_before="$(file_digest "$CATALOG")"
+  ledger_before="$(file_digest "$LEDGER")"
+
+  run env CATALOG="$CATALOG" CRITICALITY="$crit" CORPUS="$CORPUS_DIR" \
+    bash "$TOOL" -c A -t HIGH --disposition advisory \
+    "printed undo must own a criticality override" --recurrence-of none
+
+  [ "$status" -eq 0 ]
+  [ -f "$crit" ]
+  add_output="$output"
+  undo_line="$(printf '%s\n' "$add_output" | grep '^UNDO: ' | tail -n 1)"
+  [ -n "$undo_line" ]
+  undo_cmd="${undo_line#UNDO: }"
+  [ -n "$undo_cmd" ]
+
+  # Follow the printed command verbatim — the defect is that this exits 1
+  # when CRITICALITY was overridden and the printer omitted it.
+  run bash -c "$undo_cmd"
+  [ "$status" -eq 0 ]
+  [ ! -e "$crit" ]
+  [ "$(file_digest "$CATALOG")" = "$catalog_before" ]
+  [ "$(file_digest "$LEDGER")" = "$ledger_before" ]
+  [[ "$undo_line" == *"CRITICALITY="* ]]
+}
+
 @test "cluster decision is recorded while every other value aborts without writes" {
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
     bash "$TOOL" -c A --disposition advisory "clustered failure description" --recurrence-of c-001

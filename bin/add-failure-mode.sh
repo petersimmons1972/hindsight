@@ -488,7 +488,7 @@ if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/tests/test_replay_l2_mutations.py"
 fi
 
-printf 'UNDO: CATALOG=%q bash %q --undo %q\n' "$CATALOG" "$0" "$JOURNAL"
+printf 'UNDO: CATALOG=%q CRITICALITY=%q bash %q --undo %q\n' "$CATALOG" "$CRITICALITY" "$0" "$JOURNAL"
 
 JOURNAL_READY=1
 rollback_on_error() {

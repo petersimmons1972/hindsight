@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-104 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+107 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -58,6 +58,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-230** [BROAD] Before cleanup, take a fresh inventory and validate every target's metadata, recovery bundle, and post-action receipt; never act from an expected count
 - **FM-236** [BROAD] A ledger that only writes start and success records a failure as an absence; count the gap between starts and results, because a dead agent leaves no row at all
 - **FM-244** [BROAD] A structural validation guard must decide with the consumer's own parser, fail closed on any node type or tag it does not positively understand, reject explicit tags a format has no legitimate need for, and -- when parsers are unavoidably different -- fail on resolved-document disagreement between them
+- **FM-245** [BROAD] A git worktree is not a stash boundary; git stash is per-repository, so 'this worktree is mine' does not imply 'this stash is mine' -- treat any stash entries you did not create as a shared-resource signal, not clutter to clean, and never drop/clear a stash without confirming it is yours
 - **FM-246** [BROAD] A gate over configuration must parse the config and inspect executable positions, not grep raw text -- a grep-shaped gate is satisfiable by a comment that changes nothing executable
 - **FM-01** [NARROW] Grep aliases for role/routing words; confirm advertised name == persisted identity
 - **FM-04** [NARROW] Render ExecStart with real substitutions; diff against post-install listing
@@ -108,3 +109,5 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-395** [NARROW] Before escalating a red CI board to the founder as a decision gate, prove the failing tests predate your own branch: check git log --diff-filter=A on the test file and diff --stat against the merge-base.
 - **FM-410** [NARROW] A performance or causal diagnosis names a mechanism that the already-available timestamps refute, because the timestamps were never read
 - **FM-412** [NARROW] A mutation that matches zero lines reports the same green result as a surviving mutant, so a broken mutation reads as a weak test
+- **FM-415** [NARROW] A run-level tooling FAILED flag is not a verdict; test whether a failed command sits on the evidence path
+- **FM-416** [NARROW] Re-running a red pull_request check replays the original merge commit; it does not pick up newly-landed base commits

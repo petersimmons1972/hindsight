@@ -54,9 +54,19 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
         --source homelab-canon --source fleet-dispatch-schema
 
+    if ! REPLAY_OUTPUT="$(python3 "$REPO_ROOT/pipeline/replay_l2.py")"; then
+        echo "ERROR: regenerated L2 artifacts do not replay from the committed embedding snapshot." >&2
+        exit 1
+    fi
+    if [[ "$REPLAY_OUTPUT" != "replay-l2: PASS:"* ]]; then
+        echo "ERROR: pipeline/replay_l2.py did not report replay-l2: PASS:." >&2
+        exit 1
+    fi
+
     GENERATED=(
         pipeline/L1/homelab-canon.jsonl
         pipeline/L1/fleet-dispatch-schema.jsonl
+        pipeline/L2/embedding-snapshot.json
         pipeline/L2/clusters.jsonl
     )
     if ! git -C "$REPO_ROOT" diff --quiet -- "${GENERATED[@]}"; then

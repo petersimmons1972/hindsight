@@ -15,6 +15,48 @@ teardown() {
   [[ "$output" == *"failure-mode-catalog: OK"* ]]
 }
 
+@test "repo-local pre-commit rejects a catalog change when L2 replay fails" {
+  repo="$TMPDIR/repo"
+  fake_bin="$TMPDIR/bin"
+  fake_python_log="$TMPDIR/python.log"
+  mkdir -p "$repo/.githooks" "$repo/catalog" "$repo/pipeline/L1" \
+    "$repo/pipeline/L2" "$fake_bin"
+  cp "$REPO_ROOT/.githooks/pre-commit" "$repo/.githooks/pre-commit"
+  chmod +x "$repo/.githooks/pre-commit"
+
+  printf 'baseline\n' >"$repo/catalog/failure-modes.md"
+  : >"$repo/catalog/id-ledger.txt"
+  : >"$repo/catalog/criticality.jsonl"
+  : >"$repo/pipeline/L1/homelab-canon.jsonl"
+  : >"$repo/pipeline/L1/fleet-dispatch-schema.jsonl"
+  : >"$repo/pipeline/L2/embedding-snapshot.json"
+  : >"$repo/pipeline/L2/clusters.jsonl"
+
+  git -C "$repo" init -q
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm baseline
+  printf 'changed\n' >"$repo/catalog/failure-modes.md"
+
+  cat >"$fake_bin/python3" <<'EOF'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >>"${FAKE_PYTHON_LOG:?}"
+case "$1" in
+  */pipeline/replay_l2.py)
+    printf 'replay-l2: error: partition mismatch\n' >&2
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$fake_bin/python3"
+
+  run env PATH="$fake_bin:$PATH" FAKE_PYTHON_LOG="$fake_python_log" \
+    "$repo/.githooks/pre-commit"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"replay-l2: error: partition mismatch"* ]]
+  grep -Fq "$repo/pipeline/replay_l2.py" "$fake_python_log"
+  grep -Fq 'pipeline/L2/embedding-snapshot.json' "$repo/.githooks/pre-commit"
+}
+
 @test "guard rejects duplicate canonical IDs" {
   catalog="$TMPDIR/failure-modes-standard.md"
   cat >"$catalog" <<'EOF'

@@ -154,7 +154,11 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     assert REPLAY.main([]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    # fm-backlog 2026-08-21: FM-391..396 yield the measured 709-entry partition (cluster count per replay).
+    # hindsight#108: these literals are MACHINE-MAINTAINED. bin/add-failure-mode.sh
+    # rewrites both digits inside the same write transaction that appends a catalog
+    # entry, parsing them from the pipeline's own replay report. Do not restate the
+    # CURRENT counts in prose here: the updater rewrites digits, not comments, so a
+    # live count written above this line drifts silently and lies.
     assert captured.out == "replay-l2: PASS: 709 entries, 283 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

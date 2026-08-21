@@ -295,3 +295,29 @@ seed_upstream() {
   run git -C "$REPO" push --force origin main
   [ "$status" -eq 0 ]
 }
+
+# ---- T9: a failed git read is not "nothing found" --------------------------
+
+@test "T9: a failed reflog read is a loud refusal, not a silent pass" {
+  # Pins the fail-open: `git reflog ... 2>/dev/null || true` plus mapfile
+  # treated ANY reflog failure as zero findings and permitted the commit.
+  seed_base
+  wrap="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$wrap"
+  real_git="$(command -v git)"
+  cat >"$wrap/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "reflog" ]; then
+  echo "injected: git reflog failing with 77" >&2
+  exit 77
+fi
+exec "$real_git" "\$@"
+EOF
+  chmod +x "$wrap/git"
+
+  run env PATH="$wrap:$PATH" bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"git reflog failed"* ]]
+  [[ "$output" == *"77"* ]]
+  [[ "$output" == *"unread reflog"* ]]
+}

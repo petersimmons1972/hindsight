@@ -92,10 +92,23 @@ fi
 # Read the HEAD reflog newest-first as "<sha>\t<message>". --no-abbrev is
 # required: the default format abbreviates, and an abbreviated sha is not a
 # safe key for the ancestry tests below.
-mapfile -t REFLOG < <(
-  git reflog show HEAD --no-abbrev --format='%H%x09%gs' \
-    -n "$MAX_REFLOG_ENTRIES" 2>/dev/null || true
-)
+#
+# A failed git read is a loud refusal. An empty successful read is "nothing
+# found" and is not an error -- those two must not collapse into each other.
+# `<(cmd || true)` plus mapfile is that collapse: any reflog failure looks
+# like zero findings and the commit is permitted. Process substitution also
+# hides cmd's status from `set -e`, so the rc is captured explicitly.
+reflog_rc=0
+reflog_out=$(git reflog show HEAD --no-abbrev --format='%H%x09%gs' \
+  -n "$MAX_REFLOG_ENTRIES") || reflog_rc=$?
+if [ "$reflog_rc" -ne 0 ]; then
+  echo "check-reset-soft-commit: git reflog failed (exit ${reflog_rc}); refusing to treat an unread reflog as clean" >&2
+  exit 1
+fi
+REFLOG=()
+if [ -n "$reflog_out" ]; then
+  mapfile -t REFLOG < <(printf '%s\n' "$reflog_out")
+fi
 
 n=${#REFLOG[@]}
 FINDINGS=0
@@ -112,6 +125,57 @@ in_push_range() {
     fi
   done
   return 1
+}
+
+# Fill array named $1 with NUL-delimited paths from `git diff -z --name-only $2 $3`.
+# Command substitution cannot store NUL, so this reads a temp file, never $(...).
+# A failed git read is a loud refusal, never an empty name set.
+git_diff_names() {
+  local dest_name="$1" rev_a="$2" rev_b="$3"
+  local tmp rc=0
+  tmp=$(mktemp "${TMPDIR:-/tmp}/hindsight-rssc.XXXXXX") || {
+    echo "check-reset-soft-commit: mktemp failed; refusing" >&2
+    exit 1
+  }
+  git diff -z --name-only "$rev_a" "$rev_b" >"$tmp" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp"
+    echo "check-reset-soft-commit: git diff failed (exit ${rc}) for ${rev_a}..${rev_b}; refusing" >&2
+    exit 1
+  fi
+  local -a _buf=()
+  if [ -s "$tmp" ]; then
+    while IFS= read -r -d '' p; do
+      _buf+=("$p")
+    done < "$tmp"
+  fi
+  rm -f "$tmp"
+  eval "${dest_name}=()"
+  if [ ${#_buf[@]} -gt 0 ]; then
+    eval "${dest_name}=(\"\${_buf[@]}\")"
+  fi
+}
+
+# Fill array named $3 with names in array $1 that are not in array $2.
+names_only_in() {
+  local -n _left=$1
+  local -n _right=$2
+  local -n _dest=$3
+  local -A _r=()
+  local p
+  _dest=()
+  if [ ${#_right[@]} -gt 0 ]; then
+    for p in "${_right[@]}"; do
+      _r["$p"]=1
+    done
+  fi
+  if [ ${#_left[@]} -gt 0 ]; then
+    for p in "${_left[@]}"; do
+      if [ -z "${_r[$p]+x}" ]; then
+        _dest+=("$p")
+      fi
+    done
+  fi
 }
 
 i=0
@@ -157,13 +221,14 @@ while [ "$i" -lt "$n" ]; do
   # from the pre-reset tip -- unintended. Name-set difference rather than blob
   # comparison, because the headline FM-266 symptom is a DELETION: a file
   # present in the parent and absent from both O and C has no blob to compare.
-  changed_vs_parent="$(git diff --name-only "$reset_to" "$commit_sha" | LC_ALL=C sort -u)"
-  touched_by_author="$(git diff --name-only "$pre_reset" "$commit_sha" | LC_ALL=C sort -u)"
-  unintended="$(LC_ALL=C comm -23 \
-    <(printf '%s\n' "$changed_vs_parent") \
-    <(printf '%s\n' "$touched_by_author") | sed '/^$/d')"
+  #
+  # -z: a newline inside a path is a legal git name; --name-only without -z
+  # makes those names ambiguous. Read NUL-delimited, never through $(...).
+  git_diff_names changed_vs_parent "$reset_to" "$commit_sha"
+  git_diff_names touched_by_author "$pre_reset" "$commit_sha"
+  names_only_in changed_vs_parent touched_by_author unintended
 
-  [ -n "$unintended" ] || { i=$((i + 1)); continue; }
+  [ ${#unintended[@]} -gt 0 ] || { i=$((i + 1)); continue; }
 
   # SECOND DISCRIMINATOR -- suppress `reset --hard` / `--mixed`.
   # The reflog message is identical for all three reset modes, so mode is not
@@ -173,10 +238,8 @@ while [ "$i" -lt "$n" ]; do
   # can never produce that -- it holds the old tip's content by definition.
   # Absent this, an honest `reset --hard <diverged> && git rm <file> && commit`
   # is reported as unintended (observed: it was a real false positive here).
-  followed_parent="$(LC_ALL=C comm -13 \
-    <(printf '%s\n' "$changed_vs_parent") \
-    <(printf '%s\n' "$touched_by_author") | sed '/^$/d')"
-  [ -z "$followed_parent" ] || { i=$((i + 1)); continue; }
+  names_only_in touched_by_author changed_vs_parent followed_parent
+  [ ${#followed_parent[@]} -eq 0 ] || { i=$((i + 1)); continue; }
 
   FINDINGS=$((FINDINGS + 1))
   {
@@ -192,7 +255,14 @@ while [ "$i" -lt "$n" ]; do
     echo "  the new parent but were never touched by you in this window --"
     echo "  they are the stale index reverting upstream work:"
     echo
-    printf '%s\n' "$unintended" | sed 's/^/      /'
+    _unint_sorted=()
+    mapfile -d '' -t _unint_sorted < <(printf '%s\0' "${unintended[@]}" | LC_ALL=C sort -z)
+    if [ ${#_unint_sorted[@]} -gt 0 ] && [ -z "${_unint_sorted[-1]}" ]; then
+      unset '_unint_sorted[-1]'
+    fi
+    for p in "${_unint_sorted[@]}"; do
+      printf '      %s\n' "$p"
+    done
     echo
     echo "  Inspect before pushing:"
     echo "      git diff --stat ${reset_to} ${commit_sha}"

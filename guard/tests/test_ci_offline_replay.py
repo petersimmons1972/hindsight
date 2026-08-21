@@ -32,7 +32,7 @@ ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "0bc7256ccf80ec4135f226015b71d2b0fcf5463690d9ce9b202a1fde21264341"
+INTENDED_WORKFLOW_SHA256 = "724dc1105881e869a64850e88a4c3484f97b176e0677d7aeebba13c697a539bd"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -223,13 +223,30 @@ def test_catalog_guard_push_is_scoped_to_main_only() -> None:
 
 
 def test_catalog_guard_cancels_superseded_runs() -> None:
-    """Without concurrency, a superseded push occupies the runner (hindsight#123)."""
+    """Without concurrency, a superseded push occupies the runner (hindsight#123).
+
+    Cancellation is correct on PR branches. It is not correct on main: a
+    rapid sequence of merges would cancel the guard run for an already-merged
+    commit, leaving that SHA with no completed result and nothing that will
+    ever produce one. Pin the exact expression so a bare `true` cannot pass.
+    """
     block = _top_level_block(_read(WORKFLOW), "concurrency")
     assert "${{ github.workflow }}-${{ github.ref }}" in block, (
         "concurrency.group must be keyed on the workflow and the ref"
     )
-    assert re.search(r"(?m)^  cancel-in-progress:\s*true\s*$", block), (
-        "concurrency.cancel-in-progress must be true so superseded runs die"
+    # Discriminate: a bare `true` cancels main and must not satisfy this pin.
+    assert re.search(r"(?m)^  cancel-in-progress:\s*true\s*$", block) is None, (
+        "concurrency.cancel-in-progress must exempt main; a bare true cancels "
+        "the guard run for an already-merged commit"
+    )
+    assert re.search(
+        r"(?m)^  cancel-in-progress:\s*"
+        r"\$\{\{ github\.ref != 'refs/heads/main' \}\}\s*$",
+        block,
+    ), (
+        "concurrency.cancel-in-progress must be "
+        "${{ github.ref != 'refs/heads/main' }} so superseded PR runs die "
+        "and main runs are the record for a landed commit"
     )
 
 

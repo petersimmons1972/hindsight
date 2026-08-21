@@ -199,7 +199,8 @@ def _replay(repo: Path) -> subprocess.CompletedProcess[str]:
 
 def _add(repo: Path, description: str, *, catalog: Path | None = None) -> subprocess.CompletedProcess[str]:
     argv = ["bash", str(repo / "bin" / "add-failure-mode.sh"),
-            "-c", "A", "-t", "LOW", "--recurrence-of", "none", description]
+            "-c", "A", "-t", "LOW", "--disposition", "advisory",
+            "--recurrence-of", "none", description]
     env = dict(os.environ)
     env.pop("CORPUS", None)
     if catalog is None:

@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-100 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+101 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -104,3 +104,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-367** [NARROW] SHA-pinned CI poller reported green on a partially-registered check set (1 of 14 checks)
 - **FM-368** [NARROW] A test asserted an isolation property in a comment that was never implemented anywhere
 - **FM-378** [NARROW] A workload that fetches its own runtime from the internet on every start has an undeclared external dependency that only surfaces when it is finally restarted
+- **FM-380** [NARROW] A guard's positive control must be derived from the artifact under test, never a hardcoded constant -- a constant is knowable in advance and can be satisfied by the very substitution the control exists to detect

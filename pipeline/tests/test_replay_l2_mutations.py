@@ -113,7 +113,11 @@ def test_vector_id_binding_mutation_reports_partition(replay_case, capsys) -> No
     # from cross-cluster fleet-OPS-14 moves their binding; the test never searches.
     assert payload["embeddings"]["pub-fm-08"] != payload["embeddings"]["fleet-OPS-14"]
     payload["embeddings"]["pub-fm-08"] = payload["embeddings"]["fleet-OPS-14"]
-    # fm-backlog 2026-08-21: FM-391..394 increased the captured L1 corpus to 707.
+    # hindsight#108: this literal is MACHINE-MAINTAINED. bin/add-failure-mode.sh
+    # rewrites the digits as part of the same write transaction that appends a
+    # catalog entry, parsing them from the pipeline's own replay report. Do not
+    # restate the count in prose here -- the updater rewrites digits, not
+    # comments, so any number written above this line drifts silently and lies.
     assert len(payload["embeddings"]) == 709
     case["snapshot"].write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 

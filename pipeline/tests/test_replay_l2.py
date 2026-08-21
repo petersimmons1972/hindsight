@@ -34,7 +34,14 @@ def test_process_self_match_catalog_rows_keep_lesson_in_check(record_id: str) ->
 
 
 def test_committed_snapshot_replays_through_real_default_loader(capsys) -> None:
-    # fm-backlog 2026-08-21: FM-391..396 yield the measured 709-entry partition (cluster count per replay).
+    # hindsight#108: these literals are MACHINE-MAINTAINED. bin/add-failure-mode.sh
+    # rewrites both digits as part of the same write transaction that appends a
+    # catalog entry, parsing them from the pipeline's own replay report. The
+    # cluster count is NOT derivable from the entry count. Historical evidence,
+    # fixed and not a live count: one 2026-08-21 add moved entries 708 -> 709 and
+    # clusters 281 -> 283. So both are parsed, never computed. Do not restate the
+    # CURRENT counts in prose here: the updater rewrites digits, not comments, so
+    # any live count written above this line drifts silently and lies.
     assert REPLAY.main([]) == 0 and "PASS: 709 entries, 283 clusters" in capsys.readouterr().out
 def _record(record_id: str) -> dict[str, object]:
     return {

@@ -25,7 +25,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-68** [BROAD] Feed headless-agent prompts via STDIN (heredoc/pipe), not a positional arg through env-decode. Wrap every remote agent invocation in `timeout`. Never block on a background agent task without a bounded deadline + a no-output tripwire
 - **FM-69** [BROAD] A disable/mitigation flag must be VERIFIED wired by a preflight probe (a no-op exec proving the inner sandbox is bypassed) that fails LOUD at boot — not discovered mid-task. Grep: the flag has a real consumer that changes the invocation
 - **FM-80** [BROAD] A liveness renewer must tolerate transient failures across the full TTL grace (ceil(TTL/interval) consecutive misses) before declaring loss, with a regression test injecting a transient mid-run failure.
-- **FM-88** [BROAD] All agent coordination — reviews, prompt-TDD, collab, consults — goes through fleet-dispatch **ssh-free**: `fleet-consult.sh` (Hermes Q&A), `fleet-enqueue.sh` (impl/review/impl-grok). Reserve `ssh` strictly for diagnostics (inspecting a process, logs, env). If a worker's fleet path is broken, that worker is **BLOCKED** until the path is fixed AND deployed — never substitute the ssh backdoor to fake the capability or to manufacture progress. Corollary to FM-87: don't just avoid trusting a fake status; don't manufacture a real-looking result through a channel that proves nothing about the system you're supposed to be building.
 - **FM-93** [BROAD] Run `git fetch` + `git status -sb` before trusting recon of a local repo; verify claims against `git show origin/main:<path>` / `git ls-tree origin/main`, never the working tree alone.
 - **FM-110** [BROAD] Every '# pragma: no cover' live binding has at least one real (non-faked) smoke test that actually invokes it; and after editing an import block in a formatter-hooked repo, grep-confirm the import survived the hook.
 - **FM-124** [BROAD] Verify claimed fixes exist in the merged tree, not just in the PR description
@@ -60,6 +59,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-236** [BROAD] A ledger that only writes start and success records a failure as an absence; count the gap between starts and results, because a dead agent leaves no row at all
 - **FM-244** [BROAD] A structural validation guard must decide with the consumer's own parser, fail closed on any node type or tag it does not positively understand, reject explicit tags a format has no legitimate need for, and -- when parsers are unavoidably different -- fail on resolved-document disagreement between them
 - **FM-246** [BROAD] A gate over configuration must parse the config and inspect executable positions, not grep raw text -- a grep-shaped gate is satisfiable by a comment that changes nothing executable
+- **FM-262** [BROAD] A dispatched builder briefed to revert one commit and delete its added test file autonomously deletes a different, pre-existing file it wrongly judges as orphaned, without checking the file's actual provenance first.
 - **FM-01** [NARROW] Grep aliases for role/routing words; confirm advertised name == persisted identity
 - **FM-04** [NARROW] Render ExecStart with real substitutions; diff against post-install listing
 - **FM-17** [NARROW] Every namespace used by a manifest set must have a `00-namespace.yaml` in the same apply bundle; CI dry-run on a clean cluster
@@ -91,6 +91,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-302** [NARROW] A lane that completes its work but cannot commit must report a status distinct from 'the agent failed', naming the recoverable artifact
 - **FM-304** [NARROW] A characterization test must be mutation-verified against the specific refactor slip it claims to lock, or it passes green while failing to notice that exact change
 - **FM-305** [NARROW] A text guard must be tested against the codebase's own house style, not only the exact wording of the bug it was written for
+- **FM-309** [NARROW] A guard implemented by shimming PATH catches only the idiomatic invocation; an absolute-path call bypasses it entirely
 - **FM-324** [NARROW] Text-based acceptance gate was satisfied by editing a comment rather than the code
 - **FM-329** [NARROW] Acceptance gate for issue-411-gate.sh used three static fixtures with fixed byte sizes; reviewer defeated it with a wc -c case statement returning correct answers for all three without parsing
 - **FM-330** [NARROW] Two review rounds on fleet PR 548 (rounds 1-2) wrote correct verdict files but posted nothing to GitHub because the reviewing App identity was the PR author and GitHub forbids self-approval, so the step degraded silently instead of erroring
@@ -103,7 +104,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-351** [NARROW] Deleted git-TRACKED files while sweeping directories classified as build cruft
 - **FM-363** [NARROW] PR#124's bats fixture (test_add_failure_mode.bats) never updated for new write-path deps added by the same PR, causing 8/237 real CI failures
 - **FM-367** [NARROW] SHA-pinned CI poller reported green on a partially-registered check set (1 of 14 checks)
-- **FM-368** [NARROW] A test asserted an isolation property in a comment that was never implemented anywhere
 - **FM-378** [NARROW] A workload that fetches its own runtime from the internet on every start has an undeclared external dependency that only surfaces when it is finally restarted
 - **FM-380** [NARROW] A guard's positive control must be derived from the artifact under test, never a hardcoded constant -- a constant is knowable in advance and can be satisfied by the very substitution the control exists to detect
 - **FM-395** [NARROW] Before escalating a red CI board to the founder as a decision gate, prove the failing tests predate your own branch: check git log --diff-filter=A on the test file and diff --stat against the merge-base.

@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-101 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+103 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -25,6 +25,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-68** [BROAD] Feed headless-agent prompts via STDIN (heredoc/pipe), not a positional arg through env-decode. Wrap every remote agent invocation in `timeout`. Never block on a background agent task without a bounded deadline + a no-output tripwire
 - **FM-69** [BROAD] A disable/mitigation flag must be VERIFIED wired by a preflight probe (a no-op exec proving the inner sandbox is bypassed) that fails LOUD at boot — not discovered mid-task. Grep: the flag has a real consumer that changes the invocation
 - **FM-80** [BROAD] A liveness renewer must tolerate transient failures across the full TTL grace (ceil(TTL/interval) consecutive misses) before declaring loss, with a regression test injecting a transient mid-run failure.
+- **FM-88** [BROAD] All agent coordination — reviews, prompt-TDD, collab, consults — goes through fleet-dispatch **ssh-free**: `fleet-consult.sh` (Hermes Q&A), `fleet-enqueue.sh` (impl/review/impl-grok). Reserve `ssh` strictly for diagnostics (inspecting a process, logs, env). If a worker's fleet path is broken, that worker is **BLOCKED** until the path is fixed AND deployed — never substitute the ssh backdoor to fake the capability or to manufacture progress. Corollary to FM-87: don't just avoid trusting a fake status; don't manufacture a real-looking result through a channel that proves nothing about the system you're supposed to be building.
 - **FM-93** [BROAD] Run `git fetch` + `git status -sb` before trusting recon of a local repo; verify claims against `git show origin/main:<path>` / `git ls-tree origin/main`, never the working tree alone.
 - **FM-110** [BROAD] Every '# pragma: no cover' live binding has at least one real (non-faked) smoke test that actually invokes it; and after editing an import block in a formatter-hooked repo, grep-confirm the import survived the hook.
 - **FM-124** [BROAD] Verify claimed fixes exist in the merged tree, not just in the PR description
@@ -104,4 +105,5 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-368** [NARROW] A test asserted an isolation property in a comment that was never implemented anywhere
 - **FM-378** [NARROW] A workload that fetches its own runtime from the internet on every start has an undeclared external dependency that only surfaces when it is finally restarted
 - **FM-380** [NARROW] A guard's positive control must be derived from the artifact under test, never a hardcoded constant -- a constant is knowable in advance and can be satisfied by the very substitution the control exists to detect
+- **FM-395** [NARROW] Before escalating a red CI board to the founder as a decision gate, prove the failing tests predate your own branch: check git log --diff-filter=A on the test file and diff --stat against the merge-base.
 - **FM-402** [NARROW] When review blocks on a boundary a tool does not have, fix the CLAIM before hardening the tool, and check whether the modeled attacker can bypass the tool entirely

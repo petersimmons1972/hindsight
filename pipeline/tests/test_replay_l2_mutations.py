@@ -113,7 +113,11 @@ def test_vector_id_binding_mutation_reports_partition(replay_case, capsys) -> No
     # from cross-cluster fleet-OPS-14 moves their binding; the test never searches.
     assert payload["embeddings"]["pub-fm-08"] != payload["embeddings"]["fleet-OPS-14"]
     payload["embeddings"]["pub-fm-08"] = payload["embeddings"]["fleet-OPS-14"]
-    # fm-backlog 2026-08-21: FM-391..394 increased the captured L1 corpus to 707.
+    # hindsight#108: this literal is MACHINE-MAINTAINED. bin/add-failure-mode.sh
+    # rewrites the digits as part of the same write transaction that appends a
+    # catalog entry, parsing them from the pipeline's own replay report. Do not
+    # restate the count in prose here -- the updater rewrites digits, not
+    # comments, so any number written above this line drifts silently and lies.
     assert len(payload["embeddings"]) == 709
     case["snapshot"].write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -150,7 +154,11 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     assert REPLAY.main([]) == 0
     captured = capsys.readouterr()
     assert captured.err == ""
-    # fm-backlog 2026-08-21: FM-391..396 yield the measured 709-entry partition (cluster count per replay).
+    # hindsight#108: these literals are MACHINE-MAINTAINED. bin/add-failure-mode.sh
+    # rewrites both digits inside the same write transaction that appends a catalog
+    # entry, parsing them from the pipeline's own replay report. Do not restate the
+    # CURRENT counts in prose here: the updater rewrites digits, not comments, so a
+    # live count written above this line drifts silently and lies.
     assert captured.out == "replay-l2: PASS: 709 entries, 283 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

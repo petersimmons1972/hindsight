@@ -273,6 +273,9 @@ make_staged_repo() {
   cp "$ROOT/pipeline/cluster.py" "$STAGE/pipeline/cluster.py"
   cp "$ROOT/pipeline/replay_l2.py" "$STAGE/pipeline/replay_l2.py"
   cp "$ROOT/pipeline/recall_baselines.py" "$STAGE/pipeline/recall_baselines.py"
+  cp "$ROOT/pipeline/tests/test_replay_l2.py" "$STAGE/pipeline/tests/test_replay_l2.py"
+  cp "$ROOT/pipeline/tests/test_replay_l2_mutations.py" \
+    "$STAGE/pipeline/tests/test_replay_l2_mutations.py"
   cp "$ROOT/pipeline/tests/fixtures/recurrence_ground_truth.json" \
     "$STAGE/pipeline/tests/fixtures/recurrence_ground_truth.json"
   printf '%s\n' '| FM-001 | A | old | old | Judgment |' >"$STAGE/catalog/failure-modes.md"

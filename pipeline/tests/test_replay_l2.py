@@ -34,8 +34,8 @@ def test_process_self_match_catalog_rows_keep_lesson_in_check(record_id: str) ->
 
 
 def test_committed_snapshot_replays_through_real_default_loader(capsys) -> None:
-    # fm-backlog 2026-08-21: FM-391..395 yield the measured 708-entry partition (cluster count per replay).
-    assert REPLAY.main([]) == 0 and "PASS: 708 entries, 281 clusters" in capsys.readouterr().out
+    # fm-backlog 2026-08-21: FM-391..396 yield the measured 709-entry partition (cluster count per replay).
+    assert REPLAY.main([]) == 0 and "PASS: 709 entries, 283 clusters" in capsys.readouterr().out
 def _record(record_id: str) -> dict[str, object]:
     return {
         "id": record_id, "source_path": f"repo/{record_id}", "source_anchor": "line 1",

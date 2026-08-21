@@ -393,13 +393,23 @@ def test_unlocatable_replay_pin_fails_loudly_without_partial_write(sandbox) -> N
     assert {path: _digest(path) for path in protected} == before
 
 
-def test_external_corpus_drift_still_fails_the_literal_replay_pins(sandbox) -> None:
+def test_stale_literal_replay_pins_fail_after_successful_add(sandbox) -> None:
     repo = sandbox("honest")
-    added = _add(repo, "the pins must remain independent replay oracles")
-    assert added.returncode == 0, _report("the canonical add itself failed", added)
+    pin_paths = [repo / relative for relative in PIN_RELATIVES]
+    pins_before = {path: path.read_bytes() for path in pin_paths}
+    old_replay_pin, _old_exact_pin, _old_embedding_pin = _pinned_counts(repo)
 
-    corpus = repo / "pipeline" / "L1" / "homelab-canon.jsonl"
-    corpus.write_text(corpus.read_text(encoding="utf-8").replace('"instance"', '"instance_x"', 1), encoding="utf-8")
+    added = _add(
+        repo,
+        "the pins must remain independent replay oracles",
+        catalog=repo / CATALOG_REL,
+    )
+    assert added.returncode == 0, _report("the canonical add itself failed", added)
+    entries, clusters = _reported_counts(added.stdout)
+
+    for path, contents in pins_before.items():
+        path.write_bytes(contents)
+
     replay_tests = _run(
         [
             sys.executable,
@@ -408,15 +418,22 @@ def test_external_corpus_drift_still_fails_the_literal_replay_pins(sandbox) -> N
             "-q",
             "pipeline/tests/test_replay_l2.py::test_committed_snapshot_replays_through_real_default_loader",
             "pipeline/tests/test_replay_l2_mutations.py::test_default_committed_replay_succeeds_with_network_poisoned",
+            "pipeline/tests/test_replay_l2_mutations.py::test_vector_id_binding_mutation_reports_partition",
         ],
         repo,
         CHECK_TIMEOUT,
     )
     assert replay_tests.returncode != 0, _report(
-        "corpus drift made the replay pins tautological instead of failing", replay_tests
+        "stale literal replay pins did not reject the successful replay", replay_tests
     )
-    assert "2 failed" in replay_tests.stdout, _report(
-        "both literal replay-pin tests must reject corpus drift", replay_tests
+    assert "3 failed" in replay_tests.stdout, _report(
+        "all literal replay-pin tests must reject stale pins", replay_tests
+    )
+    assert f"PASS: {entries} entries, {clusters} clusters" in replay_tests.stdout, _report(
+        "the successful replay counts were not reported by the pin failures", replay_tests
+    )
+    assert f"PASS: {old_replay_pin[0]} entries, {old_replay_pin[1]} clusters" in replay_tests.stdout, _report(
+        "the stale literal counts were not reported by the pin failures", replay_tests
     )
 
 

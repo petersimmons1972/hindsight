@@ -149,6 +149,10 @@ the two issue-132 TF-IDF tests reproduced above, and both now pass.
 Land the 40-member in-agglomeration cap and the regenerated L2 artifacts.  At
 `3d23dfe`, an unrelated two-record text edit moved a 103-member average-link
 sink across a 0.002117 TF-IDF aggregate margin, merging completion-signal with
-shared-mutable-checkout.  The cap eliminates that merge on the identical
-vectors and threshold, preserves the tested recall floor, prevents future
-large-cluster drift, and keeps replay internally consistent.
+shared-mutable-checkout.  The TF-IDF elimination re-run used identical vectors
+and threshold, so the cap's verdict rests on that controlled comparison.  The
+HTTP snapshot is a fresh capture: 6 of 696 HTTP-backend embeddings drifted on
+recapture (maximum absolute delta 0.036), which is expected embedding-host
+nondeterminism; the HTTP-path tests pass against that snapshot.  The cap
+preserves the tested recall floor, prevents future large-cluster drift, and
+keeps replay internally consistent.

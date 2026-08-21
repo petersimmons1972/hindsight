@@ -34,7 +34,8 @@ def test_process_self_match_catalog_rows_keep_lesson_in_check(record_id: str) ->
 
 
 def test_committed_snapshot_replays_through_real_default_loader(capsys) -> None:
-    assert REPLAY.main([]) == 0 and "PASS: 696 entries, 276 clusters" in capsys.readouterr().out
+    # 6fde9df cap-artifact regeneration chain: pin the regenerated partition.
+    assert REPLAY.main([]) == 0 and "PASS: 696 entries, 279 clusters" in capsys.readouterr().out
 def _record(record_id: str) -> dict[str, object]:
     return {
         "id": record_id, "source_path": f"repo/{record_id}", "source_anchor": "line 1",

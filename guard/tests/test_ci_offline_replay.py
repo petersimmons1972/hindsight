@@ -33,7 +33,7 @@ REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "0d2e9cf799c86c89acc1941773a7d68f36163dc6f2e07ef5a1948dc931402a1a"
+INTENDED_WORKFLOW_SHA256 = "e6debf3344e6bcab274d4b57366643610d5a44a2ee1740558fe2c25d76485c08"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -183,6 +183,21 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
         "the matrix job must enforce one 90-minute budget on every expansion"
     )
     assert "TODO(homelab-kubernetes): tighten to ~30 minutes" in workflow
+
+    parser_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0] == "      - name: Set up parser runtime"
+    ]
+    assert parser_steps == [(
+        "      - name: Set up parser runtime",
+        "        if: matrix.shard != 'pytest-release'",
+        "        uses: actions/setup-node@v4",
+        "        with:",
+        "          node-version: 24.11.0",
+    )], (
+        "pytest-rest runs JavaScript parser tests against Node's internal "
+        "Acorn and must receive the same pinned parser runtime as tools"
+    )
 
     release = (
         "python3 -m pytest bin/tests/test_add_failure_mode_release.py "

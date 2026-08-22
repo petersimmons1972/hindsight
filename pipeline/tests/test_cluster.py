@@ -296,6 +296,47 @@ def test_provenance_digests_change_with_l1_and_cluster_inputs(tmp_path: Path) ->
         MODULE.CLUSTER_CONFIG["http_dense_weight"] = original
 
 
+def test_capture_reuses_compatible_existing_vectors_and_requests_only_new_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A one-record catalog add must not rewrite every historical vector."""
+    l1 = tmp_path / "L1"
+    _write_l1(l1, record_id="old", instance="already released")
+    with (l1 / "one.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "id": "new", "source_path": "repo/file", "source_anchor": "line 2",
+            "instance": "newly added", "check": None, "enforcement": None,
+            "auto": "judgment", "first_seen": None,
+        }) + "\n")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    output.write_text(json.dumps({
+        "schema": MODULE.SNAPSHOT_SCHEMA,
+        "provenance": {"l1_sha256": "a" * 64, "cluster_sha256": "b" * 64},
+        "backend": {"name": "http", "model": "fake", "revision": "r1", "dimensions": 2},
+        "embeddings": {"old": [1.0, 0.0]},
+    }) + "\n", encoding="utf-8")
+    requested: list[list[str]] = []
+
+    def request_new_only(_base_url: str, texts: list[str], _timeout: float) -> np.ndarray:
+        requested.append(texts)
+        return np.asarray([[0.0, 1.0]], dtype=np.float32)
+
+    monkeypatch.setattr(CAPTURE, "_request_vectors", request_new_only)
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    CAPTURE.capture(args)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert requested == [[MODULE.similarity_text(MODULE.load_entries(l1)[0])]]
+    assert payload["embeddings"] == {"new": [0.0, 1.0], "old": [1.0, 0.0]}
+
+
 @pytest.mark.parametrize("changed_input", ["l1", "cluster"])
 def test_capture_rejects_provenance_drift_during_request_and_preserves_output(
     tmp_path: Path, monkeypatch, changed_input: str

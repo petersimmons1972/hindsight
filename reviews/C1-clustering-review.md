@@ -60,7 +60,7 @@ Guard suite on this branch: green (unrelated to C1 quality).
 
 **TF-IDF meets the fixture numbers.** That is real for this path only.
 
-### HTTP (live `http://192.168.0.98:8004`, endpoint `/v1/embeddings`)
+### HTTP (live `http://leviathan.petersimmons.com:8004`, endpoint `/v1/embeddings`)
 
 Probe: `HttpEmbeddingBackend().available is True` — **genuinely networked**, not a silent TF-IDF fall-through.  
 Mean off-diagonal cosine under L2-normalised neural embeddings: **~0.475** (dense, high baseline). Sparse TF-IDF baseline is far lower; the shared default `0.17` is therefore not a shared scale.

@@ -26,7 +26,7 @@ catalogue.
 
 1. **Per-backend thresholds.** Each backend declares its own default. `--threshold` still
    overrides. Calibrate the HTTP default empirically against the live endpoint
-   (`http://192.168.0.98:8004`, healthy, ~13ms per single embedding) so the ground-truth
+   (`http://leviathan.petersimmons.com:8004`, healthy, ~13ms per single embedding) so the ground-truth
    families are recovered with the same recall/precision the TF-IDF path achieves. Record
    the measured numbers you used in the module docstring — a magic constant with no
    recorded derivation is how the current bug happened.

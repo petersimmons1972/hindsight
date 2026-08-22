@@ -39,7 +39,7 @@ BACKEND_DEFAULT_THRESHOLDS = {"tfidf": 0.17, "http": 0.22}
 # Retained as the sparse fallback's public compatibility constant.  Call
 # default_threshold() for a selected backend rather than reusing this value.
 DEFAULT_THRESHOLD = BACKEND_DEFAULT_THRESHOLDS["tfidf"]
-DEFAULT_EMBEDDING_URL = "http://192.168.0.98:8004"
+DEFAULT_EMBEDDING_URL = "http://leviathan.petersimmons.com:8004"
 LINKAGE = "average"
 HTTP_DENSE_WEIGHT = 0.10
 MAX_CLUSTER_FRACTION = 0.40
@@ -447,16 +447,37 @@ class HttpEmbeddingBackend:
         self.available = False
         self.endpoint: str | None = None
         self.base_url = base_url.rstrip("/")
-        # The PROBE must be short -- an unreachable host should not stall startup.
-        # The bulk request must NOT inherit that cap: embedding the whole corpus
-        # is orders of magnitude more work than a one-string liveness probe.
-        # Capping both at 3s made every real run fail with "timed out" while the
-        # test suite stayed green, because the tests force the TF-IDF fallback.
+        # Liveness must be cheap: an unreachable host should not stall startup,
+        # but a real embedding can legitimately take longer than a connection
+        # probe.  Keep those budgets separate (hindsight#147).
         self.probe_timeout = min(max(timeout, 0.1), 3.0)
         self.request_timeout = max(request_timeout, self.probe_timeout)
-        if parsed.scheme != "http" or parsed.hostname != "192.168.0.98":
+        if parsed.scheme != "http" or parsed.hostname != "leviathan.petersimmons.com":
             return
-        for endpoint in ("/v1/embeddings", "/embedding"):
+        if self._models_available():
+            self.endpoint = "/v1/embeddings"
+            self.available = True
+            return
+        # The OpenAI-compatible endpoint has no native fallback: if its batch
+        # request is not accepted, probe the native endpoint separately.
+        # This makes the discovery budget exactly three short POSTs (one
+        # OpenAI, then native batch and native per-text) after /v1/models.
+        try:
+            vectors = self._vectors_from_payload(
+                self._post(
+                    "/v1/embeddings",
+                    {"input": ["hindsight embedding probe"]},
+                    self.probe_timeout,
+                ),
+                expected_count=1,
+            )
+        except (OSError, ValueError, URLError):
+            vectors = []
+        if len(vectors) == 1 and vectors[0].size:
+            self.endpoint = "/v1/embeddings"
+            self.available = True
+            return
+        for endpoint in ("/embedding",):
             try:
                 vectors = self._request(endpoint, ["hindsight embedding probe"], timeout=self.probe_timeout)
             except (OSError, ValueError, URLError):
@@ -465,6 +486,16 @@ class HttpEmbeddingBackend:
                 self.endpoint = endpoint
                 self.available = True
                 return
+
+    def _models_available(self) -> bool:
+        """Check the OpenAI-compatible liveness endpoint without embedding work."""
+        request = Request(f"{self.base_url}/v1/models", method="GET")
+        try:
+            with urlopen(request, timeout=self.probe_timeout) as response:
+                response.read()
+        except (OSError, ValueError, URLError):
+            return False
+        return True
 
     def _request(self, endpoint: str, texts: Sequence[str], timeout: float | None = None) -> list[np.ndarray]:
         try:

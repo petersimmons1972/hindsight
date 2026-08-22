@@ -24,7 +24,7 @@ cluster = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = cluster
 SPEC.loader.exec_module(cluster)
 
-AUTHORIZED_HTTP_HOSTS = frozenset({"192.168.0.98"})
+AUTHORIZED_HTTP_HOSTS = frozenset({"leviathan.petersimmons.com"})
 
 
 class _RejectRedirects(HTTPRedirectHandler):

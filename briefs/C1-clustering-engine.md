@@ -24,7 +24,7 @@ while its artifact was absent" are the same failure and must cluster together.
 **Pluggable embedding backend, two implementations behind one interface:**
 
 1. `HttpEmbeddingBackend` — POSTs to a local embedding server, default
-   `http://192.168.0.98:8004` (llama.cpp/ROCm, already running). Probe it on init with
+   `http://leviathan.petersimmons.com:8004` (llama.cpp/ROCm, already running). Probe it on init with
    a short timeout (≤3s). This is the **only** authorised network call in this packet,
    and only to that host. Discover the endpoint shape defensively: try
    `/v1/embeddings` (OpenAI-style `{"input": [...]}` → `{"data":[{"embedding":[...]}]}`)

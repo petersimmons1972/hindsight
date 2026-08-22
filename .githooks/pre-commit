@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if ! REPO_ROOT="$(git rev-parse --show-toplevel)"; then
+    echo "ERROR: pre-commit must run from inside the worktree being committed." >&2
+    exit 1
+fi
 python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py"
 
 # Plan-index truth (issue #92): load-bearing when the index or its evidence

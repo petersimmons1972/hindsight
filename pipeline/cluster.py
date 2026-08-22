@@ -51,6 +51,11 @@ MAX_CLUSTER_FRACTION = 0.40
 # the corpus grows, while leaving ample headroom over the seven-member largest
 # ground-truth family.
 MAX_CLUSTER_MEMBERS = 40
+# Seven independent clusters at the hard 40-member ceiling means 280 records
+# were stopped by the cap rather than separated by the threshold.  That is a
+# threshold failure even if a growing tail of singletons dilutes the aggregate
+# fraction below its corpus-relative bound.
+MAX_PINNED_CLUSTERS = 6
 REQUIRED_FIELDS = frozenset(
     {"id", "source_path", "source_anchor", "instance", "check", "enforcement", "auto", "first_seen"}
 )
@@ -90,6 +95,7 @@ CLUSTER_CONFIG: dict[str, object] = {
     "http_dense_weight": HTTP_DENSE_WEIGHT,
     "max_cluster_fraction": MAX_CLUSTER_FRACTION,
     "max_cluster_members": MAX_CLUSTER_MEMBERS,
+    "max_pinned_clusters": MAX_PINNED_CLUSTERS,
 }
 
 
@@ -760,6 +766,7 @@ def _assert_non_degenerate(
     # clusters pinned at the ceiling.  Measure that saturation in aggregate,
     # so the cap remains a brake rather than an escape hatch for degeneracy.
     if max_members is not None:
+        pinned_clusters = sum(1 for group in assignments if len(group) >= max_members)
         saturated = sum(len(group) for group in assignments if len(group) >= max_members)
         saturated_fraction = saturated / entry_count
         if saturated_fraction > MAX_CLUSTER_FRACTION:
@@ -769,6 +776,13 @@ def _assert_non_degenerate(
                 f"{saturated}/{entry_count} ({saturated_fraction:.1%}) of the corpus sits in "
                 f"clusters pinned at the {max_members}-member cap, exceeding the "
                 f"{MAX_CLUSTER_FRACTION:.0%} bound"
+            )
+        if pinned_clusters > MAX_PINNED_CLUSTERS:
+            raise RuntimeError(
+                "degenerate clustering for backend "
+                f"{backend_name!r} at threshold {threshold:.2f}: "
+                f"{pinned_clusters} clusters are pinned at the {max_members}-member cap, "
+                f"exceeding the {MAX_PINNED_CLUSTERS}-cluster bound"
             )
 
     largest_cluster = max(len(group) for group in assignments)

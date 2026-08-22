@@ -563,7 +563,7 @@ def test_capture_falls_back_to_native_per_text_endpoint(monkeypatch) -> None:
         return {"embedding": [1.0, 0.0] if content == "first" else [0.0, 1.0]}
 
     monkeypatch.setattr(CAPTURE, "_post_json", post)
-    matrix = CAPTURE._request_vectors("http://192.168.0.98:8004", ["first", "second"], 1.0)
+    matrix = CAPTURE._request_vectors("http://leviathan.petersimmons.com:8004", ["first", "second"], 1.0)
     np.testing.assert_array_equal(matrix, [[1.0, 0.0], [0.0, 1.0]])
     assert calls == [
         ("/v1/embeddings", {"input": ["first", "second"]}),
@@ -1454,6 +1454,8 @@ def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pyt
             return b'{"embedding":[3.0,4.0]}'
 
     def fake_urlopen(request: object, timeout: float) -> Response:
+        if request.full_url.endswith("/v1/models"):
+            raise MODULE.URLError("unsupported endpoint")
         payload = json.loads(request.data.decode("utf-8"))
         calls.append((payload, timeout))
         if request.full_url.endswith("/v1/embeddings") or "input" in payload:
@@ -1470,6 +1472,123 @@ def test_http_backend_discovers_native_per_text_embedding_shape(monkeypatch: pyt
     assert [timeout for _, timeout in calls[:3]] == [3.0, 3.0, 3.0]
     assert [timeout for _, timeout in calls[3:]] == [120.0, 120.0, 120.0]
     assert len([payload for payload, _ in calls if "content" in payload]) == 3
+
+
+def test_http_backend_down_host_has_a_twelve_second_probe_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every discovery request is short, including fallback POSTs (#147)."""
+    observed: list[tuple[str, float]] = []
+
+    def down_host(request: object, timeout: float) -> object:
+        observed.append((request.full_url, timeout))
+        raise TimeoutError("host is down")
+
+    monkeypatch.setattr(MODULE, "urlopen", down_host)
+
+    backend = MODULE.HttpEmbeddingBackend()
+
+    assert not backend.available
+    assert observed == [
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/v1/models", 3.0),
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/v1/embeddings", 3.0),
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/embedding", 3.0),
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/embedding", 3.0),
+    ]
+    assert sum(timeout for _, timeout in observed) == 12.0
+
+
+def test_http_backend_rejects_a_foreign_hostname_before_contact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FQDN identity check remains exact rather than becoming an allow-all."""
+    monkeypatch.setattr(
+        MODULE,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("foreign host contacted")),
+    )
+
+    backend = MODULE.HttpEmbeddingBackend("http://leviathan.petersimmons.com.evil.invalid:8004")
+
+    assert not backend.available
+    assert backend.endpoint is None
+
+
+def test_http_backend_models_liveness_keeps_a_hung_embed_at_request_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 200 models probe never makes the real embedding use probe timeout."""
+    observed: list[tuple[str, float]] = []
+
+    class Response:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":[]}'
+
+    def models_then_hang(request: object, timeout: float) -> Response:
+        observed.append((request.full_url, timeout))
+        if request.full_url.endswith("/v1/models"):
+            return Response()
+        raise TimeoutError("embedding request hung")
+
+    monkeypatch.setattr(MODULE, "urlopen", models_then_hang)
+    backend = MODULE.HttpEmbeddingBackend()
+
+    assert backend.available
+    with pytest.raises(TimeoutError, match="hung"):
+        backend.embed(["one"])
+    assert observed == [
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/v1/models", 3.0),
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/v1/embeddings", 120.0),
+    ]
+
+
+def test_http_backend_does_not_call_a_slow_embedding_service_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A responsive liveness endpoint is not invalidated by a slow embedding POST.
+
+    #147: the old constructor used the three-second liveness budget for a
+    real embedding request.  This fixture is healthy, but its embedding work
+    requires more than that legacy cap.  Construction must use the cheap
+    liveness endpoint; the actual embedding gets the normal request budget.
+    """
+    observed: list[tuple[str, float]] = []
+
+    class Response:
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"data":[{"embedding":[3.0,4.0]}]}'
+
+    def healthy_but_slow(request: object, timeout: float) -> Response:
+        observed.append((request.full_url, timeout))
+        if request.full_url.endswith("/v1/models"):
+            return Response()
+        if timeout <= 3.0:
+            raise TimeoutError("embedding needs more than the legacy three-second cap")
+        return Response()
+
+    monkeypatch.setattr(MODULE, "urlopen", healthy_but_slow)
+
+    backend = MODULE.HttpEmbeddingBackend()
+
+    assert backend.available
+    assert backend.endpoint == "/v1/embeddings"
+    assert backend.embed(["one"]).shape == (1, 2)
+    assert observed == [
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/v1/models", 3.0),
+        (f"{MODULE.DEFAULT_EMBEDDING_URL}/v1/embeddings", 120.0),
+    ]
 
 
 class _UnreachableHttpBackend:

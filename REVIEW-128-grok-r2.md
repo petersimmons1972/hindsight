@@ -10,7 +10,7 @@ executed its checks itself. Adjudicated by the coordinator (bg job 92e4a093, 202
 Grok observed `12 failed, 531 passed, 2 skipped` and challenged the coordinator's
 545-passed claim. All 12 failures are its own dispatch-sandbox environment: 11 are
 `PermissionError` on `ThreadingHTTPServer.bind` (sandbox cannot bind ports), 1 is
-`http://192.168.0.98:8004` unreachable (sandbox network is restricted — the documented
+`http://leviathan.petersimmons.com:8004` unreachable (sandbox network is restricted — the documented
 dispatch-sandbox limitation; Grok itself rated these environmental at medium confidence).
 Host re-runs, coordinator-executed:
 

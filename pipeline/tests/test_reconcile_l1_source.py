@@ -18,6 +18,7 @@ verdict here instead of quietly changing the meaning of a passing test.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 import subprocess
@@ -25,7 +26,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 
 REPO = Path(__file__).resolve().parents[2]
 RECONCILE = REPO / "pipeline" / "reconcile_l1.py"
@@ -48,6 +48,7 @@ def _run(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(script), *args],
         capture_output=True, text=True, cwd=str(script.resolve().parents[1]),
+        check=False,
     )
 
 
@@ -310,6 +311,270 @@ def test_dropping_a_real_catalog_row_from_l1_fails_the_scoped_ci_gate(
     )
     assert "SHORT" in result.stdout
     assert dropped in result.stdout, "the failure must name the row it lost"
+
+
+def test_hand_edited_catalog_text_that_did_not_reach_l1_fails_and_names_the_row(
+    tmp_path: Path,
+) -> None:
+    """A same-ID stale extract is drift too, not merely a coverage success.
+
+    This reproduces hindsight#141: changing a canonical row in place leaves
+    coverage at 100%, so an ID-only reconciler reports COMPLETE.  The gate has
+    to reject that state and identify the row a maintainer must re-extract.
+    """
+    projects = tmp_path / "projects"
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+
+    source_id = "FM-404"
+    catalog_text = CATALOG.read_text(encoding="utf-8")
+    original = next(
+        line for line in catalog_text.splitlines() if line.startswith(f"| {source_id} |")
+    )
+    edited = original.replace(
+        "runner-queue delay was observed directly",
+        "runner-queue delay was refuted by the job timestamps",
+    )
+    assert edited != original, "fixture edit did not alter the canonical row"
+    (repo / "catalog" / "failure-modes.md").write_text(
+        catalog_text.replace(original, edited), encoding="utf-8"
+    )
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_bytes(CANON_L1.read_bytes())
+
+    result = _run(repo / "pipeline" / "reconcile_l1.py", "--source", "homelab-canon")
+
+    assert result.returncode == 1, result.stdout
+    assert "SHORT" in result.stdout
+    assert source_id in result.stdout, result.stdout
+    assert "divergent" in result.stdout.lower(), result.stdout
+
+
+@pytest.mark.parametrize(
+    ("old", "planted"),
+    [
+        (
+            "must return empty (pre-commit/CI guard)",
+            "must NEVER return empty PLANTED (pre-commit/CI guard)",
+        ),
+        ("| 🤖 |", "| Judgment |"),
+    ],
+    ids=("fm32-check-tail", "fm32-auto-cell"),
+)
+def test_pipe_heavy_fm32_semantic_edits_are_not_silently_skipped(
+    tmp_path: Path,
+    old: str,
+    planted: str,
+) -> None:
+    """The real FM-32 row has escaped pipes and defeated naive ``split('|')``."""
+    projects = tmp_path / "projects"
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+
+    catalog_text = CATALOG.read_text(encoding="utf-8")
+    source = next(line for line in catalog_text.splitlines() if line.startswith("| FM-32 |"))
+    edited = source.replace(old, planted)
+    assert edited != source, "the FM-32 attack did not alter its intended semantic cell"
+    (repo / "catalog" / "failure-modes.md").write_text(
+        catalog_text.replace(source, edited), encoding="utf-8"
+    )
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_bytes(CANON_L1.read_bytes())
+
+    result = _run(repo / "pipeline" / "reconcile_l1.py", "--source", "homelab-canon")
+
+    assert result.returncode == 1, result.stdout
+    assert "SHORT" in result.stdout
+    assert "FM-32" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("fm_id", "check_prefix"),
+    [
+        ("FM-89", "In any `compose up -d` wrapper script"),
+        ("FM-218", "A check that DISCOVERS its own targets"),
+    ],
+)
+def test_natural_apostrophes_do_not_swallow_the_check_cell(
+    fm_id: str,
+    check_prefix: str,
+) -> None:
+    """Possessives and quoted prose must not span a real table boundary."""
+    spec = importlib.util.spec_from_file_location("reconcile_under_test", RECONCILE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    rows = module.parse_catalog_rows(CATALOG.read_text(encoding="utf-8"))
+    row = next(candidate for candidate in rows if candidate.fm_id == fm_id)
+
+    assert row.check is not None
+    assert row.check.startswith(check_prefix)
+    assert f" | {check_prefix}" not in row.instance
+
+
+def test_catalog_id_whitespace_is_normalized_in_ground_truth(tmp_path: Path) -> None:
+    """Whitespace around an ID must not make a real row disappear from truth."""
+    projects = tmp_path / "projects"
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+
+    catalog_text = CATALOG.read_text(encoding="utf-8")
+    planted = catalog_text.replace("| FM-404 |", "|  FM-404 |", 1)
+    assert planted != catalog_text
+    (repo / "catalog" / "failure-modes.md").write_text(planted, encoding="utf-8")
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_bytes(CANON_L1.read_bytes())
+
+    result = _run(
+        repo / "pipeline" / "reconcile_l1.py", "--json", "--source", "homelab-canon"
+    )
+    report = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stdout
+    assert report[0]["ground_truth"] == 423
+    assert report[0]["covered"] == 423
+
+
+def test_extra_canonical_l1_id_makes_the_gate_short(tmp_path: Path) -> None:
+    """An L1-only hc-FM ID is drift, not harmless surplus coverage."""
+    projects = tmp_path / "projects"
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+    (repo / "catalog" / "failure-modes.md").write_bytes(CATALOG.read_bytes())
+
+    l1_text = CANON_L1.read_text(encoding="utf-8")
+    l1_text += _record("hc-FM-999")
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_text(
+        l1_text, encoding="utf-8"
+    )
+
+    result = _run(repo / "pipeline" / "reconcile_l1.py", "--source", "homelab-canon")
+
+    assert result.returncode == 1, result.stdout
+    assert "SHORT" in result.stdout
+    assert "extra: FM-999" in result.stdout
+
+
+def test_missing_primary_l1_row_is_not_hidden_by_a_prose_cross_reference(
+    tmp_path: Path,
+) -> None:
+    """FM-277 mentions FM-96, but that cannot cover a deleted hc-FM-96 row."""
+    projects = tmp_path / "projects"
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+    (repo / "catalog" / "failure-modes.md").write_bytes(CATALOG.read_bytes())
+    records = [
+        raw
+        for raw in CANON_L1.read_text(encoding="utf-8").splitlines()
+        if json.loads(raw).get("id") != "hc-FM-96"
+    ]
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_text(
+        "\n".join(records) + "\n", encoding="utf-8"
+    )
+
+    result = _run(
+        repo / "pipeline" / "reconcile_l1.py",
+        "--json",
+        "--source",
+        "homelab-canon",
+    )
+    report = json.loads(result.stdout)
+
+    assert result.returncode == 1, report
+    assert report[0]["missing"] == ["FM-96"]
+
+
+@pytest.mark.parametrize("field", ("class_hint", "instance", "check", "auto"))
+def test_every_semantic_field_diverges_on_every_canonical_row(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    """Corrupt one field on all 423 rows; every row must be named divergent."""
+    projects = tmp_path / field
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+    catalog_text = CATALOG.read_text(encoding="utf-8")
+    (repo / "catalog" / "failure-modes.md").write_text(catalog_text, encoding="utf-8")
+
+    expected_ids = set(
+        re.findall(r"^\|\s*(FM-\d{2,3})\s*\|", catalog_text, re.MULTILINE)
+    )
+    records = []
+    for raw in CANON_L1.read_text(encoding="utf-8").splitlines():
+        record = json.loads(raw)
+        if str(record.get("id", "")).startswith("hc-FM-"):
+            record[field] = "__PLANTED_SEMANTIC_DIVERGENCE__"
+        records.append(record)
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_text(
+        "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+    result = _run(
+        repo / "pipeline" / "reconcile_l1.py", "--json", "--source", "homelab-canon"
+    )
+    report = json.loads(result.stdout)
+
+    assert result.returncode == 1, result.stdout
+    assert set(report[0]["divergent"]) == expected_ids
+    assert len(expected_ids) == 423
+
+
+def test_catalog_robot_marker_wins_for_the_nine_previously_corrupted_rows() -> None:
+    """The catalog is source of truth; old L1 ``judgment`` values were parser loss."""
+    robot_ids = {
+        "FM-32", "FM-48", "FM-64", "FM-67", "FM-94",
+        "FM-118", "FM-146", "FM-277", "FM-412",
+    }
+    records = {
+        record["id"].removeprefix("hc-"): record
+        for record in map(json.loads, CANON_L1.read_text(encoding="utf-8").splitlines())
+        if str(record.get("id", "")).startswith("hc-FM-")
+    }
+    assert {fm_id for fm_id in robot_ids if records[fm_id]["auto"] == "machine"} == robot_ids
+
+
+@pytest.mark.parametrize(
+    "source_id",
+    ("FM-32", "FM-48", "FM-64", "FM-67", "FM-94", "FM-118", "FM-146", "FM-277", "FM-412"),
+)
+def test_auto_cell_plant_is_caught_on_each_previously_silent_robot_row(
+    tmp_path: Path,
+    source_id: str,
+) -> None:
+    """Each source-of-truth 🤖 cell is compared, including every old false judgment."""
+    projects = tmp_path / source_id
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+
+    catalog_text = CATALOG.read_text(encoding="utf-8")
+    source = next(
+        line for line in catalog_text.splitlines() if line.startswith(f"| {source_id} |")
+    )
+    assert source.endswith("| 🤖 |")
+    planted = source.removesuffix("| 🤖 |") + "| Judgment |"
+    (repo / "catalog" / "failure-modes.md").write_text(
+        catalog_text.replace(source, planted), encoding="utf-8"
+    )
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_bytes(CANON_L1.read_bytes())
+
+    result = _run(repo / "pipeline" / "reconcile_l1.py", "--json", "--source", "homelab-canon")
+    report = json.loads(result.stdout)
+
+    assert result.returncode == 1, result.stdout
+    assert report[0]["divergent"] == [source_id]
 
 
 def test_the_shipped_scoped_ci_gate_is_green_on_the_committed_tree() -> None:

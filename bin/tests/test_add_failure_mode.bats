@@ -720,7 +720,7 @@ PY
   # a resolved-source count, and the standing scope-limit footer. The stub
   # printed one line and none of this.  `fleet-orch` is intentionally SHORT,
   # but the add gate is only the canonical catalog the loop just regenerated.
-  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for (5/5 sources resolved)"* ]]
+  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for; 0 canonical row(s) text-divergent (5/5 sources resolved)"* ]]
   [[ "$output" == *"SCOPE LIMIT"* ]]
   [[ "$output" == *"homelab-canon"* ]]
   [[ "$output" == *"fleet-dispatch-schema"* ]]

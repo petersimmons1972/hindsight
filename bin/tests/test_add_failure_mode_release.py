@@ -38,8 +38,11 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.reconcile_l1 import parse_catalog_rows
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ADD_TOOL = REPO_ROOT / "bin" / "add-failure-mode.sh"
+CORRECT_TOOL = REPO_ROOT / "bin" / "correct-failure-mode.sh"
 CAPTURE_REL = Path("pipeline") / "capture_embedding_snapshot.py"
 SNAPSHOT_REL = Path("pipeline") / "L2" / "embedding-snapshot.json"
 CLUSTERS_REL = Path("pipeline") / "L2" / "clusters.jsonl"
@@ -221,6 +224,33 @@ def _add(
     )
 
 
+def _correct(
+    repo: Path,
+    target: str,
+    refutation: str,
+    lesson: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    argv = [
+        "bash", str(repo / "bin" / "correct-failure-mode.sh"),
+        "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+        target, refutation, lesson,
+    ]
+    if env is None:
+        return _run(argv, repo, ADD_TIMEOUT)
+    return subprocess.run(
+        argv,
+        cwd=str(repo),
+        env=env,
+        text=True,
+        timeout=ADD_TIMEOUT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "<absent>"
 
@@ -346,6 +376,199 @@ def test_successful_canonical_add_grows_the_catalog_it_just_released(sandbox) ->
     assert catalog.read_text(encoding="utf-8").count("\n| FM-") == rows_before + 1
     assert len(ledger.read_text(encoding="utf-8").splitlines()) == ledger_before + 1
     assert _replay(repo).returncode == 0
+
+
+@pytest.mark.parametrize("target", ["FM-404", "FM-89", "FM-218"])
+def test_correction_tombstones_original_and_appends_superseding_row(
+    sandbox,
+    target: str,
+) -> None:
+    """A refuted canonical cause needs history plus a visible replacement.
+
+    Exercise the correction path on the same fully staged, offline-release
+    sandbox used for ordinary canonical writes. The target is deliberately
+    kept substantively intact under a tombstone marker, while the appended row
+    names it as superseded. FM-89 and FM-218 pin rows whose apostrophes once
+    caused the parser to consume their Check cells into the instance.
+    """
+    repo = sandbox("honest")
+    scratch_dir = repo / "staged-catalog"
+    shutil.copytree(repo / "catalog", scratch_dir)
+    catalog = scratch_dir / "failure-modes.md"
+    original = next(
+        row for row in parse_catalog_rows(catalog.read_text(encoding="utf-8"))
+        if row.fm_id == target
+    )
+    env = dict(os.environ)
+    env["CATALOG"] = str(catalog)
+    env["CRITICALITY"] = str(scratch_dir / "criticality.jsonl")
+
+    corrected = _correct(
+        repo,
+        target,
+        "The job timestamps show a two-second queue wait; the stated runner-contention cause was refuted.",
+        "Use job creation and start timestamps before attributing a delay to runner contention.",
+        env=env,
+    )
+
+    assert corrected.returncode == 0, _report("the staged correction failed", corrected)
+    catalog_after = catalog.read_text(encoding="utf-8")
+    correction_rows = [line for line in catalog_after.splitlines() if f"Supersedes {target}" in line]
+    assert len(correction_rows) == 1, catalog_after
+    correction_id = re.match(r"\| (FM-\d+) \|", correction_rows[0]).group(1)
+    parsed_after = parse_catalog_rows(catalog_after)
+    tombstones = [row for row in parsed_after if row.fm_id == target]
+    assert len(tombstones) == 1, catalog_after
+    tombstone = tombstones[0]
+    assert tombstone.class_hint == original.class_hint, "the original class is substantive history"
+    assert tombstone.instance == f"SUPERSEDED by {correction_id} — {original.instance}"
+    assert tombstone.check == original.check, "the original lesson changed"
+    assert tombstone.auto == original.auto, "the original Auto? cell changed"
+
+    correction = next(row for row in parsed_after if row.fm_id == correction_id)
+    assert correction.class_hint == original.class_hint, "correction uppercased the target class"
+    guard = _run(
+        [sys.executable, str(repo / "guard" / "failure_mode_catalog_guard.py"), str(catalog)],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert guard.returncode == 0, _report("the committed correction pair failed its guard", guard)
+
+
+def test_add_cannot_smuggle_supersedes_claim_without_tombstone(sandbox) -> None:
+    """The ordinary add path cannot publish one half of a correction pair."""
+    repo = sandbox("honest")
+    catalog = repo / CATALOG_REL
+    ledger = repo / LEDGER_REL
+    before = (catalog.read_bytes(), ledger.read_bytes())
+
+    added = _add(repo, "an ordinary filing that claims Supersedes FM-85")
+
+    assert added.returncode != 0, _report(
+        "add-failure-mode.sh accepted an unbound supersession claim", added
+    )
+    assert "claims Supersedes FM-85" in added.stdout, added.stdout
+    assert "FM-85 is not tombstoned" in added.stdout, added.stdout
+    assert (catalog.read_bytes(), ledger.read_bytes()) == before
+
+
+def test_sigkill_before_atomic_catalog_exchange_leaves_the_old_pair(sandbox) -> None:
+    """A kill after preparation may expose neither a half row nor a half ledger."""
+    repo = sandbox("honest")
+    catalog = repo / CATALOG_REL
+    ledger = repo / LEDGER_REL
+    catalog_before = catalog.read_bytes()
+    ledger_before = ledger.read_bytes()
+    marker = repo / ".atomic-exchange-reached"
+    helper = repo / "bin" / "atomic-exchange.py"
+    helper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, time\n"
+        f"pathlib.Path({str(marker)!r}).write_text('prepared\\n')\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+
+    argv = [
+        "bash", str(repo / "bin" / "correct-failure-mode.sh"),
+        "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+        "FM-404", "refuted by timestamps", "measure the actual queue wait",
+    ]
+    proc = subprocess.Popen(
+        argv,
+        cwd=str(repo),
+        env=dict(os.environ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        for _ in range(200):
+            if marker.exists() or proc.poll() is not None:
+                break
+            import time
+            time.sleep(0.05)
+        assert marker.exists(), "correction never reached its atomic commit point"
+        assert catalog.read_bytes() == catalog_before
+        assert ledger.read_bytes() == ledger_before
+        os.killpg(proc.pid, 9)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, 9)
+            proc.wait(timeout=10)
+
+    assert catalog.read_bytes() == catalog_before
+    assert ledger.read_bytes() == ledger_before
+
+
+def test_sigkill_during_post_exchange_rollback_leaves_the_old_pair(sandbox) -> None:
+    """Rollback publishes the old catalog directory atomically before cleanup."""
+    repo = sandbox("honest")
+    catalog = repo / CATALOG_REL
+    ledger = repo / LEDGER_REL
+    criticality = repo / "catalog" / "criticality.jsonl"
+    before = (catalog.read_bytes(), ledger.read_bytes(), criticality.read_bytes())
+
+    real_helper = repo / "bin" / "atomic-exchange-real.py"
+    helper = repo / "bin" / "atomic-exchange.py"
+    helper.rename(real_helper)
+    marker = repo / ".rollback-exchange-finished"
+    counter = repo / ".exchange-count"
+    helper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import pathlib, subprocess, sys, time\n"
+        f"counter = pathlib.Path({str(counter)!r})\n"
+        "count = int(counter.read_text()) + 1 if counter.exists() else 1\n"
+        "counter.write_text(str(count))\n"
+        f"result = subprocess.run([sys.executable, {str(real_helper)!r}, *sys.argv[1:]])\n"
+        "if result.returncode:\n"
+        "    raise SystemExit(result.returncode)\n"
+        "if count == 2:\n"
+        f"    pathlib.Path({str(marker)!r}).write_text('old state published\\n')\n"
+        "    while True:\n"
+        "        time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o755)
+
+    # Fail the first downstream release step after the new directory is live.
+    extractor = repo / "pipeline" / "extract_mechanical.py"
+    extractor.write_text("#!/usr/bin/env python3\nraise SystemExit(71)\n", encoding="utf-8")
+
+    argv = [
+        "bash", str(repo / "bin" / "correct-failure-mode.sh"),
+        "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+        "FM-404", "refuted by timestamps", "measure the actual queue wait",
+    ]
+    proc = subprocess.Popen(
+        argv,
+        cwd=str(repo),
+        env=dict(os.environ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    try:
+        for _ in range(600):
+            if marker.exists() or proc.poll() is not None:
+                break
+            import time
+            time.sleep(0.05)
+        assert marker.exists(), "rollback never reached its atomic exchange"
+        assert (catalog.read_bytes(), ledger.read_bytes(), criticality.read_bytes()) == before
+        os.killpg(proc.pid, 9)
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, 9)
+            proc.wait(timeout=10)
+
+    assert (catalog.read_bytes(), ledger.read_bytes(), criticality.read_bytes()) == before
 
 
 def test_successful_canonical_add_invokes_the_controlled_release_command(sandbox) -> None:

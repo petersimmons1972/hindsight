@@ -666,6 +666,23 @@ def test_destroyed_snapshot_is_restored_when_the_add_rolls_back(sandbox) -> None
     assert _replay(repo).returncode == 0
 
 
+def test_add_ignores_ambient_pytest_collect_only_and_executes_pins(sandbox) -> None:
+    """A collection-only override cannot suppress the replay-pin test run."""
+    repo = sandbox("honest")
+    added = _add(
+        repo,
+        "ambient pytest collection-only must not certify a replay-pin update",
+        extra_env={"PYTEST_ADDOPTS": "--collect-only"},
+    )
+
+    assert added.returncode == 0, _report(
+        "the add did not complete after ignoring ambient pytest collection-only", added
+    )
+    assert "2 passed" in added.stdout, _report(
+        "ambient pytest collection-only suppressed replay-pin execution", added
+    )
+
+
 def test_absent_release_command_fails_the_add(sandbox) -> None:
     """No stand-in at all: an unavailable release must be loud, never skipped."""
     repo = sandbox("absent")

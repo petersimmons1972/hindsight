@@ -42,7 +42,7 @@ jobs:
       - name: Validate canonical catalog
         run: python3 guard/failure_mode_catalog_guard.py
       - name: Run Python tests
-        run: python3 -m pytest guard/tests/ pipeline/tests/ -q
+        run: python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ -q
       - name: Replay committed L2 offline
         run: python3 pipeline/replay_l2.py
       - name: Verify recall baselines against the committed partition

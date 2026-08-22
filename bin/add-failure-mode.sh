@@ -497,7 +497,10 @@ rollback_on_error() {
     local status=$?
     if [[ $status -ne 0 && ${JOURNAL_READY:-0} -eq 1 ]]; then
         echo "add-failure-mode: operation failed; applying undo journal" >&2
-        restore_journal "$JOURNAL" >&2 || true
+        if ! restore_journal "$JOURNAL" >&2; then
+            echo "ERROR: undo journal restoration failed: $JOURNAL" >&2
+            status=1
+        fi
     fi
     exit "$status"
 }
@@ -703,7 +706,15 @@ for path, updated in rewrites.items():
     path.write_text(updated, encoding="utf-8")
 PYEOF
 
-    python3 -m pytest pipeline/tests/test_replay_l2.py pipeline/tests/test_replay_l2_mutations.py
+    (
+        cd "$REPO_ROOT"
+        env -u PYTEST_ADDOPTS PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+            python3 -m pytest \
+            "$REPO_ROOT/pipeline/tests/test_replay_l2.py" \
+            "$REPO_ROOT/pipeline/tests/test_replay_l2_mutations.py" \
+            -q -p no:cacheprovider \
+            -k 'test_committed_snapshot_replays_through_real_default_loader or test_default_committed_replay_succeeds_with_network_poisoned'
+    )
 
     # Report every L1 source so consumer-sync drift remains a visible health
     # signal, but gate this write only on homelab-canon: it is the sole source

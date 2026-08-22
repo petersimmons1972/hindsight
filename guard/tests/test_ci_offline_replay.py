@@ -32,7 +32,7 @@ ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "2c861efdba2cfac5bf9b049a668928cc151a9bdb5bc0be6c1b0aff9f14cd7183"
+INTENDED_WORKFLOW_SHA256 = "8c87ce51301b5ca3a21479f43f9a7d6ce7bc3b94b2d4423ecacc59d1bdde6c8b"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -170,20 +170,65 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     assert hashlib.sha256(workflow_bytes).hexdigest() == INTENDED_WORKFLOW_SHA256
     workflow = workflow_bytes.decode()
 
+    assert re.search(r"(?m)^  guard:\n    name: guard$", workflow), (
+        "the matrix must retain the exact 'guard' check name consumed by "
+        "bin/require-real-ci.sh"
+    )
+    assert "        shard: [pytest-release, pytest-rest, tools]" in workflow
+    assert workflow.count("    timeout-minutes: 90") == 1, (
+        "the matrix job must enforce one 90-minute budget on every expansion"
+    )
+    assert "TODO(homelab-kubernetes): tighten to ~30 minutes" in workflow
+
+    release = (
+        "python3 -m pytest bin/tests/test_add_failure_mode_release.py "
+        "-q --durations=25"
+    )
+    remainder = (
+        "python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ "
+        "--ignore=bin/tests/test_add_failure_mode_release.py -q --durations=25"
+    )
+    assert workflow.count(release) == 1
+    assert workflow.count(remainder) == 1
+    assert "pytest-xdist" not in workflow
+    assert " -n " not in workflow
+
+    headers = [block[0] for block in _step_blocks(workflow)]
+    assert headers == [
+        "      - uses: actions/checkout@v4",
+        "      - name: Set up parser runtime",
+        "      - name: Set up Bats parser runtime",
+        "      - name: Set up virtualenv",
+        "      - name: Install Python dependencies",
+        "      - name: Report parser dependencies",
+        "      - name: Validate canonical catalog",
+        "      - name: Run Python tests (release shard)",
+        "      - name: Run Python tests (remaining shard)",
+        "      - name: Replay committed L2 offline",
+        "      - name: Verify recall baselines against the committed partition",
+        "      - name: Run bats tests",
+        "      - name: Run bin/ tool bats tests (require-real-ci, land)",
+        "      - name: Reconcile L1 corpus (declared reduced check)",
+        "      - name: Validate L1 schema",
+        "      - name: Verify enforcement",
+    ]
+
     replay_steps = [
         block for block in _step_blocks(workflow)
         if block[0] == "      - name: Replay committed L2 offline"
     ]
     assert replay_steps == [(
         "      - name: Replay committed L2 offline",
+        "        if: matrix.shard == 'tools'",
         "        run: python3 pipeline/replay_l2.py",
     )]
 
-    python_tests = workflow.index("      - name: Run Python tests\n")
+    python_release = workflow.index("      - name: Run Python tests (release shard)\n")
+    python_rest = workflow.index("      - name: Run Python tests (remaining shard)\n")
     replay = workflow.index("      - name: Replay committed L2 offline\n")
     bats = workflow.index("      - name: Run bats tests\n")
     validation = workflow.index("      - name: Reconcile L1 corpus")
-    assert python_tests < replay < bats < validation
+    assert python_release < python_rest < replay < bats < validation
 
     forbidden = {
         "pipeline/cluster.py",

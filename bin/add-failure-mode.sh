@@ -734,13 +734,11 @@ PYEOF
     # dropped, so a regression cannot ride in on a routine catalog add. Measured
     # against `released` only: the live backends are re-measured by the test
     # suite, and an add must not depend on the embedding host being up twice.
-    # To accept a drop deliberately:
-    #   pipeline/recall_baselines.py --update --allow-drop --reason "..."
-    RECALL_BASELINE_ARGS=(--update --backend released)
-    if [[ -n "${HINDSIGHT_ALLOW_RECALL_DROP_REASON:-}" ]]; then
-        RECALL_BASELINE_ARGS+=(--allow-drop --reason "$HINDSIGHT_ALLOW_RECALL_DROP_REASON")
-    fi
-    python3 "$REPO_ROOT/pipeline/recall_baselines.py" "${RECALL_BASELINE_ARGS[@]}"
+    # #121 reconciled the known released/dedup-identity-key corpus-growth
+    # artifact at its measured 2/3 floor. A normal catalog add must never need
+    # an environment override for that known state. Any NEW measured drop still
+    # fails loudly here and requires investigation outside this add transaction.
+    python3 "$REPO_ROOT/pipeline/recall_baselines.py" --update --backend released
 
     # The exact consistency check catalog-guard runs in CI. If the release
     # somehow still leaves the tree inconsistent (a no-op release, a release

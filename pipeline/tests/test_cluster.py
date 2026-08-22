@@ -989,6 +989,58 @@ def test_plausible_low_threshold_is_rejected_not_silently_written(
     assert not output.exists()
 
 
+def _write_staged_catalog_l1(directory: Path, count: int) -> None:
+    """Write a staged catalog projection with one L1 row per catalog row."""
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "id": f"catalog-{number:04d}",
+            "instance": f"catalog entry {number}",
+            "source_path": "catalog/failure-modes.md",
+            "source_anchor": f"line {number}",
+            "check": None,
+            "enforcement": None,
+            "auto": "judgment",
+            "first_seen": None,
+        }
+        for number in range(count)
+    ]
+    (directory / "catalog.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+
+
+def test_one_catalog_add_cannot_clear_the_cap_saturation_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 700th catalog row must not turn seven cap-pinned clusters green."""
+    class Backend:
+        name = "staged"
+
+        def embed(self, texts: list[str]) -> np.ndarray:
+            return np.eye(len(texts), dtype=np.float32)
+
+    def seven_pinned_clusters(similarity: np.ndarray, threshold: float) -> list[list[int]]:
+        del similarity, threshold
+        return [list(range(start, start + 40)) for start in range(0, 280, 40)] + [
+            [index] for index in range(280, 700)
+        ]
+
+    input_dir = tmp_path / "L1"
+    _write_staged_catalog_l1(input_dir, 699)
+    monkeypatch.setattr(MODULE, "select_backend", lambda _choice: Backend())
+    monkeypatch.setattr(MODULE, "_cluster_indices", seven_pinned_clusters)
+
+    before_output = tmp_path / "before.jsonl"
+    assert MODULE.main(["--input-dir", str(input_dir), "--output", str(before_output)]) == 1
+    assert not before_output.exists()
+
+    _write_staged_catalog_l1(input_dir, 700)
+    after_output = tmp_path / "after.jsonl"
+    assert MODULE.main(["--input-dir", str(input_dir), "--output", str(after_output)]) == 1
+    assert not after_output.exists()
+
+
 def test_default_backend_selection_meets_cluster_cardinality_bounds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

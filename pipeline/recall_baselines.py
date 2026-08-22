@@ -290,6 +290,11 @@ def main(argv: list[str] | None = None) -> int:
         "baselines": _merge_baselines(recorded, measured),
         "overrides": overrides,
     }
+    # Reconciliation records explain reviewed exceptions to the raw measured
+    # baseline. They are durable artifact evidence, not a newly measured row,
+    # so a routine release rewrite must retain them exactly.
+    if "reconciled_floors" in recorded:
+        payload["reconciled_floors"] = recorded["reconciled_floors"]
     tmp = args.artifact.with_suffix(args.artifact.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(args.artifact)

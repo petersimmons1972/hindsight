@@ -14,14 +14,26 @@ concurrency:
 
 jobs:
   guard:
+    name: guard
+    # Keep the exact check name consumed by bin/require-real-ci.sh. That gate
+    # deliberately evaluates every duplicate check with this name, so every
+    # matrix expansion must succeed before the PR can be called green.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
+    # TODO(homelab-kubernetes): tighten to ~30 minutes once runner CPU limits land.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime
+        if: matrix.shard == 'tools'
         uses: actions/setup-node@v4
         with:
           node-version: 24.11.0
       - name: Set up Bats parser runtime
+        if: matrix.shard == 'tools'
         uses: bats-core/bats-action@4.0.0
         with:
           bats-version: 1.14.0
@@ -36,16 +48,24 @@ jobs:
       - name: Install Python dependencies
         run: python3 -m pip install numpy pytest
       - name: Report parser dependencies
+        if: matrix.shard == 'tools'
         run: |
           node --version
           bats --version
       - name: Validate canonical catalog
+        if: matrix.shard == 'tools'
         run: python3 guard/failure_mode_catalog_guard.py
-      - name: Run Python tests
-        run: python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ -q
+      - name: Run Python tests (release shard)
+        if: matrix.shard == 'pytest-release'
+        run: python3 -m pytest bin/tests/test_add_failure_mode_release.py -q --durations=25
+      - name: Run Python tests (remaining shard)
+        if: matrix.shard == 'pytest-rest'
+        run: python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ --ignore=bin/tests/test_add_failure_mode_release.py -q --durations=25
       - name: Replay committed L2 offline
+        if: matrix.shard == 'tools'
         run: python3 pipeline/replay_l2.py
       - name: Verify recall baselines against the committed partition
+        if: matrix.shard == 'tools'
         # Founder ruling 2026-08-19 (hindsight#121): ground-truth recall is
         # gated by pipeline/L2/recall-baselines.json, not by an absolute floor.
         # This asserts the committed baselines still describe the committed
@@ -54,11 +74,14 @@ jobs:
         # to the test suite; this runner must not depend on the embedding host.
         run: python3 pipeline/recall_baselines.py --backend released
       - name: Run bats tests
+        if: matrix.shard == 'tools'
         run: bats guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)
+        if: matrix.shard == 'tools'
         # Bats 1.14.0 supports this; preserve captured diagnostic output on regressions.
         run: bats --print-output-on-failure bin/tests/*.bats
       - name: Reconcile L1 corpus (declared reduced check)
+        if: matrix.shard == 'tools'
         # CI checks out only this repo, so four of the five sources are not on
         # disk here. The old form ran all five and waived the resulting PARTIAL,
         # which made this step green BECAUSE it could not see what it checks:
@@ -78,8 +101,10 @@ jobs:
         # reach, and a green tick here must not be read as covering them.
         run: python3 pipeline/reconcile_l1.py --source homelab-canon
       - name: Validate L1 schema
+        if: matrix.shard == 'tools'
         run: python3 pipeline/validate_l1.py
       - name: Verify enforcement
+        if: matrix.shard == 'tools'
         # This runner checks out only this one repo: ~/projects does not
         # exist here at all, so of the 13 mapped source-roots.conf entries
         # only SELF (homelab-canon, this checkout's own root) resolves --

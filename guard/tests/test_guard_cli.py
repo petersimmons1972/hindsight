@@ -178,6 +178,94 @@ def test_duplicate_report_names_the_real_line_numbers() -> None:
     assert any("duplicate canonical ID FM-02 on lines 1, 2" in e for e in errors), errors
 
 
+def test_padded_canonical_id_joins_the_duplicate_census(tmp_path: Path) -> None:
+    """Whitespace inside the ID cell cannot hide a second canonical row."""
+    catalog = tmp_path / "failure-modes.md"
+    catalog.write_text(
+        "\n".join(
+            [
+                "| FM-403 | original | class | evidence | Machine |",
+                "|  FM-403 | padded duplicate | class | evidence | Machine |",
+            ]
+        )
+        + "\n"
+    )
+    (tmp_path / "id-ledger.txt").write_text("FM-403\n")
+
+    result = _run_guard(str(catalog))
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "duplicate canonical ID FM-403" in result.stderr, result.stderr
+
+
+def test_padded_singleton_is_counted_as_a_canonical_row(tmp_path: Path) -> None:
+    """Normalization must preserve the existing padded-singleton path."""
+    catalog = tmp_path / "failure-modes.md"
+    catalog.write_text("|  FM-403  | bug | class | evidence | Machine |\n")
+    (tmp_path / "id-ledger.txt").write_text("FM-403\n")
+
+    result = _run_guard(str(catalog))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "OK (1 canonical IDs, next FM-404)" in result.stderr, result.stderr
+
+
+def test_supersedes_claim_requires_matching_tombstone(tmp_path: Path) -> None:
+    """A correction claim cannot land while its target remains live."""
+    catalog = tmp_path / "failure-modes.md"
+    catalog.write_text(
+        "\n".join(
+            [
+                "| FM-01 | class | original claim | check | Judgment |",
+                "| FM-02 | class | correction. Supersedes FM-01. | check | Judgment |",
+            ]
+        )
+        + "\n"
+    )
+    (tmp_path / "id-ledger.txt").write_text("FM-01\nFM-02\n")
+
+    result = _run_guard(str(catalog))
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "FM-02 claims Supersedes FM-01" in result.stderr, result.stderr
+    assert "FM-01 is not tombstoned as SUPERSEDED by FM-02" in result.stderr, result.stderr
+
+
+def test_tombstone_requires_matching_supersedes_claim(tmp_path: Path) -> None:
+    """A tombstone cannot land without the replacement row naming its target."""
+    catalog = tmp_path / "failure-modes.md"
+    catalog.write_text(
+        "\n".join(
+            [
+                "| FM-01 | class | SUPERSEDED by FM-02 — original claim | check | Judgment |",
+                "| FM-02 | class | unrelated replacement | check | Judgment |",
+            ]
+        )
+        + "\n"
+    )
+    (tmp_path / "id-ledger.txt").write_text("FM-01\nFM-02\n")
+
+    result = _run_guard(str(catalog))
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "FM-01 is tombstoned as SUPERSEDED by FM-02" in result.stderr, result.stderr
+    assert "FM-02 does not claim Supersedes FM-01" in result.stderr, result.stderr
+
+
+def test_matching_supersession_pair_is_valid(tmp_path: Path) -> None:
+    """The guard accepts the bidirectional form written by the correction tool."""
+    catalog = tmp_path / "failure-modes.md"
+    catalog.write_text(
+        "\n".join(
+            [
+                "| FM-01 | class | SUPERSEDED by FM-02 — original claim | check | Judgment |",
+                "| FM-02 | class | correction. Supersedes FM-01. | check | Judgment |",
+            ]
+        )
+        + "\n"
+    )
+    (tmp_path / "id-ledger.txt").write_text("FM-01\nFM-02\n")
+
+    result = _run_guard(str(catalog))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 # --- Round-2 survivors: padding, grammar bounds, ledger end-anchor ----------
 
 
@@ -200,7 +288,7 @@ def test_M16_legacy_row_id_is_rejected_whatever_the_cell_padding() -> None:
 
 
 def test_M15_single_digit_row_id_is_not_a_canonical_row() -> None:
-    """S11/M15: ROW_RE requires at least two digits ({2,3}).
+    """S11/M15: the normalized ID-cell parser requires at least two digits.
 
     Widening to {1,3} silently changes which rows count as canonical, which
     shifts next_id, duplicate detection, and the append-only present-set.

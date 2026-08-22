@@ -86,18 +86,6 @@
     {
       "accepted": [
         {
-          "backend": "released",
-          "family": "dedup-identity-key",
-          "from": 1.0,
-          "to": 0.6666666666666666
-        }
-      ],
-      "date": "2026-08-20",
-      "reason": "Directly founder-authorized, 2026-08-20 -- confirmed by the founder in a chat session with this coordinator, not derived from the pre-existing 08-18/08-19 ruling comments on hindsight#121 (those ratify only the generic re-baseline-at-release mechanism and do not name dedup-identity-key). No synthetic GitHub-comment artifact is claimed as corroboration; the authorization is what it is -- a direct founder decision recorded here and in PR#128's description. Measured drop attributable to corpus growth from this session's catalog recovery work (FM-377/378 + FM-376 precision fix), not a per-entry quality regression."
-    },
-    {
-      "accepted": [
-        {
           "backend": "http",
           "family": "dedup-identity-key",
           "from": 1.0,
@@ -111,7 +99,17 @@
   "provenance": {
     "cluster_sha256": "c7156e487cbc9cf17eac040990192de2893d2c88fca746fac495aa3e94a2e743",
     "corpus_size": 736,
-    "l1_sha256": "22e48043f9121458376cbc408f854c9c8a873787b2c8d0c6cdd49bbe891779fb"
+    "l1_sha256": "4fce9d039a98879141972e5d0dcd1ab625f5517a2d2774df093653683f2eb23c"
+  },
+  "reconciled_floors": {
+    "released": {
+      "dedup-identity-key": {
+        "cause": "hindsight#121: measured corpus growth past roughly 673 entries fragmented this released recall to 2/3 at n=736; it is not #118 and not a per-entry-quality regression.",
+        "fraction": 0.6666666666666666,
+        "members": 3,
+        "together": 2
+      }
+    }
   },
   "schema": "hindsight.recall-baselines/v1",
   "target_fraction": 0.75,

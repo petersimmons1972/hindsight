@@ -375,6 +375,26 @@ PY
 @test "canonical add runs extract L2 and reconcile in order and undo restores generated artifacts" {
   make_staged_repo
   trace="$WORK/trace"
+  python3 - "$STAGE/pipeline/L2/recall-baselines.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text(encoding="utf-8"))
+payload["reconciled_floors"] = {
+    "released": {
+        "fixture-floor": {
+            "together": 2,
+            "members": 3,
+            "fraction": 2 / 3,
+            "cause": "reviewed staged reconciliation evidence",
+        }
+    }
+}
+path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  cp "$STAGE/pipeline/L2/recall-baselines.json" "$WORK/recall-baselines-before-add.json"
   catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
   l1_canon_before="$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")"
@@ -386,10 +406,24 @@ PY
     bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "terminal success proof finished" --recurrence-of none
 
   [ "$status" -eq 0 ]
+  add_output="$output"
   [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
   [[ "$output" == *"COMPLETE"* ]]
   [[ "$output" == *"replay-l2: PASS"* ]]
-  journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
+  run python3 "$STAGE/pipeline/recall_baselines.py" --backend released
+  [ "$status" -eq 0 ]
+  run python3 - "$STAGE/pipeline/L2/recall-baselines.json" "$WORK/recall-baselines-before-add.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+after = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))["reconciled_floors"]
+before = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))["reconciled_floors"]
+assert json.dumps(after, sort_keys=True, separators=(",", ":")).encode() == \
+       json.dumps(before, sort_keys=True, separators=(",", ":")).encode()
+PY
+  [ "$status" -eq 0 ]
+  journal="$(printf '%s\n' "$add_output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
@@ -401,6 +435,25 @@ PY
   [ "$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")" = "$l1_schema_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")" = "$recall_baselines_before" ]
+}
+
+@test "canonical add does not forward the retired recall-drop environment override" {
+  make_staged_repo
+  trace="$WORK/recall-floor-trace"
+
+  # This staged copy receives the former escape hatch. Before #121's
+  # reconciliation, HINDSIGHT_ALLOW_RECALL_DROP_REASON added --allow-drop here.
+  sed -i '/^from __future__ import annotations$/a import sys\nif "--allow-drop" in sys.argv: raise SystemExit("retired override was forwarded")' \
+    "$STAGE/pipeline/recall_baselines.py"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
+    HINDSIGHT_ALLOW_RECALL_DROP_REASON="must-not-reach-the-release-tool" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory \
+    "the known recalled floor needs no override" --recurrence-of none
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"retired override was forwarded"* ]]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
 }
 
 @test "canonical add without -t is rejected before any write" {
@@ -670,7 +723,7 @@ PY
   # a resolved-source count, and the standing scope-limit footer. The stub
   # printed one line and none of this.  `fleet-orch` is intentionally SHORT,
   # but the add gate is only the canonical catalog the loop just regenerated.
-  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for (5/5 sources resolved)"* ]]
+  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for; 0 canonical row(s) text-divergent (5/5 sources resolved)"* ]]
   [[ "$output" == *"SCOPE LIMIT"* ]]
   [[ "$output" == *"homelab-canon"* ]]
   [[ "$output" == *"fleet-dispatch-schema"* ]]

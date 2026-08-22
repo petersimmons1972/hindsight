@@ -304,6 +304,7 @@ make_staged_repo() {
   cp "$ROOT/bin/synthesize-pointer.py" "$STAGE/bin/synthesize-pointer.py"
   cp "$ROOT/pipeline/cluster.py" "$STAGE/pipeline/cluster.py"
   cp "$ROOT/pipeline/replay_l2.py" "$STAGE/pipeline/replay_l2.py"
+  cp "$ROOT/pipeline/replay_pins.py" "$STAGE/pipeline/replay_pins.py"
   cp "$ROOT/pipeline/recall_baselines.py" "$STAGE/pipeline/recall_baselines.py"
   cp "$ROOT/pipeline/tests/test_replay_l2.py" "$STAGE/pipeline/tests/test_replay_l2.py"
   cp "$ROOT/pipeline/tests/test_replay_l2_mutations.py" \

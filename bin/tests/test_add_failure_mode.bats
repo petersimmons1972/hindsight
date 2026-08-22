@@ -400,6 +400,25 @@ PY
   [ "$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")" = "$recall_baselines_before" ]
 }
 
+@test "canonical add does not forward the retired recall-drop environment override" {
+  make_staged_repo
+  trace="$WORK/recall-floor-trace"
+
+  # This staged copy receives the former escape hatch. Before #121's
+  # reconciliation, HINDSIGHT_ALLOW_RECALL_DROP_REASON added --allow-drop here.
+  sed -i '/^from __future__ import annotations$/a import sys\nif "--allow-drop" in sys.argv: raise SystemExit("retired override was forwarded")' \
+    "$STAGE/pipeline/recall_baselines.py"
+
+  run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
+    HINDSIGHT_ALLOW_RECALL_DROP_REASON="must-not-reach-the-release-tool" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory \
+    "the known recalled floor needs no override" --recurrence-of none
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"retired override was forwarded"* ]]
+  [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
+}
+
 @test "canonical add without -t is rejected before any write" {
   make_staged_repo
   catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"

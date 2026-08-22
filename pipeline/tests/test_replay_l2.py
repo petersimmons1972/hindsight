@@ -65,6 +65,7 @@ def replay_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Pa
         "name": "http", "model": "fixture", "revision": "v1", "dimensions": 2,
     })
     monkeypatch.setattr(REPLAY, "_load_cluster", lambda _path, _code_bytes=None: CLUSTER)
+    entries = CLUSTER.load_entries(l1)
     vectors = {"a": [1.0, 0.0], "b": [0.99, 0.01], "c": [0.0, 1.0],
                "d": [-1.0, 0.0], "e": [0.0, -1.0]}
     snapshot = tmp_path / "snapshot.json"
@@ -73,6 +74,9 @@ def replay_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Pa
         "provenance": {"l1_sha256": CLUSTER.l1_corpus_digest(l1),
                        "cluster_sha256": CLUSTER.cluster_code_config_digest(cluster_code)},
         "backend": CLUSTER.HTTP_BACKEND_IDENTITY, "embeddings": vectors,
+        "similarity_text_sha256": {
+            entry.id: CLUSTER.similarity_text_digest(entry) for entry in entries
+        },
     }) + "\n", encoding="utf-8")
     clusters = tmp_path / "clusters.jsonl"
     _write_clusters(clusters, [["e"], ["b", "a"], ["d"], ["c"]], CLUSTER)

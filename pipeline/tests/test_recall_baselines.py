@@ -82,6 +82,19 @@ def test_reconciled_released_dedup_floor_is_the_measured_two_thirds() -> None:
     assert measured == {key: floor[key] for key in ("together", "members", "fraction")}
 
 
+def test_update_preserves_reconciled_floors(artifact: Path) -> None:
+    """A release rewrite must retain the #121 reconciliation evidence verbatim."""
+    payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    artifact.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    before = json.dumps(payload["reconciled_floors"], sort_keys=True, separators=(",", ":")).encode()
+
+    assert _run(artifact, "--update") == 0
+
+    after = json.loads(artifact.read_text(encoding="utf-8"))
+    assert "reconciled_floors" in after
+    assert json.dumps(after["reconciled_floors"], sort_keys=True, separators=(",", ":")).encode() == before
+
+
 def test_reconciled_floor_refuses_a_genuinely_degraded_staged_partition(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

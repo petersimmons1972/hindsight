@@ -56,7 +56,8 @@ jobs:
       - name: Run bats tests
         run: bats guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)
-        run: bats bin/tests/*.bats
+        # Bats 1.14.0 supports this; preserve captured diagnostic output on regressions.
+        run: bats --print-output-on-failure bin/tests/*.bats
       - name: Reconcile L1 corpus (declared reduced check)
         # CI checks out only this repo, so four of the five sources are not on
         # disk here. The old form ran all five and waived the resulting PARTIAL,

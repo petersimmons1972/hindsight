@@ -23,8 +23,9 @@ jobs:
       matrix:
         shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
-    # TODO(homelab-kubernetes): tighten to ~30 minutes once runner CPU limits land.
-    timeout-minutes: 90
+    # Healthy: tools 57s, pytest shards ~7m. These caps preserve at least 4x
+    # headroom while failing every shard before the founder's 40m broken floor.
+    timeout-minutes: ${{ matrix.shard == 'tools' && 5 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime

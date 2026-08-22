@@ -33,7 +33,7 @@ REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "e6debf3344e6bcab274d4b57366643610d5a44a2ee1740558fe2c25d76485c08"
+INTENDED_WORKFLOW_SHA256 = "c8cf19c56bf227981114f37bd6c29ce858718c815c4386de39f555f16b01c755"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -179,10 +179,11 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
         "require-real-ci.sh must consume GitHub's exact matrix check names; "
         "the unsuffixed job name is not a reported check"
     )
-    assert workflow.count("    timeout-minutes: 90") == 1, (
-        "the matrix job must enforce one 90-minute budget on every expansion"
+    timeout = "    timeout-minutes: ${{ matrix.shard == 'tools' && 5 || 30 }}"
+    assert workflow.count(timeout) == 1, (
+        "tools must time out at 5 minutes and both pytest shards at 30 minutes"
     )
-    assert "TODO(homelab-kubernetes): tighten to ~30 minutes" in workflow
+    assert "timeout-minutes: 90" not in workflow
 
     parser_steps = [
         block for block in _step_blocks(workflow)

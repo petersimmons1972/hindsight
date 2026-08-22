@@ -49,8 +49,8 @@ esac
 EOF
   chmod +x "$fake_bin/python3"
 
-  run env PATH="$fake_bin:$PATH" FAKE_PYTHON_LOG="$fake_python_log" \
-    "$repo/.githooks/pre-commit"
+  run bash -c 'cd "$1" && PATH="$2:$PATH" FAKE_PYTHON_LOG="$3" bash "$4"' \
+    _ "$repo" "$fake_bin" "$fake_python_log" "$repo/.githooks/pre-commit"
   [ "$status" -ne 0 ]
   [[ "$output" == *"replay-l2: error: partition mismatch"* ]]
   grep -Fq "$repo/pipeline/replay_l2.py" "$fake_python_log"

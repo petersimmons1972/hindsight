@@ -17,6 +17,11 @@ setup() {
 }
 
 teardown() {
+  for test_worktree in "${STALE_WORKTREE:-}" "${CLEAN_WORKTREE:-}" "${DIRECT_WORKTREE:-}"; do
+    if [[ -n "$test_worktree" && -d "$test_worktree" && -n "${STAGE:-}" && -d "$STAGE/.git" ]]; then
+      git -C "$STAGE" worktree remove --force "$test_worktree" || true
+    fi
+  done
   chmod u+rwx "$WORK/unreadable" 2>/dev/null || true
   rm -rf "$WORK"
 }
@@ -754,7 +759,7 @@ PY
   run env TRACE="$WORK/hook-release-trace" python3 "$STAGE/pipeline/capture_embedding_snapshot.py"
   [ "$status" -eq 0 ]
 
-  run bash "$STAGE/.githooks/pre-commit"
+  run bash -c 'cd "$1" && bash "$2"' _ "$STAGE" "$STAGE/.githooks/pre-commit"
   # It still demands the regenerated artifacts be staged -- that gate is intact.
   [ "$status" -ne 0 ]
   [[ "$output" != *"SHORT"* ]]
@@ -763,7 +768,7 @@ PY
   git -C "$STAGE" add pipeline/L1/homelab-canon.jsonl \
     pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
     pipeline/L2/clusters.jsonl
-  run bash "$STAGE/.githooks/pre-commit"
+  run bash -c 'cd "$1" && bash "$2"' _ "$STAGE" "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]
 }
 
@@ -776,7 +781,8 @@ PY
   git -C "$STAGE" commit -q --no-verify -m baseline
   trace="$WORK/unchanged-trace"
 
-  run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
+  run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
+    _ "$STAGE" "$STAGE/.githooks/pre-commit"
 
   [ "$status" -eq 0 ]
   [ ! -e "$trace" ]
@@ -800,7 +806,8 @@ PY
   [ "$status" -eq 0 ]
   : >"$trace"
 
-  run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
+  run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
+    _ "$STAGE" "$STAGE/.githooks/pre-commit"
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"pipeline/L1/homelab-canon.jsonl"* ]]
@@ -813,9 +820,106 @@ PY
     pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
     pipeline/L2/clusters.jsonl
   : >"$trace"
-  run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
+  run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
+    _ "$STAGE" "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]
   [ -z "$(git -C "$STAGE" diff --name-only)" ]
+}
+
+@test "pre-commit uses the linked worktree rather than its absolute hooksPath checkout" {
+  make_staged_repo
+  git -C "$STAGE" init -q
+  git -C "$STAGE" config user.name fixture
+  git -C "$STAGE" config user.email fixture@example.invalid
+  git -C "$STAGE" add .
+  git -C "$STAGE" commit -q --no-verify -m baseline
+  git -C "$STAGE" config core.hooksPath "$STAGE/.githooks"
+
+  stale_worktree="$WORK/stale-worktree"
+  STALE_WORKTREE="$stale_worktree"
+  git -C "$STAGE" worktree add -q -b stale-worktree "$stale_worktree"
+  printf '%s\n' '| FM-002 | A | new | new | Judgment |' >>"$stale_worktree/catalog/failure-modes.md"
+  printf '%s\n' 'FM-002' >>"$stale_worktree/catalog/id-ledger.txt"
+  git -C "$stale_worktree" add catalog/failure-modes.md catalog/id-ledger.txt
+  trace="$WORK/stale-trace"
+  run env TRACE="$trace" bash -c 'cd "$1" && python3 pipeline/extract_mechanical.py && python3 pipeline/capture_embedding_snapshot.py' \
+    _ "$stale_worktree"
+  [ "$status" -eq 0 ]
+  : >"$trace"
+
+  # The generated artifacts are deliberately left unstaged.  A hook rooted at
+  # its absolute hooksPath checkout misses them and passes; the correct hook
+  # must regenerate in this linked worktree and reject the stale staging area.
+  run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
+    _ "$stale_worktree" "$STAGE/.githooks/pre-commit"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not staged"* ]]
+
+  git -C "$STAGE" worktree remove --force "$stale_worktree"
+}
+
+@test "pre-commit ignores dirty generated artifacts in its absolute hooksPath checkout" {
+  make_staged_repo
+  git -C "$STAGE" init -q
+  git -C "$STAGE" config user.name fixture
+  git -C "$STAGE" config user.email fixture@example.invalid
+  git -C "$STAGE" add .
+  git -C "$STAGE" commit -q --no-verify -m baseline
+  git -C "$STAGE" config core.hooksPath "$STAGE/.githooks"
+
+  clean_worktree="$WORK/clean-worktree"
+  CLEAN_WORKTREE="$clean_worktree"
+  git -C "$STAGE" worktree add -q -b clean-worktree "$clean_worktree"
+  printf '%s\n' '| FM-002 | A | new | new | Judgment |' >>"$clean_worktree/catalog/failure-modes.md"
+  printf '%s\n' 'FM-002' >>"$clean_worktree/catalog/id-ledger.txt"
+  git -C "$clean_worktree" add catalog/failure-modes.md catalog/id-ledger.txt
+  clean_trace="$WORK/clean-trace"
+  run env TRACE="$clean_trace" bash -c 'cd "$1" && python3 pipeline/extract_mechanical.py && python3 pipeline/capture_embedding_snapshot.py' \
+    _ "$clean_worktree"
+  [ "$status" -eq 0 ]
+  git -C "$clean_worktree" add pipeline/L1/homelab-canon.jsonl \
+    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
+    pipeline/L2/clusters.jsonl
+
+  # A dirty main checkout must not make a correctly staged linked worktree
+  # abort.  The old hook sees this catalog and generated-artifact drift instead.
+  printf '%s\n' '| FM-002 | A | main | main | Judgment |' >>"$STAGE/catalog/failure-modes.md"
+  printf '%s\n' 'main-checkout-drift' >>"$STAGE/pipeline/L2/clusters.jsonl"
+  : >"$clean_trace"
+  run env TRACE="$clean_trace" bash -c 'cd "$1" && bash "$2"' \
+    _ "$clean_worktree" "$STAGE/.githooks/pre-commit"
+  [ "$status" -eq 0 ]
+
+  git -C "$STAGE" worktree remove --force "$clean_worktree"
+}
+
+@test "staged-copy add and direct pre-commit invocation work in a linked worktree" {
+  make_staged_repo
+  git -C "$STAGE" init -q
+  git -C "$STAGE" config user.name fixture
+  git -C "$STAGE" config user.email fixture@example.invalid
+  git -C "$STAGE" add .
+  git -C "$STAGE" commit -q --no-verify -m baseline
+  git -C "$STAGE" config core.hooksPath "$STAGE/.githooks"
+
+  linked_worktree="$WORK/direct-worktree"
+  DIRECT_WORKTREE="$linked_worktree"
+  git -C "$STAGE" worktree add -q -b direct-worktree "$linked_worktree"
+  trace="$WORK/direct-trace"
+  run env TRACE="$trace" bash -c 'cd "$1" && bash bin/add-failure-mode.sh -c A -t HIGH --disposition advisory "direct hook fixture" --recurrence-of none' \
+    _ "$linked_worktree"
+  [ "$status" -eq 0 ]
+  git -C "$linked_worktree" add catalog/failure-modes.md catalog/id-ledger.txt \
+    catalog/criticality.jsonl pipeline/L1/homelab-canon.jsonl \
+    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
+    pipeline/L2/clusters.jsonl
+  : >"$trace"
+
+  run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
+    _ "$linked_worktree" "$STAGE/.githooks/pre-commit"
+  [ "$status" -eq 0 ]
+
+  git -C "$STAGE" worktree remove --force "$linked_worktree"
 }
 
 @test "pre-commit fails loud when criticality.jsonl changes but pointer files are stale" {
@@ -839,12 +943,12 @@ PY
     >"$STAGE/catalog/criticality.jsonl"
   git -C "$STAGE" add catalog/criticality.jsonl
 
-  run bash "$STAGE/.githooks/pre-commit"
+  run bash -c 'cd "$1" && bash "$2"' _ "$STAGE" "$STAGE/.githooks/pre-commit"
   [ "$status" -ne 0 ]
   [[ "$output" == *"docs/POINTER.md / docs/HIGH.md are stale"* ]]
 
   ( cd "$STAGE" && python3 bin/synthesize-pointer.py >/dev/null )
   git -C "$STAGE" add docs/POINTER.md docs/HIGH.md
-  run bash "$STAGE/.githooks/pre-commit"
+  run bash -c 'cd "$1" && bash "$2"' _ "$STAGE" "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]
 }

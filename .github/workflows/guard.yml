@@ -23,10 +23,10 @@ jobs:
       matrix:
         shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
-    # Actual branch jobs: tools 57s healthy / 6m33s worst completed;
-    # pytest-release 6m36s / 32m18s; pytest-rest 7m26s / 14m31s.
-    # Caps are 1.53x / 1.21x / 2.07x worst observed and all stay below 40m.
-    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 39 || 30 }}
+    # Temporary serial-baseline measurement head: the former 39-minute release
+    # ceiling censored a contended-but-active run, so leave enough room for one
+    # completed same-base observation before changing the release runtime.
+    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 90 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime

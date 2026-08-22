@@ -2,9 +2,8 @@
 """synthesize-pointer.py — build the small curated pointer files from
 catalog/criticality.jsonl.
 
-Read-only over criticality.jsonl, catalog/failure-modes.md, and
-pipeline/L2/clusters.jsonl. Writes ONLY docs/POINTER.md (CRITICAL tier) and
-docs/HIGH.md (HIGH tier).
+Read-only over criticality.jsonl and catalog/failure-modes.md. Writes ONLY
+docs/POINTER.md (CRITICAL tier) and docs/HIGH.md (HIGH tier).
 
 Two files, not one, because the two tiers are consumed differently:
   - POINTER.md is small by construction (CRITICAL is rare) and is meant to be
@@ -25,7 +24,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CRITICALITY = REPO_ROOT / "catalog" / "criticality.jsonl"
 CATALOG = REPO_ROOT / "catalog" / "failure-modes.md"
-CLUSTERS = REPO_ROOT / "pipeline" / "L2" / "clusters.jsonl"
 POINTER_OUT = REPO_ROOT / "docs" / "POINTER.md"
 HIGH_OUT = REPO_ROOT / "docs" / "HIGH.md"
 
@@ -45,56 +43,6 @@ def load_checks() -> dict[str, str]:
         check = fields[-2]
         checks[fm_id] = check
     return checks
-
-
-def load_cluster_map() -> tuple[dict[str, str], dict[str, str]]:
-    """Return (fm_id -> cluster_id, cluster_id -> representative_fm_id)."""
-    fm_to_cluster: dict[str, str] = {}
-    cluster_rep: dict[str, str] = {}
-    if not CLUSTERS.exists():
-        return fm_to_cluster, cluster_rep
-    for line in CLUSTERS.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        cluster_id = row.get("cluster_id")
-        if not isinstance(cluster_id, str):
-            continue
-        for member in row.get("members", []):
-            if isinstance(member, str) and member.startswith("hc-FM-"):
-                fm_to_cluster[member[len("hc-"):]] = cluster_id
-        rep = row.get("representative")
-        if isinstance(rep, str) and rep.startswith("hc-FM-"):
-            cluster_rep[cluster_id] = rep[len("hc-"):]
-    return fm_to_cluster, cluster_rep
-
-
-def dedup_family(entries: list[dict], fm_to_cluster: dict[str, str], cluster_rep: dict[str, str]) -> list[dict]:
-    """Collapse entries that share a cluster to one representative (issue #113)."""
-    by_cluster: dict[str, list[dict]] = {}
-    singles: list[dict] = []
-    for e in entries:
-        cluster_id = fm_to_cluster.get(e["fm_id"])
-        if cluster_id is None:
-            singles.append(e)
-        else:
-            by_cluster.setdefault(cluster_id, []).append(e)
-
-    kept = list(singles)
-    for cluster_id, members in by_cluster.items():
-        if len(members) == 1:
-            kept.append(members[0])
-            continue
-        rep_id = cluster_rep.get(cluster_id)
-        chosen = next((m for m in members if m["fm_id"] == rep_id), None)
-        if chosen is None:
-            chosen = min(members, key=lambda m: int(m["fm_id"].split("-")[1]))
-        kept.append(chosen)
-    return kept
 
 
 def render(entries: list[dict], checks: dict[str, str]) -> list[str]:
@@ -124,13 +72,11 @@ def main() -> int:
         latest[row["fm_id"]] = row
 
     checks = load_checks()
-    fm_to_cluster, cluster_rep = load_cluster_map()
-
     critical = [r for r in latest.values() if r["tier"] == "CRITICAL"]
     high = [r for r in latest.values() if r["tier"] == "HIGH"]
-
-    critical = dedup_family(critical, fm_to_cluster, cluster_rep)
-    high = dedup_family(high, fm_to_cluster, cluster_rep)
+    # Clusters aid discovery, but a tiered pointer is a retrieval contract:
+    # collapsing it to cluster representatives can make a real HIGH/CRITICAL
+    # row unreachable.  Keep every current tiered row visible.
 
     POINTER_OUT.parent.mkdir(parents=True, exist_ok=True)
     HIGH_OUT.parent.mkdir(parents=True, exist_ok=True)

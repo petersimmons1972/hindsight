@@ -23,11 +23,10 @@ jobs:
       matrix:
         shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
-    # Same-base release pytest: 423.31s serial; 197.87s and 198.30s with xdist.
-    # The 25m cap allows ~7.5x the measured xdist wall while remaining below
-    # the release harness's own 30m subprocess timeout. No post-shard broken
-    # class has been observed, so this is a safety bound, not a classifier.
-    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 25 || 30 }}
+    # Diagnostic measurement head: xdist completed twice near 198s, but the
+    # first 25m-capped run was still active when GitHub canceled it. Re-open
+    # the ceiling until that contended run class completes with verbose output.
+    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 90 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime
@@ -60,7 +59,7 @@ jobs:
         run: python3 guard/failure_mode_catalog_guard.py
       - name: Run Python tests (release shard)
         if: matrix.shard == 'pytest-release'
-        run: python3 -m pytest bin/tests/test_add_failure_mode_release.py -n 3 --dist=load --max-worker-restart=0 -q --durations=25
+        run: python3 -m pytest bin/tests/test_add_failure_mode_release.py -n 3 --dist=load --max-worker-restart=0 -vv --durations=25
       - name: Run Python tests (remaining shard)
         if: matrix.shard == 'pytest-rest'
         run: python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ --ignore=bin/tests/test_add_failure_mode_release.py -q --durations=25

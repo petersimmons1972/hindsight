@@ -32,7 +32,7 @@ ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "e4f9935ead3d1796e80b3fd934358a8192e607468011a18f707536264ff6eec8"
+INTENDED_WORKFLOW_SHA256 = "2c861efdba2cfac5bf9b049a668928cc151a9bdb5bc0be6c1b0aff9f14cd7183"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.

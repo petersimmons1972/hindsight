@@ -197,7 +197,13 @@ def _replay(repo: Path) -> subprocess.CompletedProcess[str]:
     return _run([sys.executable, "pipeline/replay_l2.py"], repo, CHECK_TIMEOUT)
 
 
-def _add(repo: Path, description: str, *, catalog: Path | None = None) -> subprocess.CompletedProcess[str]:
+def _add(
+    repo: Path,
+    description: str,
+    *,
+    catalog: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     argv = ["bash", str(repo / "bin" / "add-failure-mode.sh"),
             "-c", "A", "-t", "LOW", "--disposition", "advisory",
             "--recurrence-of", "none", description]
@@ -207,6 +213,8 @@ def _add(repo: Path, description: str, *, catalog: Path | None = None) -> subpro
         env.pop("CATALOG", None)
     else:
         env["CATALOG"] = str(catalog)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         argv, cwd=str(repo), env=env, text=True, timeout=ADD_TIMEOUT,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
@@ -374,6 +382,147 @@ def test_successful_canonical_add_derives_all_replay_pins_and_undo_restores_them
     assert {path: _digest(path) for path in pin_paths} == pins_before
 
 
+def test_bad_pin_written_by_the_transaction_fails_and_rolls_back(sandbox, tmp_path: Path) -> None:
+    """The direct pin verifier must reject and roll back a freshly bad literal."""
+    repo = sandbox("honest")
+    protected = [
+        repo / CATALOG_REL,
+        repo / LEDGER_REL,
+        *(repo / relative for relative in PIN_RELATIVES),
+    ]
+    before = {path: _digest(path) for path in protected}
+    shim_dir = tmp_path / "python-shim"
+    shim_dir.mkdir()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "records.jsonl").write_text(
+        '{"id":"fixture","instance":"known fixture","source_path":"fixture.jsonl"}\n',
+        encoding="utf-8",
+    )
+    clusters = tmp_path / "clusters.jsonl"
+    clusters.write_text("", encoding="utf-8")
+    (shim_dir / "python3").write_text(
+        f"""#!{sys.executable}
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+result = subprocess.run([sys.executable, *sys.argv[1:]])
+if result.returncode == 0 and Path(sys.argv[1]).name == "replay_pins.py" and "rewrite" in sys.argv[2:]:
+    pin = Path(sys.argv[1]).parents[1] / "pipeline/tests/test_replay_l2.py"
+    source = pin.read_text(encoding="utf-8")
+    pin.write_text(re.sub(r"PASS: \\d+ entries, \\d+ clusters", "PASS: 999999 entries, 999999 clusters", source, count=1), encoding="utf-8")
+sys.exit(result.returncode)
+""",
+        encoding="utf-8",
+    )
+    (shim_dir / "python3").chmod(0o755)
+
+    added = _add(
+        repo,
+        "a wrong replay pin must abort the filing that wrote it",
+        catalog=repo / CATALOG_REL,
+        extra_env={
+            "CRITICALITY": str(repo / "catalog" / "criticality.jsonl"),
+            "CORPUS": str(corpus),
+            "CLUSTERS": str(clusters),
+            "PATH": f"{shim_dir}:{os.environ['PATH']}",
+        },
+    )
+
+    assert added.returncode != 0, _report(
+        "the filing reported success after a wrong pin was written", added
+    )
+    assert "replay pin default replay output pin" in added.stdout.lower(), _report(
+        "the direct verifier did not report the bad replay pin", added
+    )
+    assert {path: _digest(path) for path in protected} == before
+
+
+def test_undo_restores_a_future_artifact_recorded_by_the_journal(tmp_path: Path) -> None:
+    """Undo derives its restore set from the transaction journal, not literals."""
+    repo = tmp_path / "hindsight"
+    (repo / "bin").mkdir(parents=True)
+    (repo / "guard").mkdir()
+    (repo / "catalog").mkdir()
+    shutil.copy2(ADD_TOOL, repo / "bin" / "add-failure-mode.sh")
+    shutil.copy2(REPO_ROOT / "bin" / "similar-causes.py", repo / "bin" / "similar-causes.py")
+    shutil.copy2(
+        REPO_ROOT / "guard" / "failure_mode_catalog_guard.py",
+        repo / "guard" / "failure_mode_catalog_guard.py",
+    )
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    catalog = scratch / "failure-modes.md"
+    ledger = scratch / "id-ledger.txt"
+    criticality = scratch / "criticality.jsonl"
+    corpus = scratch / "corpus"
+    clusters = scratch / "clusters.jsonl"
+    shutil.copy2(REPO_ROOT / CATALOG_REL, catalog)
+    shutil.copy2(REPO_ROOT / LEDGER_REL, ledger)
+    shutil.copy2(REPO_ROOT / CATALOG_REL, repo / CATALOG_REL)
+    corpus.mkdir()
+    (corpus / "records.jsonl").write_text(
+        '{"id":"fixture","instance":"known fixture","source_path":"fixture.jsonl"}\n',
+        encoding="utf-8",
+    )
+    clusters.write_text("", encoding="utf-8")
+    future = scratch / "future-transaction-artifact.txt"
+    future.write_text("before filing\n", encoding="utf-8")
+    tool = repo / "bin" / "add-failure-mode.sh"
+    source = tool.read_text(encoding="utf-8")
+    marker = 'snapshot_file "$CRITICALITY"\n'
+    assert marker in source
+    tool.write_text(
+        source.replace(
+            marker,
+            marker
+            + 'snapshot_file "${FUTURE_ARTIFACT:?}"\n'
+            + 'printf "changed by filing\\n" > "${FUTURE_ARTIFACT:?}"\n',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    env = {
+        "CATALOG": str(catalog),
+        "CRITICALITY": str(criticality),
+        "CORPUS": str(corpus),
+        "CLUSTERS": str(clusters),
+        "FUTURE_ARTIFACT": str(future),
+    }
+    added = subprocess.run(
+        [
+            "bash", str(tool), "-c", "A", "--disposition", "advisory",
+            "--recurrence-of", "none", "every journaled future artifact must be undoable",
+        ],
+        cwd=repo,
+        env={**os.environ, **env},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert added.returncode == 0, _report("the staged filing itself failed", added)
+    assert future.read_text(encoding="utf-8") == "changed by filing\n"
+
+    undone = subprocess.run(
+        ["bash", str(tool), "--undo", str(_undo_dir(added.stdout))],
+        cwd=repo,
+        env={**os.environ, **env},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert undone.returncode == 0, _report(
+        "undo ignored an artifact the filing journal recorded", added, undone
+    )
+    assert future.read_text(encoding="utf-8") == "before filing\n"
+
+
 def test_unlocatable_replay_pin_fails_loudly_without_partial_write(sandbox) -> None:
     repo = sandbox("honest")
     broken_pin = repo / PIN_RELATIVES[0]
@@ -435,6 +584,36 @@ def test_stale_literal_replay_pins_fail_after_successful_add(sandbox) -> None:
     )
     assert f"PASS: {old_replay_pin[0]} entries, {old_replay_pin[1]} clusters" in replay_tests.stdout, _report(
         "the stale literal counts were not reported by the pin failures", replay_tests
+    )
+
+
+@pytest.mark.parametrize(
+    ("pin_name", "relative", "pattern", "replacement"),
+    [
+        ("default replay output pin", PIN_RELATIVES[0], r'PASS: \d+ entries, \d+ clusters', "PASS: 999999 entries, 999999 clusters"),
+        ("offline replay stdout pin", PIN_RELATIVES[1], r'PASS: \d+ entries, \d+ clusters', "PASS: 999999 entries, 999999 clusters"),
+        ("embedding cardinality pin", PIN_RELATIVES[1], r'len\(payload\["embeddings"\]\) == \d+', 'len(payload["embeddings"]) == 999999'),
+    ],
+)
+def test_direct_replay_pin_verifier_rejects_each_corrupted_pin(
+    sandbox, pin_name: str, relative: Path, pattern: str, replacement: str
+) -> None:
+    """Each literal is independently compared by plain Python, not pytest."""
+    repo = sandbox("honest")
+    path = repo / relative
+    source = path.read_text(encoding="utf-8")
+    corrupted, count = re.subn(pattern, replacement, source, count=1)
+    assert count == 1
+    path.write_text(corrupted, encoding="utf-8")
+
+    verified = _run(
+        [sys.executable, "pipeline/replay_pins.py", "verify", "--repo-root", str(repo)],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert verified.returncode != 0, _report("corrupted pin passed direct verification", verified)
+    assert f"replay pin {pin_name}" in verified.stdout, _report(
+        "direct verifier did not name the corrupted pin", verified
     )
 
 
@@ -501,6 +680,41 @@ def test_destroyed_snapshot_is_restored_when_the_add_rolls_back(sandbox) -> None
     )
     assert _digest(repo / CLUSTERS_REL) == clusters_before
     assert _replay(repo).returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("attack", "extra_env", "pytest_ini"),
+    [
+        ("PYTEST_PLUGINS=skipall", {"PYTEST_PLUGINS": "skipall"}, None),
+        ("PYTEST_PLUGINS=spoof", {"PYTEST_PLUGINS": "spoof"}, None),
+        ("PYTEST_ADDOPTS=--collect-only", {"PYTEST_ADDOPTS": "--collect-only"}, None),
+        ("pytest.ini addopts=--collect-only", {}, "[pytest]\naddopts = --collect-only\n"),
+    ],
+)
+def test_add_directly_verifies_pins_despite_hostile_pytest_configuration(
+    sandbox, attack: str, extra_env: dict[str, str], pytest_ini: str | None
+) -> None:
+    """The write path has no pytest subprocess for these attacks to suppress."""
+    repo = sandbox("honest")
+    if pytest_ini is not None:
+        (repo / "pytest.ini").write_text(pytest_ini, encoding="utf-8")
+    added = _add(
+        repo,
+        f"hostile pytest configuration must not certify a replay pin: {attack}",
+        extra_env=extra_env,
+    )
+
+    assert added.returncode == 0, _report(
+        f"the add did not complete under {attack}", added
+    )
+    verified = _run(
+        [sys.executable, "pipeline/replay_pins.py", "verify", "--repo-root", str(repo)],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert verified.returncode == 0, _report(
+        f"{attack} left a replay pin incorrect after a successful add", added, verified
+    )
 
 
 def test_absent_release_command_fails_the_add(sandbox) -> None:

@@ -54,41 +54,40 @@ usage() {
 restore_journal() {
     local journal="$1"
     local manifest="$journal/manifest.tsv"
-    [[ -d "$journal" && -f "$manifest" && ! -L "$manifest" ]] || {
+    local targets_file="$journal/targets.tsv"
+    [[ -d "$journal" && -f "$manifest" && ! -L "$manifest" && -f "$targets_file" && ! -L "$targets_file" ]] || {
         echo "ERROR: undo journal not found: $journal" >&2
         return 1
     }
 
-    local requested_catalog canonical_catalog requested_ledger requested_criticality
-    requested_catalog="$(realpath -m -- "$CATALOG")"
-    canonical_catalog="$(realpath -m -- "$REPO_ROOT/catalog/failure-modes.md")"
-    requested_ledger="$(dirname "$requested_catalog")/id-ledger.txt"
-    requested_criticality="$(realpath -m -- "${CRITICALITY:-$(dirname "$requested_catalog")/criticality.jsonl}")"
-
-    local -a expected=("$requested_catalog" "$requested_ledger" "$requested_criticality")
-    if [[ "$requested_catalog" == "$canonical_catalog" ]]; then
-        expected+=(
-            "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
-            "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
-            "$REPO_ROOT/pipeline/L2/clusters.jsonl"
-            "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
-            "$REPO_ROOT/pipeline/L2/recall-baselines.json"
-            "$REPO_ROOT/docs/POINTER.md"
-            "$REPO_ROOT/docs/HIGH.md"
-            "$REPO_ROOT/pipeline/tests/test_replay_l2.py"
-            "$REPO_ROOT/pipeline/tests/test_replay_l2_mutations.py"
-        )
-    fi
-
-    local -A allowed=() seen=()
-    local target
-    for target in "${expected[@]}"; do
-        target="$(realpath -m -- "$target")"
-        allowed["$target"]=1
-    done
+    # The transaction records every target at snapshot time.  Restore must use
+    # that recorded set rather than a second, manually-maintained list: a new
+    # artifact added to the write transaction is undoable by construction.
+    local -A owned=() seen=()
+    local -a expected=()
+    local target extra normalized line_number=0
+    while IFS=$'\t' read -r target extra; do
+        line_number=$((line_number + 1))
+        [[ -z "$extra" && -n "$target" ]] || {
+            echo "ERROR: malformed undo journal target at line $line_number: $targets_file" >&2
+            return 1
+        }
+        normalized="$(realpath -m -- "$target")"
+        [[ "$target" == "$normalized" && -z "${owned[$normalized]:-}" ]] || {
+            echo "ERROR: duplicate or non-canonical undo journal target: $target" >&2
+            return 1
+        }
+        owned["$normalized"]=1
+        expected+=("$normalized")
+    done <"$targets_file"
+    [[ ${#expected[@]} -gt 0 ]] || {
+        echo "ERROR: undo journal target set is empty" >&2
+        return 1
+    }
 
     local -a states=() targets=() backups=()
-    local state backup extra normalized line_number=0
+    local state backup
+    line_number=0
     while IFS=$'\t' read -r state target backup extra; do
         line_number=$((line_number + 1))
         [[ -z "$extra" && -n "$state" && -n "$target" && -n "$backup" ]] || {
@@ -96,7 +95,7 @@ restore_journal() {
             return 1
         }
         normalized="$(realpath -m -- "$target")"
-        [[ "$target" == "$normalized" && -n "${allowed[$normalized]:-}" ]] || {
+        [[ "$target" == "$normalized" && -n "${owned[$normalized]:-}" ]] || {
             echo "ERROR: undo journal target is not owned by this run: $target" >&2
             return 1
         }
@@ -457,12 +456,15 @@ fi
 
 JOURNAL="$(mktemp -d "${TMPDIR:-/tmp}/hindsight-add-failure-mode.XXXXXX")"
 MANIFEST="$JOURNAL/manifest.tsv"
+TARGETS_FILE="$JOURNAL/targets.tsv"
 SNAPSHOT_NUMBER=0
 snapshot_file() {
     local target="$1"
     local backup
+    target="$(realpath -m -- "$target")"
     SNAPSHOT_NUMBER=$((SNAPSHOT_NUMBER + 1))
     backup="file-${SNAPSHOT_NUMBER}"
+    printf '%s\n' "$target" >>"$TARGETS_FILE"
     if [[ -f "$target" ]]; then
         cp "$target" "$JOURNAL/$backup"
         printf 'present\t%s\t%s\n' "$target" "$backup" >>"$MANIFEST"
@@ -495,7 +497,10 @@ rollback_on_error() {
     local status=$?
     if [[ $status -ne 0 && ${JOURNAL_READY:-0} -eq 1 ]]; then
         echo "add-failure-mode: operation failed; applying undo journal" >&2
-        restore_journal "$JOURNAL" >&2 || true
+        if ! restore_journal "$JOURNAL" >&2; then
+            echo "ERROR: undo journal restoration failed: $JOURNAL" >&2
+            status=1
+        fi
     fi
     exit "$status"
 }
@@ -635,71 +640,13 @@ PYEOF
     REPLAY_OUTPUT="$(python3 "$REPO_ROOT/pipeline/replay_l2.py")"
     printf '%s\n' "$REPLAY_OUTPUT"
 
-    # These three literals are deliberately independent test oracles: they
-    # catch corpus drift made outside this filing flow. They are updated here,
-    # after the pipeline has reported its measured result, rather than derived
-    # at test time. Do not infer cluster count from entry count: the replay
-    # report is the sole source for both values.
-    python3 - "$REPLAY_OUTPUT" \
-        "$REPO_ROOT/pipeline/tests/test_replay_l2.py" \
-        "$REPO_ROOT/pipeline/tests/test_replay_l2_mutations.py" <<'PYEOF'
-import re
-import sys
-from pathlib import Path
-
-report, replay_test, mutations_test = sys.argv[1:]
-matches = re.findall(r"^replay-l2: PASS: (\d+) entries, (\d+) clusters$", report, flags=re.MULTILINE)
-if len(matches) != 1:
-    raise SystemExit(
-        "ERROR: replay pin update requires exactly one replay-l2 PASS report; "
-        f"found {len(matches)}"
-    )
-entries, clusters = matches[0]
-
-specifications = (
-    (
-        Path(replay_test),
-        "default replay output pin",
-        re.compile(
-            r'(assert REPLAY\.main\(\[\]\) == 0 and "PASS: )\d+ entries, \d+ clusters(" in capsys\.readouterr\(\)\.out)'
-        ),
-        rf'\g<1>{entries} entries, {clusters} clusters\g<2>',
-    ),
-    (
-        Path(mutations_test),
-        "offline replay stdout pin",
-        re.compile(
-            r'(assert captured\.out == "replay-l2: PASS: )\d+ entries, \d+ clusters(\\n")'
-        ),
-        rf'\g<1>{entries} entries, {clusters} clusters\g<2>',
-    ),
-    (
-        Path(mutations_test),
-        "embedding cardinality pin",
-        re.compile(r'(assert len\(payload\["embeddings"\]\) == )\d+'),
-        rf'\g<1>{entries}',
-    ),
-)
-
-rewrites: dict[Path, str] = {}
-for path, label, pattern, replacement in specifications:
-    try:
-        source = rewrites.get(path, path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise SystemExit(f"ERROR: replay pin {label} is unavailable: {path}: {exc}") from exc
-    updated, count = pattern.subn(replacement, source)
-    if count != 1:
-        raise SystemExit(
-            f"ERROR: replay pin {label} is unlocatable or ambiguous in {path}: found {count} matches"
-        )
-    rewrites[path] = updated
-
-# All locations were validated before the first write. The surrounding shell
-# transaction has snapshots for both source files, so any later write error is
-# restored by its existing undo trap.
-for path, updated in rewrites.items():
-    path.write_text(updated, encoding="utf-8")
-PYEOF
+    # Replay pins are updated and verified by one plain-Python registry.  This
+    # deliberately does not invoke pytest: ambient collection/plugin settings
+    # can make a test runner exit zero without executing a test.  The verifier
+    # itself runs the real replay, reads the snapshot cardinality, compares all
+    # registered literals, and derives its exit status from those comparisons.
+    python3 "$REPO_ROOT/pipeline/replay_pins.py" rewrite --repo-root "$REPO_ROOT"
+    python3 "$REPO_ROOT/pipeline/replay_pins.py" verify --repo-root "$REPO_ROOT"
 
     # Report every L1 source so consumer-sync drift remains a visible health
     # signal, but gate this write only on homelab-canon: it is the sole source

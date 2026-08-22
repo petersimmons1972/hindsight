@@ -23,10 +23,12 @@ jobs:
       matrix:
         shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
-    # Diagnostic measurement head: xdist completed twice near 198s, but the
-    # first 25m-capped run was still active when GitHub canceled it. Re-open
-    # the ceiling until that contended run class completes with verbose output.
-    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 90 || 30 }}
+    # Same-base release pytest: 423.31s serial; 198.30s and 719.98s with xdist.
+    # A 25m cap also censored an active xdist run after 24m36s of pytest. The
+    # 39m safety bound is 3.25x the slowest completion and 1.59x that lower
+    # bound. No post-shard broken-class observation exists; this is not a
+    # classifier for the historical monolithic broken runs.
+    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 39 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime

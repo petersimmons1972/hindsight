@@ -33,7 +33,7 @@ REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "9a8d89c26cdfc10d1c9b9444a1947346cef1390bb0b2211fac2e6da166cc0edc"
+INTENDED_WORKFLOW_SHA256 = "942da6bc6fbd54a80f74d081e9accec4bbbb227b1c5daa6e1c51b898dc7e7e44"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -281,7 +281,7 @@ def test_matrix_timeouts_render_to_measured_caps() -> None:
     assert {
         shard: _render_matrix_timeout(expression, shard)
         for shard in ("tools", "pytest-release", "pytest-rest")
-    } == {"tools": 10, "pytest-release": 90, "pytest-rest": 30}
+    } == {"tools": 10, "pytest-release": 39, "pytest-rest": 30}
 
 
 def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
@@ -301,11 +301,11 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     )
     timeout = (
         "    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || "
-        "matrix.shard == 'pytest-release' && 90 || 30 }}"
+        "matrix.shard == 'pytest-release' && 39 || 30 }}"
     )
     assert workflow.count(timeout) == 1, (
-        "the diagnostic measurement head must leave pytest-release uncensored "
-        "at 90 minutes while retaining the settled 10- and 30-minute caps"
+        "tools, pytest-release, and pytest-rest must time out at 10, 39, and "
+        "30 minutes respectively"
     )
 
     parser_steps = [

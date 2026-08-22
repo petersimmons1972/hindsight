@@ -26,6 +26,7 @@ RECONCILE = REPO / "pipeline" / "reconcile_l1.py"
 PRE_COMMIT = REPO / ".githooks" / "pre-commit"
 ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
 REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
+BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.bats"
 
 # sha256 of .github/workflows/guard.yml, measured with
 #   python3 -c "import hashlib,pathlib;print(hashlib.sha256(
@@ -33,7 +34,7 @@ REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "8a9c3b3859d7501eebc86f1e7076a997c20d4275185eeea7fff6e6e221ba2ad0"
+INTENDED_WORKFLOW_SHA256 = "52145902e4cbee8e0b773216b35f2fbd475d23720227549d80e3b118047c8c01"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -106,6 +107,50 @@ def _declared_matrix_shards(workflow: str) -> tuple[str, ...]:
 
 def _step_label(block: tuple[str, ...]) -> str:
     return block[0].removeprefix("      - ")
+
+
+def _validated_step_shard_conditions(
+    workflow: str,
+) -> tuple[tuple[str, ...], list[tuple[tuple[str, ...], str, str]]]:
+    """Return declared shards and validated step-level shard conditions."""
+    declared = _declared_matrix_shards(workflow)
+    guarded_steps: list[tuple[tuple[str, ...], str, str]] = []
+
+    for block in _step_blocks(workflow):
+        shard_lines = [line for line in block if "matrix.shard" in line]
+        if not shard_lines:
+            continue
+        assert len(shard_lines) == 1, (
+            f"{_step_label(block)} must have exactly one matrix.shard condition; "
+            f"found {shard_lines}"
+        )
+        comparison = _STEP_SHARD_IF.fullmatch(shard_lines[0])
+        assert comparison is not None, (
+            f"{_step_label(block)} has an unsupported matrix.shard condition: "
+            f"{shard_lines[0].strip()!r}"
+        )
+        operation, literal = comparison.groups()
+        assert literal in declared, (
+            f"{_step_label(block)} uses unknown matrix.shard literal {literal!r}; "
+            f"declared shards are {declared}"
+        )
+        guarded_steps.append((block, operation, literal))
+
+    assert guarded_steps, "guard.yml has no step-level matrix.shard conditions"
+    return declared, guarded_steps
+
+
+def _has_substantive_action(block: tuple[str, ...]) -> bool:
+    """Reject structural coverage supplied only by a canonical no-op action."""
+    for line in block:
+        if line.startswith("        uses: "):
+            return True
+        if not line.startswith("        run: "):
+            continue
+        action = line.removeprefix("        run: ").strip()
+        if not re.fullmatch(r"(?:true|:|exit\s+0|echo(?:\s+.*)?)", action):
+            return True
+    return False
 
 
 def _reconcile_commands(workflow: str) -> list[str]:
@@ -212,31 +257,42 @@ def test_pinned_workflow_evidence_source_must_be_present() -> None:
 
 
 def test_every_step_shard_literal_is_declared() -> None:
+    _validated_step_shard_conditions(_read(WORKFLOW))
+
+
+def test_every_declared_shard_gates_a_substantive_step() -> None:
+    declared, guarded_steps = _validated_step_shard_conditions(_read(WORKFLOW))
+    covered = {
+        literal
+        for block, operation, literal in guarded_steps
+        if operation == "==" and _has_substantive_action(block)
+    }
+    uncovered = tuple(shard for shard in declared if shard not in covered)
+    assert not uncovered, (
+        "every declared shard must have a substantive exact-positive step gate; "
+        f"uncovered shards: {uncovered}"
+    )
+
+
+def test_workflow_integrity_detectors_are_reachable_from_distinct_shards() -> None:
     workflow = _read(WORKFLOW)
-    declared = _declared_matrix_shards(workflow)
-    guarded_steps = 0
-
-    for block in _step_blocks(workflow):
-        shard_lines = [line for line in block if "matrix.shard" in line]
-        if not shard_lines:
-            continue
-        assert len(shard_lines) == 1, (
-            f"{_step_label(block)} must have exactly one matrix.shard condition; "
-            f"found {shard_lines}"
-        )
-        comparison = _STEP_SHARD_IF.fullmatch(shard_lines[0])
-        assert comparison is not None, (
-            f"{_step_label(block)} has an unsupported matrix.shard condition: "
-            f"{shard_lines[0].strip()!r}"
-        )
-        literal = comparison.group(2)
-        assert literal in declared, (
-            f"{_step_label(block)} uses unknown matrix.shard literal {literal!r}; "
-            f"declared shards are {declared}"
-        )
-        guarded_steps += 1
-
-    assert guarded_steps, "guard.yml has no step-level matrix.shard conditions"
+    assert BATS_WORKFLOW_CONTRACT.is_file(), (
+        f"tools-shard workflow detector missing: {BATS_WORKFLOW_CONTRACT}"
+    )
+    assert BATS_WORKFLOW_CONTRACT.read_bytes().strip(), (
+        "tools-shard workflow detector is empty"
+    )
+    bats_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0] == "      - name: Run bats tests"
+    ]
+    assert bats_steps == [(
+        "      - name: Run bats tests",
+        "        if: matrix.shard == 'tools'",
+        "        run: bats guard/tests/*.bats",
+    )], (
+        "the independent Bats workflow detector must remain reachable from tools"
+    )
 
 
 def test_pytest_steps_are_gated_to_their_own_shards() -> None:
@@ -281,7 +337,7 @@ def test_matrix_timeouts_render_to_measured_caps() -> None:
     assert {
         shard: _render_matrix_timeout(expression, shard)
         for shard in ("tools", "pytest-release", "pytest-rest")
-    } == {"tools": 10, "pytest-release": 39, "pytest-rest": 30}
+    } == {"tools": 10, "pytest-release": 30, "pytest-rest": 30}
 
 
 def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
@@ -301,10 +357,10 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     )
     timeout = (
         "    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || "
-        "matrix.shard == 'pytest-release' && 39 || 30 }}"
+        "matrix.shard == 'pytest-release' && 30 || 30 }}"
     )
     assert workflow.count(timeout) == 1, (
-        "tools, pytest-release, and pytest-rest must time out at 10, 39, and "
+        "tools, pytest-release, and pytest-rest must time out at 10, 30, and "
         "30 minutes respectively"
     )
 

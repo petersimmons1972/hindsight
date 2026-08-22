@@ -312,6 +312,44 @@ def test_dropping_a_real_catalog_row_from_l1_fails_the_scoped_ci_gate(
     assert dropped in result.stdout, "the failure must name the row it lost"
 
 
+def test_hand_edited_catalog_text_that_did_not_reach_l1_fails_and_names_the_row(
+    tmp_path: Path,
+) -> None:
+    """A same-ID stale extract is drift too, not merely a coverage success.
+
+    This reproduces hindsight#141: changing a canonical row in place leaves
+    coverage at 100%, so an ID-only reconciler reports COMPLETE.  The gate has
+    to reject that state and identify the row a maintainer must re-extract.
+    """
+    projects = tmp_path / "projects"
+    repo = projects / "hindsight"
+    (repo / "pipeline" / "L1").mkdir(parents=True)
+    (repo / "catalog").mkdir(parents=True)
+    (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
+
+    source_id = "FM-404"
+    catalog_text = CATALOG.read_text(encoding="utf-8")
+    original = next(
+        line for line in catalog_text.splitlines() if line.startswith(f"| {source_id} |")
+    )
+    edited = original.replace(
+        "runner-queue delay was observed directly",
+        "runner-queue delay was refuted by the job timestamps",
+    )
+    assert edited != original, "fixture edit did not alter the canonical row"
+    (repo / "catalog" / "failure-modes.md").write_text(
+        catalog_text.replace(original, edited), encoding="utf-8"
+    )
+    (repo / "pipeline" / "L1" / "homelab-canon.jsonl").write_bytes(CANON_L1.read_bytes())
+
+    result = _run(repo / "pipeline" / "reconcile_l1.py", "--source", "homelab-canon")
+
+    assert result.returncode == 1, result.stdout
+    assert "SHORT" in result.stdout
+    assert source_id in result.stdout, result.stdout
+    assert "divergent" in result.stdout.lower(), result.stdout
+
+
 def test_the_shipped_scoped_ci_gate_is_green_on_the_committed_tree() -> None:
     """The negative control for the test above: no drift today, so exit 0."""
     result = _run(RECONCILE, "--source", "homelab-canon")

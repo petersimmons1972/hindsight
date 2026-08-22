@@ -40,6 +40,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ADD_TOOL = REPO_ROOT / "bin" / "add-failure-mode.sh"
+CORRECT_TOOL = REPO_ROOT / "bin" / "correct-failure-mode.sh"
 CAPTURE_REL = Path("pipeline") / "capture_embedding_snapshot.py"
 SNAPSHOT_REL = Path("pipeline") / "L2" / "embedding-snapshot.json"
 CLUSTERS_REL = Path("pipeline") / "L2" / "clusters.jsonl"
@@ -221,6 +222,18 @@ def _add(
     )
 
 
+def _correct(repo: Path, target: str, refutation: str, lesson: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        [
+            "bash", str(repo / "bin" / "correct-failure-mode.sh"),
+            "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+            target, refutation, lesson,
+        ],
+        repo,
+        ADD_TIMEOUT,
+    )
+
+
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "<absent>"
 
@@ -345,6 +358,40 @@ def test_successful_canonical_add_grows_the_catalog_it_just_released(sandbox) ->
 
     assert catalog.read_text(encoding="utf-8").count("\n| FM-") == rows_before + 1
     assert len(ledger.read_text(encoding="utf-8").splitlines()) == ledger_before + 1
+    assert _replay(repo).returncode == 0
+
+
+def test_correction_appends_a_retrievable_superseding_row_without_destroying_the_original(sandbox) -> None:
+    """A refuted canonical cause needs history plus a visible replacement.
+
+    Exercise the correction path on the same fully staged, offline-release
+    sandbox used for ordinary canonical writes.  FM-404 is deliberately kept
+    intact, while the appended row names it as superseded so L1 consumers can
+    retrieve both the refuted assertion and its correction.
+    """
+    repo = sandbox("honest")
+    catalog = repo / CATALOG_REL
+    l1 = repo / "pipeline" / "L1" / "homelab-canon.jsonl"
+    original = next(line for line in catalog.read_text(encoding="utf-8").splitlines()
+                    if line.startswith("| FM-404 |"))
+
+    corrected = _correct(
+        repo,
+        "FM-404",
+        "The job timestamps show a two-second queue wait; the stated runner-contention cause was refuted.",
+        "Use job creation and start timestamps before attributing a delay to runner contention.",
+    )
+
+    assert corrected.returncode == 0, _report("the staged correction failed", corrected)
+    catalog_after = catalog.read_text(encoding="utf-8")
+    assert original in catalog_after, "a correction must not rewrite or remove its original row"
+    correction_rows = [line for line in catalog_after.splitlines() if "Supersedes FM-404" in line]
+    assert len(correction_rows) == 1, catalog_after
+    correction_id = re.match(r"\| (FM-\d+) \|", correction_rows[0]).group(1)
+    l1_text = l1.read_text(encoding="utf-8")
+    assert '"id": "hc-FM-404"' in l1_text
+    assert f'"id": "hc-{correction_id}"' in l1_text
+    assert "Supersedes FM-404" in l1_text
     assert _replay(repo).returncode == 0
 
 

@@ -120,6 +120,59 @@ def extracted(slug: str) -> tuple[set[str], int]:
     return found, n
 
 
+def catalog_l1_text_divergence() -> list[str]:
+    """Return canonical row IDs whose extracted text no longer agrees with L1.
+
+    Coverage alone can say every FM ID survived while the text a consumer reads
+    is stale.  Compare the fields ``extract_mechanical.py`` derives from each
+    table row, so an error identifies the maintainer's exact re-extraction
+    target rather than reporting an unusable aggregate digest mismatch.
+    """
+    catalog = REPO / "catalog" / "failure-modes.md"
+    l1_path = L1 / "homelab-canon.jsonl"
+    if not catalog.is_file() or not l1_path.is_file():
+        return []
+
+    canonical: dict[str, dict[str, object]] = {}
+    for line in catalog.read_text(encoding="utf-8").splitlines():
+        if not re.match(r"^\| FM-\d{2,3} \|", line):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue  # extract_mechanical.py owns the parse failure for this shape.
+        cells += [""] * (5 - len(cells))
+        fm_id, klass, instance, check, auto = cells[:5]
+        canonical[fm_id] = {
+            "class_hint": klass,
+            "instance": instance,
+            "check": check or None,
+            "auto": "machine" if "🤖" in auto else "judgment",
+        }
+
+    extracted_rows: dict[str, dict[str, object]] = {}
+    for raw in l1_path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        record = json.loads(raw)
+        row_id = record.get("id")
+        if not isinstance(row_id, str) or not row_id.startswith("hc-FM-"):
+            continue
+        extracted_rows[row_id.removeprefix("hc-")] = record
+
+    # Synthetic coverage fixtures intentionally use bare IDs.  Their purpose
+    # is ID accounting, not extractor fidelity; a real canonical extract always
+    # carries hc-FM-* identifiers.
+    if not extracted_rows:
+        return []
+
+    divergent: list[str] = []
+    for fm_id, expected in canonical.items():
+        actual = extracted_rows.get(fm_id)
+        if actual is not None and any(actual.get(field) != value for field, value in expected.items()):
+            divergent.append(fm_id)
+    return sorted(divergent)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
@@ -189,13 +242,15 @@ def main() -> int:
             cov = round((len(truth) - len(missing)) / len(truth) * 100, 1)
         else:
             cov = 100.0
-        if missing:
+        divergent = catalog_l1_text_divergence() if slug == "homelab-canon" else []
+        if missing or divergent:
             short = True
         report.append({"slug": slug, "ground_truth": len(truth), "jsonl_lines": n_lines,
                        "covered": len(truth) - len(missing), "coverage_pct": cov,
-                       "resolved": resolved, "missing": missing})
+                       "resolved": resolved, "missing": missing, "divergent": divergent})
     n_unresolved = len(selected) - n_resolved
     n_missing = sum(len(r["missing"]) for r in report)
+    n_divergent = sum(len(r["divergent"]) for r in report)
     if n_resolved == 0:
         verdict = "UNVERIFIED"
     elif short:
@@ -207,7 +262,7 @@ def main() -> int:
 
     gated_report = [r for r in report if r["slug"] in gated]
     gated_unresolved = [r["slug"] for r in gated_report if not r["resolved"]]
-    gated_short = [r["slug"] for r in gated_report if r["missing"]]
+    gated_short = [r["slug"] for r in gated_report if r["missing"] or r["divergent"]]
     if not any(r["resolved"] for r in gated_report):
         gate_verdict = "UNVERIFIED"
     elif gated_short:
@@ -245,12 +300,17 @@ def main() -> int:
     else:
         print(f"{'source':<28}{'truth':>6}{'lines':>7}{'cov':>7}  missing")
         for r in report:
-            m = ", ".join(r["missing"][:6]) + (" ..." if len(r["missing"]) > 6 else "")
+            missing_ids = ", ".join(r["missing"][:6]) + (" ..." if len(r["missing"]) > 6 else "")
+            divergent_ids = ", ".join(r["divergent"][:6]) + (" ..." if len(r["divergent"]) > 6 else "")
+            m = missing_ids
+            if divergent_ids:
+                m = f"{m}; divergent: {divergent_ids}" if m else f"divergent: {divergent_ids}"
             cov_s = "   n/a" if r["coverage_pct"] is None else f"{r['coverage_pct']:>6.1f}"
             flag = "" if r["resolved"] else "  [UNRESOLVED -- source not on disk, nothing compared]"
             print(f"{r['slug']:<28}{r['ground_truth']:>6}{r['jsonl_lines']:>7}"
                   f"{cov_s}%  {m}{flag}")
-        print(f"\n{verdict}: {n_missing} enumerable entries unaccounted for"
+        print(f"\n{verdict}: {n_missing} enumerable entries unaccounted for; "
+              f"{n_divergent} canonical row(s) text-divergent"
               f" ({n_resolved}/{len(selected)} sources resolved)")
         if skipped:
             print(f"  SCOPE: --source restricted this run to {len(selected)} of "

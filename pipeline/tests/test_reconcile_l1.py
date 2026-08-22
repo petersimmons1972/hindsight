@@ -118,7 +118,10 @@ def test_shortfall_prints_short_and_exits_1(tmp_path: Path, monkeypatch, capsys)
     # sources RESOLVED, because "SHORT: 0 unaccounted for" and "nothing was on
     # disk to compare against" used to render identically. Asserted exactly, so
     # the count cannot silently drift.
-    assert verdict == ["SHORT: 1 enumerable entries unaccounted for (2/2 sources resolved)"]
+    assert verdict == [
+        "SHORT: 1 enumerable entries unaccounted for; "
+        "0 canonical row(s) text-divergent (2/2 sources resolved)"
+    ]
     assert "CI-6" in out
 
 
@@ -387,7 +390,10 @@ def test_allow_partial_waives_partial_and_names_unchecked_count(tmp_path, monkey
     out = capsys.readouterr().out
 
     assert status == 0
-    assert "PARTIAL: 0 enumerable entries unaccounted for (1/2 sources resolved)" in out
+    assert (
+        "PARTIAL: 0 enumerable entries unaccounted for; "
+        "0 canonical row(s) text-divergent (1/2 sources resolved)"
+    ) in out
     assert (
         "WAIVER: --allow-partial accepts this PARTIAL result; "
         "1 unresolved source(s) were NOT checked."
@@ -462,7 +468,10 @@ def test_shortfall_outranks_partial_when_another_source_is_unresolved(tmp_path, 
     verdict = [ln for ln in out.splitlines() if "unaccounted for" in ln]
 
     assert status == 1
-    assert verdict == ["SHORT: 1 enumerable entries unaccounted for (1/2 sources resolved)"]
+    assert verdict == [
+        "SHORT: 1 enumerable entries unaccounted for; "
+        "0 canonical row(s) text-divergent (1/2 sources resolved)"
+    ]
 
 
 def test_unresolved_source_has_no_coverage_measurement(tmp_path, monkeypatch, capsys) -> None:

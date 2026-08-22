@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 # Resolve from this file, never from a fixed home directory. reconcile_l1.py
@@ -25,6 +26,10 @@ REPO = Path(__file__).resolve().parents[1]
 P = REPO.parent
 OUT = REPO / "pipeline/L1"
 OUT.mkdir(parents=True, exist_ok=True)
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+
+from pipeline.reconcile_l1 import parse_catalog_rows
 
 
 def emit(slug: str, records: list[dict], preserve_prefix: str | None = None) -> None:
@@ -54,29 +59,17 @@ def emit(slug: str, records: list[dict], preserve_prefix: str | None = None) -> 
 
 # ---- 1. the canonical catalog (markdown table) --------------------------------
 cat = REPO / "catalog/failure-modes.md"
-row_re = re.compile(r"^\| (FM-\d{2,3}) \|")
 records = []
-for n, line in enumerate(cat.read_text(encoding="utf-8").splitlines(), 1):
-    if not row_re.match(line):
-        continue
-    cells = [c.strip() for c in line.strip().strip("|").split("|")]
-    # Not every row has all 5 columns -- the rescued FM-135..145 rows carry 4
-    # (they predate the Auto? column). An earlier version `continue`d past short
-    # rows and silently dropped 14 entries, including the ones just recovered.
-    # Never skip a row you matched: pad it, and fail loud on anything unusable.
-    if len(cells) < 4:
-        raise SystemExit(f"ABORT: unparseable catalog row at line {n}: {line[:120]}")
-    cells += [""] * (5 - len(cells))
-    fm, klass, instance, check, auto = cells[:5]
+for row in parse_catalog_rows(cat.read_text(encoding="utf-8")):
     records.append({
-        "id": f"hc-{fm}",
+        "id": f"hc-{row.fm_id}",
         "source_path": "hindsight/catalog/failure-modes.md",
-        "source_anchor": f"line {n}",
-        "class_hint": klass,
-        "instance": instance,
-        "check": check or None,
+        "source_anchor": f"line {row.line_number}",
+        "class_hint": row.class_hint,
+        "instance": row.instance,
+        "check": row.check,
         "enforcement": None,          # the column is prose, not a path: honest null
-        "auto": "machine" if "🤖" in auto else "judgment",
+        "auto": row.l1_fields()["auto"],
         "first_seen": None,
     })
 emit("homelab-canon", records, preserve_prefix="hc-FM-")

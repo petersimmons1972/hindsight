@@ -5,10 +5,10 @@
 #   correct-failure-mode.sh -t TIER --disposition KIND --recurrence-of c-NNN|none \
 #     FM-NNN "REFUTATION" "CORRECTED LESSON"
 #
-# The catalog is append-only.  A correction is therefore an ordinary canonical
-# add whose concrete-instance text names the old row and says it is superseded;
-# add-failure-mode.sh performs the one sanctioned write transaction and derives
-# L1/L2/pointer consumers.  FM-332 established this CORRECTION record precedent.
+# A correction preserves every substantive cell on the original row, prepends
+# an explicit tombstone marker naming the replacement, and appends the complete
+# superseding row. add-failure-mode.sh stages and guards that catalog+ledger
+# state before one atomic directory exchange, then derives L1/L2 consumers.
 
 set -euo pipefail
 
@@ -68,14 +68,23 @@ LESSON="${POSITIONAL[2]}"
 
 CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
 [[ -f "$CATALOG" ]] || { echo "ERROR: catalog not found: $CATALOG" >&2; exit 1; }
-CLASS="$({ awk -F '|' -v id="$TARGET_ID" '
-    $0 ~ "^\\| " id " \\|" {
-        value = $3
-        sub(/^[[:space:]]+/, "", value)
-        sub(/[[:space:]]+$/, "", value)
-        print value
-    }
-' "$CATALOG"; })"
+CLASS="$(python3 - "$REPO_ROOT" "$CATALOG" "$TARGET_ID" <<'PYEOF'
+import sys
+from pathlib import Path
+
+repo, catalog, target = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+sys.path.insert(0, str(repo))
+from pipeline.reconcile_l1 import parse_catalog_rows
+
+rows = [
+    row for row in parse_catalog_rows(catalog.read_text(encoding="utf-8"))
+    if row.fm_id == target
+]
+if len(rows) != 1:
+    raise SystemExit(f"ERROR: target {target} must name exactly one canonical catalog row")
+print(rows[0].class_hint)
+PYEOF
+)"
 [[ $(printf '%s\n' "$CLASS" | sed '/^$/d' | wc -l) -eq 1 ]] || {
     echo "ERROR: target $TARGET_ID must name exactly one canonical catalog row" >&2
     exit 1
@@ -87,4 +96,5 @@ DESCRIPTION="CORRECTION: $TARGET_ID is superseded, not erased. Refuted stated ca
     -t "$TIER" \
     --disposition "$DISPOSITION" \
     --recurrence-of "$RECURRENCE" \
+    --supersedes "$TARGET_ID" \
     "$LESSON" "$DESCRIPTION"

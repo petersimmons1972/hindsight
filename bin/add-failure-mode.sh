@@ -21,6 +21,10 @@
 #   --recurrence-of c-NNN|none
 #               Record the human recurrence decision after corpus review.
 #               c-NNN is a cluster id, not an FM id.
+#   --supersedes FM-NNN
+#               Correction-only: tombstone this row while preserving its
+#               semantic cells, and publish it with the superseding row as one
+#               atomic catalog-directory exchange.
 #   --undo DIR  Restore every file recorded in a prior run's undo journal.
 #   -h          Show this help and exit successfully.
 #
@@ -220,6 +224,7 @@ DISPOSITION=""
 DISPOSITION_SEEN=0
 RECURRENCE_OF=""
 RECURRENCE_SEEN=0
+SUPERSEDES=""
 POSITIONAL=()
 DISPOSITION_VALUES="mechanize, brief-inject, or advisory"
 
@@ -227,7 +232,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -c|--class)
             [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
-            CLASS="${2^^}"; shift 2
+            # class_label maps single-letter aliases case-insensitively.  An
+            # explicit class label is catalog substance and keeps its casing.
+            CLASS="$2"; shift 2
             ;;
         -i|--issue)
             [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }
@@ -276,6 +283,18 @@ while [[ $# -gt 0 ]]; do
             fi
             RECURRENCE_OF="$2"; shift 2
             RECURRENCE_SEEN=1
+            ;;
+        --supersedes)
+            [[ $# -ge 2 && -z "$SUPERSEDES" ]] || {
+                echo "ERROR: --supersedes requires one canonical FM-NNN ID" >&2
+                exit 1
+            }
+            [[ "$2" =~ ^FM-[0-9]{2,3}$ ]] || {
+                echo "ERROR: --supersedes requires one canonical FM-NNN ID" >&2
+                exit 1
+            }
+            SUPERSEDES="$2"
+            shift 2
             ;;
         -h|--help)  usage 0 ;;
         --)
@@ -493,18 +512,96 @@ fi
 printf 'UNDO: CATALOG=%q CRITICALITY=%q bash %q --undo %q\n' "$CATALOG" "$CRITICALITY" "$0" "$JOURNAL"
 
 JOURNAL_READY=1
+TRANSACTION_ROOT=""
+TRANSACTION_EXCHANGED=0
+PRESERVE_TRANSACTION_STAGE=0
+cleanup_transaction_stage() {
+    if [[ -n "${TRANSACTION_ROOT:-}" && -d "$TRANSACTION_ROOT" ]]; then
+        rm -r -- "$TRANSACTION_ROOT"
+        TRANSACTION_ROOT=""
+    fi
+}
 rollback_on_error() {
     local status=$?
     if [[ $status -ne 0 && ${JOURNAL_READY:-0} -eq 1 ]]; then
         echo "add-failure-mode: operation failed; applying undo journal" >&2
+        if [[ ${TRANSACTION_EXCHANGED:-0} -eq 1 ]]; then
+            # The staged directory now holds the complete old canonical state.
+            # Publish it back with the same atomic directory exchange used for
+            # commit. A kill before/during/after this syscall therefore exposes
+            # either the complete new state or the complete old state, never a
+            # catalog/ledger/criticality mixture.
+            if python3 "$REPO_ROOT/bin/atomic-exchange.py" \
+                "$TRANSACTION_ROOT/catalog" "$(dirname "$LIVE_CATALOG")" >&2; then
+                TRANSACTION_EXCHANGED=0
+            else
+                echo "ERROR: atomic canonical rollback failed; leaving the complete new state live" >&2
+                echo "ERROR: recovery directory preserved at $TRANSACTION_ROOT" >&2
+                PRESERVE_TRANSACTION_STAGE=1
+                JOURNAL_READY=0
+                exit 1
+            fi
+        fi
         if ! restore_journal "$JOURNAL" >&2; then
             echo "ERROR: undo journal restoration failed: $JOURNAL" >&2
             status=1
         fi
     fi
+    if [[ ${PRESERVE_TRANSACTION_STAGE:-0} -eq 0 ]]; then
+        cleanup_transaction_stage
+    fi
     exit "$status"
 }
 trap rollback_on_error EXIT
+
+# A correction updates three canonical files: the original gains a tombstone,
+# the superseding row and ID are appended, and criticality is recorded.  Build
+# that complete state in a same-filesystem directory.  The live catalog stays
+# byte-for-byte old until one RENAME_EXCHANGE publishes the prepared directory.
+LIVE_CATALOG="$CATALOG"
+LIVE_LEDGER="$LEDGER"
+LIVE_CRITICALITY="$CRITICALITY"
+if [[ -n "$SUPERSEDES" ]]; then
+    CATALOG_DIR="$(dirname "$LIVE_CATALOG")"
+    [[ "$(basename "$LIVE_CATALOG")" == "failure-modes.md" ]] || {
+        echo "ERROR: --supersedes requires a catalog named failure-modes.md" >&2
+        exit 1
+    }
+    TRANSACTION_ROOT="$(mktemp -d "$(dirname "$CATALOG_DIR")/.catalog-correction.XXXXXX")"
+    cp -a -- "$CATALOG_DIR" "$TRANSACTION_ROOT/catalog"
+    CATALOG="$TRANSACTION_ROOT/catalog/failure-modes.md"
+    LEDGER="$TRANSACTION_ROOT/catalog/id-ledger.txt"
+    CRITICALITY="$TRANSACTION_ROOT/catalog/criticality.jsonl"
+
+    python3 - "$REPO_ROOT" "$CATALOG" "$SUPERSEDES" "$FM_ID" <<'PYEOF'
+import sys
+from pathlib import Path
+
+repo, path, target, replacement = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+sys.path.insert(0, str(repo))
+from pipeline.reconcile_l1 import parse_catalog_row
+
+lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+matches = []
+for index, raw in enumerate(lines):
+    row = parse_catalog_row(raw.rstrip("\n"), index + 1)
+    if row is not None and row.fm_id == target:
+        matches.append((index, row))
+if len(matches) != 1:
+    raise SystemExit(f"ERROR: target {target} must name exactly one canonical catalog row")
+
+index, row = matches[0]
+if row.instance.startswith("SUPERSEDED by "):
+    raise SystemExit(f"ERROR: target {target} is already superseded")
+cells = [row.fm_id, row.class_hint, f"SUPERSEDED by {replacement} — {row.instance}"]
+if row.check is not None or row.auto:
+    cells.append(row.check or "")
+if row.auto:
+    cells.append(row.auto)
+lines[index] = "| " + " | ".join(cells) + " |\n"
+path.write_text("".join(lines), encoding="utf-8")
+PYEOF
+fi
 
 # ── Insert the canonical catalog row ───────────────────────────────────────────
 
@@ -564,6 +661,18 @@ row = {
 with open(path, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PYEOF
+
+if [[ -n "$SUPERSEDES" ]]; then
+    # Validate the complete staged state before it can become visible.  The
+    # helper has no non-atomic fallback: failure leaves the live pair old.
+    python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
+    python3 "$REPO_ROOT/bin/atomic-exchange.py" \
+        "$TRANSACTION_ROOT/catalog" "$(dirname "$LIVE_CATALOG")"
+    TRANSACTION_EXCHANGED=1
+    CATALOG="$LIVE_CATALOG"
+    LEDGER="$LIVE_LEDGER"
+    CRITICALITY="$LIVE_CRITICALITY"
+fi
 
 if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py" "$CATALOG"
@@ -672,6 +781,7 @@ fi
 
 JOURNAL_READY=0
 trap - EXIT
+cleanup_transaction_stage
 
 # ── Report ────────────────────────────────────────────────────────────────────
 

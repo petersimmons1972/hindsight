@@ -25,6 +25,7 @@ WORKFLOW = REPO / ".github" / "workflows" / "guard.yml"
 RECONCILE = REPO / "pipeline" / "reconcile_l1.py"
 PRE_COMMIT = REPO / ".githooks" / "pre-commit"
 ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
+REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 
 # sha256 of .github/workflows/guard.yml, measured with
 #   python3 -c "import hashlib,pathlib;print(hashlib.sha256(
@@ -32,7 +33,7 @@ ADD_TOOL = REPO / "bin" / "add-failure-mode.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "8c87ce51301b5ca3a21479f43f9a7d6ce7bc3b94b2d4423ecacc59d1bdde6c8b"
+INTENDED_WORKFLOW_SHA256 = "0d2e9cf799c86c89acc1941773a7d68f36163dc6f2e07ef5a1948dc931402a1a"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -170,11 +171,14 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     assert hashlib.sha256(workflow_bytes).hexdigest() == INTENDED_WORKFLOW_SHA256
     workflow = workflow_bytes.decode()
 
-    assert re.search(r"(?m)^  guard:\n    name: guard$", workflow), (
-        "the matrix must retain the exact 'guard' check name consumed by "
-        "bin/require-real-ci.sh"
+    assert re.search(r"(?m)^  guard:\n    name: guard$", workflow)
+    shards = ["pytest-release", "pytest-rest", "tools"]
+    assert f"        shard: [{', '.join(shards)}]" in workflow
+    required_checks = ",".join(f"guard ({shard})" for shard in shards)
+    assert f'REQUIRED_CSV="{required_checks}"' in _read(REQUIRE_REAL_CI), (
+        "require-real-ci.sh must consume GitHub's exact matrix check names; "
+        "the unsuffixed job name is not a reported check"
     )
-    assert "        shard: [pytest-release, pytest-rest, tools]" in workflow
     assert workflow.count("    timeout-minutes: 90") == 1, (
         "the matrix job must enforce one 90-minute budget on every expansion"
     )

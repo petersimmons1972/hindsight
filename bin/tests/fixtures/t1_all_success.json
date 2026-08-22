@@ -12,6 +12,24 @@
     },
     {
       "__typename": "CheckRun",
+      "name": "guard (pytest-release)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (pytest-rest)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (tools)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
       "name": "GitGuardian Security Checks",
       "status": "COMPLETED",
       "conclusion": "SUCCESS",

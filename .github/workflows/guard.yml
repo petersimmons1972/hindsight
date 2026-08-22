@@ -15,9 +15,9 @@ concurrency:
 jobs:
   guard:
     name: guard
-    # Keep the exact check name consumed by bin/require-real-ci.sh. That gate
-    # deliberately evaluates every duplicate check with this name, so every
-    # matrix expansion must succeed before the PR can be called green.
+    # GitHub reports these as guard (<matrix value>). bin/require-real-ci.sh
+    # pins all three exact names, so every expansion must succeed before the PR
+    # can be called green.
     strategy:
       fail-fast: false
       matrix:

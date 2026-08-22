@@ -8,6 +8,26 @@
       "conclusion": "SUCCESS",
       "startedAt": null,
       "completedAt": null
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (pytest-release)",
+      "status": "QUEUED",
+      "conclusion": "SUCCESS",
+      "startedAt": null,
+      "completedAt": null
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (pytest-rest)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (tools)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
     }
   ]
 }

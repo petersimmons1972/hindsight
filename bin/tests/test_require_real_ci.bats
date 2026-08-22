@@ -17,43 +17,45 @@ setup() {
 # ---- core contract -------------------------------------------------------
 
 @test "T1: all required checks COMPLETED/SUCCESS -> exit 0" {
+  # The one fixture-backed test of the production default: all three exact
+  # GitHub matrix check names must be present and successful.
   run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
   [ "$status" -eq 0 ]
 }
 
 @test "T2: required check QUEUED with no conclusion -> exit 2, names the check" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t2_required_queued.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t2_required_queued.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "T3a (defensive, not GH-observed): COMPLETED with empty conclusion -> exit 2" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t3a_completed_empty_conclusion_defensive.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t3a_completed_empty_conclusion_defensive.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "T3b (actual FM-150 shape): IN_PROGRESS with empty conclusion -> exit 2" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t3b_in_progress_empty_conclusion_fm150.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t3b_in_progress_empty_conclusion_fm150.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "T4: empty rollup array -> exit 2, 'no checks reported'" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t4_empty_array.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t4_empty_array.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"no checks reported"* ]]
 }
 
 @test "T5: required check COMPLETED/FAILURE, others SUCCESS -> exit 2" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t5_required_failure.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t5_required_failure.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
   [[ "$output" == *"FAILURE"* ]]
 }
 
 @test "T6: required check absent entirely from rollup -> exit 2, exact reason (not just path match)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t6_required_check_absent.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t6_required_check_absent.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"required check 'guard' is absent from the rollup entirely"* ]]
 }
@@ -77,37 +79,37 @@ setup() {
 # ---- duplicate-name handling (THE confirmed HIGH defect) -----------------
 
 @test "T8: duplicate 'guard' entries, ALL SUCCESS -> exit 0 (real PR #6 shape; duplicates are normal)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t8_duplicate_guard_all_success.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t8_duplicate_guard_all_success.json" --required guard
   [ "$status" -eq 0 ]
 }
 
 @test "T9: duplicate 'guard', COMPLETED/FAILURE first then COMPLETED/SUCCESS last -> exit 2 (genuinely discriminating: pre-repair last-wins dedupe falsely PASSes this)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t9_duplicate_guard_failure_then_success.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t9_duplicate_guard_failure_then_success.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
   [[ "$output" == *"FAILURE"* ]]
 }
 
 @test "T10: duplicate 'guard', QUEUED listed first then SUCCESS -> exit 2 (literal FM-149/last-wins repro)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t10_duplicate_guard_mixed_queued_first.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t10_duplicate_guard_mixed_queued_first.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "T11: 10 QUEUED 'guard' entries + 1 SUCCESS 'guard' entry -> exit 2 (verbatim FM-149 catalog shape)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t11_many_queued_one_success.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t11_many_queued_one_success.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "T25: duplicate 'guard', COMPLETED/SUCCESS FIRST then QUEUED/null LAST -> exit 2 (good-before-bad: pins matches[:1] truncation, every other duplicate fixture puts the bad entry first)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t25_duplicate_guard_success_then_queued.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t25_duplicate_guard_success_then_queued.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "T26: duplicate 'guard', COMPLETED/SUCCESS FIRST then COMPLETED/FAILURE LAST -> exit 2 (good-before-bad, completed-bad variant)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t26_duplicate_guard_success_then_failure.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t26_duplicate_guard_success_then_failure.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
   [[ "$output" == *"FAILURE"* ]]
@@ -123,12 +125,12 @@ setup() {
 # ---- legacy StatusContext (context/state) shape ---------------------------
 
 @test "T12: legacy StatusContext with state=SUCCESS -> exit 0 (must not be permanently reported RED)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t12_legacy_status_context_success.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t12_legacy_status_context_success.json" --required guard
   [ "$status" -eq 0 ]
 }
 
 @test "T13: legacy StatusContext with state=PENDING -> exit 2, names the check" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t13_legacy_status_context_pending.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t13_legacy_status_context_pending.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
@@ -141,7 +143,7 @@ setup() {
   cat > "$DYN" <<EOF
 {"statusCheckRollup":[{"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":"$NOW_MINUS_2M","completedAt":null}]}
 EOF
-  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 60
+  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 60 --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"within"* ]]
   [[ "$output" != *"exceeded"* ]]
@@ -153,13 +155,13 @@ EOF
   cat > "$DYN" <<EOF
 {"statusCheckRollup":[{"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":"$NOW_MINUS_500M","completedAt":null}]}
 EOF
-  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 15
+  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 15 --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"exceeded"* ]]
 }
 
 @test "T16: status=QUEUED with conclusion already SUCCESS -> exit 2 (pins the status!=COMPLETED branch specifically, isolated from the empty-conclusion branch)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t17_queued_with_success_conclusion.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t17_queued_with_success_conclusion.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
@@ -170,19 +172,19 @@ EOF
 # 1) -- that's the one exit code the tool documents as "skip the gate".
 
 @test "naive timestamp (no timezone, T-separated) -> still exit 2, never exit 1" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t18_naive_timestamp_no_tz.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t18_naive_timestamp_no_tz.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "naive timestamp (date only) -> still exit 2, never exit 1" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t19_naive_timestamp_date_only.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t19_naive_timestamp_date_only.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
 
 @test "naive timestamp (space-separated, no timezone) -> still exit 2, never exit 1" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t20_naive_timestamp_space_separated.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t20_naive_timestamp_space_separated.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
 }
@@ -193,7 +195,7 @@ EOF
   cat > "$DYN" <<EOF
 {"statusCheckRollup":[{"__typename":"CheckRun","name":"guard","status":"QUEUED","conclusion":null,"startedAt":"$NOW_NAIVE","completedAt":null}]}
 EOF
-  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 60
+  run "$SCRIPT" 999 --json-file "$DYN" --max-wait-minutes 60 --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"m elapsed, within --max-wait-minutes=60: still starting up"* ]]
 }
@@ -201,67 +203,67 @@ EOF
 # ---- mutation-bar fixtures: status/conclusion strictness -------------------
 
 @test "IN_PROGRESS with conclusion=SUCCESS -> exit 2 (FM-150-observed status; pins exact COMPLETED match, not an allowlist)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t21_in_progress_success_conclusion.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t21_in_progress_success_conclusion.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard' is not complete (status='IN_PROGRESS')"* ]]
 }
 
 @test "conclusion=CANCELLED -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_cancelled.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_cancelled.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'CANCELLED', not SUCCESS"* ]]
 }
 
 @test "conclusion=SKIPPED -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_skipped.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_skipped.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'SKIPPED', not SUCCESS"* ]]
 }
 
 @test "conclusion=NEUTRAL -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_neutral.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_neutral.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'NEUTRAL', not SUCCESS"* ]]
 }
 
 @test "conclusion=STARTUP_FAILURE -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_startup_failure.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_startup_failure.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'STARTUP_FAILURE', not SUCCESS"* ]]
 }
 
 @test "conclusion=TIMED_OUT -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_timed_out.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_timed_out.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'TIMED_OUT', not SUCCESS"* ]]
 }
 
 @test "conclusion=ACTION_REQUIRED -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_action_required.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_action_required.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'ACTION_REQUIRED', not SUCCESS"* ]]
 }
 
 @test "conclusion=STALE -> exit 2 (only SUCCESS may pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_stale.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t22_conclusion_stale.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'STALE', not SUCCESS"* ]]
 }
 
 @test "required check present with no status/conclusion/state fields -> exit 2, FAIL LOUD (not a silent pass)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t23_unrecognized_entry_shape.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t23_unrecognized_entry_shape.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard' has an unrecognized entry shape"* ]]
 }
 
 @test "exact required-name matching: 'guard-extra' present does not satisfy required 'guard' -> exit 2, absent" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t24_prefix_name_no_exact_match.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t24_prefix_name_no_exact_match.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"required check 'guard' is absent from the rollup entirely"* ]]
 }
 
 @test "FM-150 diagnostic message is pinned verbatim (COMPLETED + empty conclusion), not just the exit code" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t3a_completed_empty_conclusion_defensive.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t3a_completed_empty_conclusion_defensive.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"required check 'guard' is COMPLETED but has an empty/missing conclusion"* ]]
 }
@@ -269,41 +271,41 @@ EOF
 # ---- exit-code contract, pinned -------------------------------------------
 
 @test "exit-code contract: missing <pr-number> is a usage error -> exit exactly 1" {
-  run "$SCRIPT" --json-file "$FIXTURES/t1_all_success.json"
+  run "$SCRIPT" --json-file "$FIXTURES/t1_all_success.json" --required guard
   [ "$status" -eq 1 ]
 }
 
 @test "exit-code contract: unknown option is a usage error -> exit exactly 1" {
-  run "$SCRIPT" 999 --bogus-flag foo --json-file "$FIXTURES/t1_all_success.json"
+  run "$SCRIPT" 999 --bogus-flag foo --json-file "$FIXTURES/t1_all_success.json" --required guard
   [ "$status" -eq 1 ]
 }
 
 @test "exit-code contract: --json-file pointing at a nonexistent path -> exit exactly 1" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/does_not_exist.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/does_not_exist.json" --required guard
   [ "$status" -eq 1 ]
 }
 
 @test "exit-code contract: gate/contract failure -> exit exactly 2, never 1" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t5_required_failure.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t5_required_failure.json" --required guard
   [ "$status" -eq 2 ]
 }
 
 # ---- error paths: malformed / missing / wrong-shape input ------------------
 
 @test "error path: malformed/truncated JSON -> exit 1, message says not valid JSON" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t14_malformed_truncated.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t14_malformed_truncated.json" --required guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"not valid JSON"* ]]
 }
 
 @test "error path: statusCheckRollup is null -> exit 2, 'no checks reported'" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t15_null_rollup.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t15_null_rollup.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"no checks reported"* ]]
 }
 
 @test "error path: statusCheckRollup is not a list (an object) -> exit 2, 'no checks reported'" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t16_non_list_rollup.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t16_non_list_rollup.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"no checks reported"* ]]
 }
@@ -311,20 +313,20 @@ EOF
 # ---- F2 (round 5): four unpinned mutation-surviving behaviours ------------
 
 @test "M31 pin: bad 'guard' sibling lacking __typename is still evaluated (entry-selection must never drop entries on an incidental field) -> exit 2, names FAILURE" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t29_bad_sibling_no_typename.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t29_bad_sibling_no_typename.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
   [[ "$output" == *"FAILURE"* ]]
 }
 
 @test "M27 pin: lowercase REST-shaped status='completed'/conclusion='success' -> exit 2 (exact-case contract on status; only literal 'COMPLETED' passes)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t30_rest_shaped_lowercase_case_exact.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t30_rest_shaped_lowercase_case_exact.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard' is not complete (status='completed')"* ]]
 }
 
 @test "M28 pin (isolated from M27): status='COMPLETED' exact, conclusion='success' lowercase -> exit 2 (exact-case contract on conclusion specifically; t30 alone shares its status-check cause with M27 and does not isolate this one)" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t31_completed_lowercase_conclusion.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t31_completed_lowercase_conclusion.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"concluded 'success', not SUCCESS"* ]]
 }
@@ -354,7 +356,7 @@ cat >/dev/null
 exit 2
 EOF
   chmod +x "$FAKE_BIN/python3"
-  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --required guard
   [ "$status" -eq 2 ]
 }
 
@@ -366,7 +368,7 @@ EOF
 # PASS:/FAIL: line reaches stdout. This must not happen: the gate must still
 # evaluate every entry and exit 2 on the bad one, however large the rollup.
 @test "F1: >128KB rollup (465 gh-shaped entries, last one QUEUED/null) -> exit 2, names 'guard', never exit 126" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t28_oversized_rollup_argv_limit.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t28_oversized_rollup_argv_limit.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"'guard'"* ]]
   [[ "$output" == *"FAIL:"* ]]
@@ -381,7 +383,7 @@ echo "HTTP 404: Not Found (owner/repo not found)" >&2
 exit 1
 EOF
   chmod +x "$FAKE_BIN/gh"
-  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --required guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"gh pr view failed"* ]]
 }
@@ -396,13 +398,13 @@ EOF
 # a check with no conclusion is RED, never green.
 
 @test "S1 pin: 'conclusion' key ABSENT (not null) on a COMPLETED required check -> exit 2, never defaults to SUCCESS" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t32_conclusion_key_absent.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t32_conclusion_key_absent.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"required check 'guard' is COMPLETED but has an empty/missing conclusion"* ]]
 }
 
 @test "S2 pin: 'status' key ABSENT on a required check -> exit 2, never defaults to COMPLETED" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t33_status_key_absent.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t33_status_key_absent.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"required check 'guard' is not complete (status=None)"* ]]
 }
@@ -459,7 +461,7 @@ EOF
 
 @test "S5/S10 pin: python3 evaluator exits 1 (undocumented, out of the 0/2 contract) -> exit 2 and says so, never 0" {
   _fake_python3_exiting 1
-  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"undocumented code 1"* ]]
   [[ "$output" != *"PASS:"* ]]
@@ -467,14 +469,14 @@ EOF
 
 @test "S10 pin: python3 evaluator exits 126 (the FM-149 argv-limit code) -> exit 2, labelled, never leaked verbatim" {
   _fake_python3_exiting 126
-  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  PATH="$FAKE_BIN:$PATH" run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"undocumented code 126"* ]]
   [[ "$output" != *"PASS:"* ]]
 }
 
 @test "S11 pin: --max-wait-minutes abc is rejected as a usage error (exit 1) before it can reach int() in the evaluator" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --max-wait-minutes abc
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --max-wait-minutes abc --required guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"--max-wait-minutes must be a non-negative integer, got: abc"* ]]
 }
@@ -514,19 +516,19 @@ EOF
 @test "R11 pin: lowercase legacy StatusContext state is not SUCCESS" {
   legacy="$BATS_TEST_TMPDIR/lowercase_legacy_state.json"
   printf '%s\n' '{"statusCheckRollup":[{"__typename":"StatusContext","context":"guard","state":"success"}]}' > "$legacy"
-  run "$SCRIPT" 999 --json-file "$legacy"
+  run "$SCRIPT" 999 --json-file "$legacy" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"legacy status context) is not SUCCESS (state='success')"* ]]
 }
 
 @test "R6 pin: a second positional argument is a usage error, never a replacement PR" {
-  run "$SCRIPT" 123 456 --json-file "$FIXTURES/t1_all_success.json"
+  run "$SCRIPT" 123 456 --json-file "$FIXTURES/t1_all_success.json" --required guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"unexpected extra argument: 456"* ]]
 }
 
 @test "R8 pin: contract FAIL verdict stays on stdout, never becomes an evaluator crash" {
-  run bash -c '"$1" "$2" --json-file "$3" 2>/dev/null' _ "$SCRIPT" 999 "$FIXTURES/t2_required_queued.json"
+  run bash -c '"$1" "$2" --json-file "$3" --required guard 2>/dev/null' _ "$SCRIPT" 999 "$FIXTURES/t2_required_queued.json"
   [ "$status" -eq 2 ]
   [[ "$output" == *"FAIL: required check 'guard' is not complete"* ]]
   [[ "$output" != *"undocumented code"* ]]
@@ -551,7 +553,7 @@ script="\$(printf '%s' "\$script" | sed "s|now = datetime.now(timezone.utc)|now 
 exec /usr/bin/python3 -c "\$script" "\${@:3}"
 EOF
   chmod +x "$fake_bin/python3"
-  PATH="$fake_bin:$PATH" run "$SCRIPT" 999 --json-file "$boundary" --max-wait-minutes 15
+  PATH="$fake_bin:$PATH" run "$SCRIPT" 999 --json-file "$boundary" --max-wait-minutes 15 --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"15.0m elapsed, exceeded --max-wait-minutes=15"* ]]
   [[ "$output" != *"still starting up"* ]]
@@ -560,13 +562,13 @@ EOF
 @test "R4 pin: createdAt supplies the stuck-check elapsed diagnostic when startedAt is absent" {
   created_only="$BATS_TEST_TMPDIR/created_at_only.json"
   printf '%s\n' '{"statusCheckRollup":[{"name":"guard","status":"QUEUED","conclusion":null,"createdAt":"2020-01-01T00:00:00Z"}]}' > "$created_only"
-  run "$SCRIPT" 999 --json-file "$created_only" --max-wait-minutes 15
+  run "$SCRIPT" 999 --json-file "$created_only" --max-wait-minutes 15 --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"m elapsed, exceeded --max-wait-minutes=15"* ]]
 }
 
 @test "R5 pin: empty --max-wait-minutes is a documented usage error" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --max-wait-minutes ''
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json" --max-wait-minutes '' --required guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"must be a non-negative integer, got:"* ]]
   [[ "$output" != *"undocumented code"* ]]
@@ -575,7 +577,7 @@ EOF
 @test "R7 pin: an empty JSON file reports the explicit no-JSON guard" {
   empty="$BATS_TEST_TMPDIR/empty_rollup.json"
   : > "$empty"
-  run "$SCRIPT" 999 --json-file "$empty"
+  run "$SCRIPT" 999 --json-file "$empty" --required guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"no JSON produced (empty --json-file or empty gh response)"* ]]
 }
@@ -583,14 +585,14 @@ EOF
 @test "R10 pin: non-dict rollup siblings are ignored rather than crashing evaluation" {
   mixed="$BATS_TEST_TMPDIR/null_sibling.json"
   printf '%s\n' '{"statusCheckRollup":[null,{"name":"guard","status":"COMPLETED","conclusion":"SUCCESS"}]}' > "$mixed"
-  run "$SCRIPT" 999 --json-file "$mixed"
+  run "$SCRIPT" 999 --json-file "$mixed" --required guard
   [ "$status" -eq 0 ]
   [[ "$output" == *"PASS: all required checks (guard)"* ]]
   [[ "$output" != *"Traceback"* ]]
 }
 
 @test "R15 pin: exactly two duplicate names report their failed-entry count" {
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t26_duplicate_guard_success_then_failure.json"
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t26_duplicate_guard_success_then_failure.json" --required guard
   [ "$status" -eq 2 ]
   [[ "$output" == *"1 of 2 entries named 'guard' failed the contract"* ]]
 }

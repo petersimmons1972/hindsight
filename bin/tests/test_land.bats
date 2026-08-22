@@ -195,13 +195,13 @@ EOF
 
 @test "L18 (S15): the gate's own FAIL verdict — naming WHICH check was red — is printed, not swallowed" {
   run bash "$LAND" 99 --json-file "$FIXTURES/t5_required_failure.json"
-  [[ "$output" == *"FAIL: required check 'guard' concluded 'FAILURE', not SUCCESS"* ]]
+  [[ "$output" == *"FAIL: required check 'guard (pytest-release)' concluded 'FAILURE', not SUCCESS"* ]]
 }
 
 @test "L19 (S15): on the green path the gate's PASS line is printed too — that line IS the evidence" {
   run bash "$LAND" 99 --json-file "$FIXTURES/t1_all_success.json"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS: all required checks (guard) are COMPLETED/SUCCESS"* ]]
+  [[ "$output" == *"PASS: all required checks (guard (pytest-release), guard (pytest-rest), guard (tools)) are COMPLETED/SUCCESS"* ]]
 }
 
 # ---- F4: the invocation banner must actually record the invocation ----------

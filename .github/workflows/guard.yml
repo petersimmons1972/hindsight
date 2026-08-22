@@ -23,10 +23,11 @@ jobs:
       matrix:
         shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
-    # Temporary serial-baseline measurement head: the former 39-minute release
-    # ceiling censored a contended-but-active run, so leave enough room for one
-    # completed same-base observation before changing the release runtime.
-    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 90 || 30 }}
+    # Same-base release pytest: 423.31s serial; 197.87s and 198.30s with xdist.
+    # The 25m cap allows ~7.5x the measured xdist wall while remaining below
+    # the release harness's own 30m subprocess timeout. No post-shard broken
+    # class has been observed, so this is a safety bound, not a classifier.
+    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 25 || 30 }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime

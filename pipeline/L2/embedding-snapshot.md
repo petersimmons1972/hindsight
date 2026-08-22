@@ -6,7 +6,7 @@ object has exactly these logical fields:
 
 ```json
 {
-  "schema": "hindsight.embedding-snapshot/v2",
+  "schema": "hindsight.embedding-snapshot/v3",
   "provenance": {
     "l1_sha256": "64 lowercase hexadecimal characters",
     "cluster_sha256": "64 lowercase hexadecimal characters"
@@ -19,6 +19,9 @@ object has exactly these logical fields:
   },
   "embeddings": {
     "L1-record-id": [0.1, -0.2]
+  },
+  "similarity_text_sha256": {
+    "L1-record-id": "64 lowercase hexadecimal characters"
   }
 }
 ```
@@ -36,6 +39,9 @@ object has exactly these logical fields:
 - `backend.dimensions` is a positive integer and every vector must have exactly
   that many finite numeric elements.
 - `embeddings` is keyed by the unique L1 `id`; keys are not row positions.
+- `similarity_text_sha256` has the exact same ID keys and hashes the UTF-8
+  `similarity_text(entry)` sent to the embedding backend. A vector is reusable
+  only when this digest and the backend identity still match.
 
 The top-level object, provenance object, and backend object are closed schemas:
 missing or extra fields are rejected. Replay requires separately computed L1
@@ -48,16 +54,20 @@ an alarm. Vectors are reordered by sorted L1 ID before being passed to
 
 `pipeline/capture_embedding_snapshot.py` is the controlled release command. It
 accepts only a parsed plain-HTTP origin whose hostname exactly matches the
-authorized host allowlist and refuses redirects. It requests one vector per
-sorted L1 ID through the indexed OpenAI endpoint, falling back to the native
-per-text endpoint only when the batch endpoint explicitly returns HTTP 404 or
-405. It binds OpenAI rows by their explicit indices, never by response order;
-malformed responses and every other backend failure are final. Capture hashes
-L1 and cluster/config inputs before the request and rechecks them immediately
-before replacement. It writes and fsyncs a unique same-directory temporary
-file and, when a prior snapshot exists, stages its recovery copy and fsyncs
-both that file and its directory entry before atomically replacing the destination and fsyncing the containing
-directory. Backend, protocol, coverage,
+authorized host allowlist and refuses redirects. By default it retains a prior
+vector only when the v3 snapshot, backend identity, dimensions, ID, and exact
+`similarity_text_sha256` all match; new IDs and stable IDs whose embedding text
+changed are requested from the backend. `--refresh-embeddings` bypasses reuse
+and requests every vector, even when the text and backend are unchanged.
+Requests use the indexed OpenAI endpoint, falling back to the native per-text
+endpoint only when the batch endpoint explicitly returns HTTP 404 or 405. It
+binds OpenAI rows by their explicit indices, never by response order; malformed
+responses and every other backend failure are final. Capture hashes L1 and
+cluster/config inputs before the request and rechecks them immediately before
+replacement. It writes and fsyncs a unique same-directory temporary file and,
+when a prior snapshot exists, stages its recovery copy and fsyncs both that
+file and its directory entry before atomically replacing the destination and
+fsyncing the containing directory. Backend, protocol, coverage,
 vector, provenance-drift, or pre-replacement write errors exit nonzero and
 preserve the prior snapshot. If both atomic rollback methods fail, capture
 removes the known-stale destination, retains the prior bytes in a named
@@ -71,10 +81,11 @@ python3 pipeline/capture_embedding_snapshot.py \
   --model BAAI/bge-m3 --revision bge-m3-Q8_0.gguf --dimensions 1024
 ```
 
-The vectors in the committed v2 snapshot are retained unchanged from the v1
-snapshot captured from the authorized HTTP service. The current L1 and cluster
-code/config provenance was added deterministically; this packet did **not**
-perform or claim a live backend recapture.
+Add `--refresh-embeddings` only when the release deliberately needs current
+live vectors for every entry. The committed v3 migration retained all 736 v2
+vectors only after the v2 snapshot's full L1 digest, backend identity, and exact
+ID coverage matched the current corpus; it added per-entry text digests and did
+**not** perform or claim a live backend recapture.
 
 Offline verification is read-only and never contacts HTTP:
 

@@ -75,7 +75,7 @@ class EmbeddingProtocolError(ValueError):
     """The optional embedding service returned a response outside its contract."""
 
 
-SNAPSHOT_SCHEMA = "hindsight.embedding-snapshot/v2"
+SNAPSHOT_SCHEMA = "hindsight.embedding-snapshot/v3"
 SNAPSHOT_BACKEND_FIELDS = frozenset({"name", "model", "revision", "dimensions"})
 SNAPSHOT_PROVENANCE_FIELDS = frozenset({"l1_sha256", "cluster_sha256"})
 HTTP_BACKEND_IDENTITY: dict[str, object] = {
@@ -245,6 +245,11 @@ def similarity_text(entry: Entry) -> str:
     markers = _cause_shape_markers(" ".join(parts))
     parts.extend(marker for marker in markers for _ in range(12))
     return " ".join(parts)
+
+
+def similarity_text_digest(entry: Entry) -> str:
+    """Identify the exact text whose dense vector the snapshot records."""
+    return hashlib.sha256(similarity_text(entry).encode("utf-8")).hexdigest()
 
 
 MARKER_TEXT_FRAGMENTS: list[str] = []
@@ -638,7 +643,9 @@ def load_embedding_snapshot(
         raise TypeError(f"{path}: snapshot must be an object")
     if payload.get("schema") != SNAPSHOT_SCHEMA:
         raise ValueError(f"{path}: unsupported snapshot schema {payload.get('schema')!r}")
-    expected_fields = {"schema", "provenance", "backend", "embeddings"}
+    expected_fields = {
+        "schema", "provenance", "backend", "embeddings", "similarity_text_sha256",
+    }
     if set(payload) != expected_fields:
         raise ValueError(
             f"{path}: snapshot fields do not match schema: "
@@ -687,6 +694,34 @@ def load_embedding_snapshot(
     unexpected = sorted(snapshot_ids.difference(corpus_ids))
     if missing or unexpected:
         raise ValueError(f"embedding snapshot ID mismatch: missing={missing}, unexpected={unexpected}")
+
+    text_digests = payload.get("similarity_text_sha256")
+    if not isinstance(text_digests, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in text_digests.items()
+    ):
+        raise ValueError(f"{path}: similarity_text_sha256 must be an object keyed by L1 id")
+    digest_ids = set(text_digests)
+    missing_digests = sorted(corpus_ids.difference(digest_ids))
+    unexpected_digests = sorted(digest_ids.difference(corpus_ids))
+    if missing_digests or unexpected_digests:
+        raise ValueError(
+            "similarity-text digest ID mismatch: "
+            f"missing={missing_digests}, unexpected={unexpected_digests}"
+        )
+    for entry in entries:
+        recorded_digest = text_digests[entry.id]
+        if re.fullmatch(r"[0-9a-f]{64}", recorded_digest) is None:
+            raise ValueError(
+                f"embedding snapshot id {entry.id!r} similarity-text digest "
+                "must be a lowercase SHA-256 digest"
+            )
+        expected_digest = similarity_text_digest(entry)
+        if recorded_digest != expected_digest:
+            raise ValueError(
+                f"embedding snapshot id {entry.id!r} similarity-text digest mismatch: "
+                f"snapshot={recorded_digest}, declared={expected_digest}"
+            )
 
     dimensions = int(actual_backend["dimensions"])
     ordered_ids = [entry.id for entry in sorted(entries, key=lambda entry: entry.id)]

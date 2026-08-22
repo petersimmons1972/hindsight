@@ -124,16 +124,25 @@ def _write_snapshot(
     l1_digest: str = "a" * 64,
     cluster_digest: str = "b" * 64,
 ) -> None:
+    known_entries = {entry.id: entry for entry in _snapshot_entries()}
     path.write_text(
         json.dumps(
             {
-                "schema": "hindsight.embedding-snapshot/v2",
+                "schema": MODULE.SNAPSHOT_SCHEMA,
                 "provenance": {
                     "l1_sha256": l1_digest,
                     "cluster_sha256": cluster_digest,
                 },
                 "backend": backend,
                 "embeddings": vectors,
+                "similarity_text_sha256": {
+                    entry_id: (
+                        MODULE.similarity_text_digest(known_entries[entry_id])
+                        if entry_id in known_entries
+                        else "0" * 64
+                    )
+                    for entry_id in vectors
+                },
             }
         )
         + "\n",
@@ -265,6 +274,25 @@ def test_snapshot_rejects_stale_declared_digests(tmp_path: Path) -> None:
         )
 
 
+def test_snapshot_rejects_similarity_text_digest_mismatch(tmp_path: Path) -> None:
+    entries = _snapshot_entries()
+    identity = {"name": "http", "model": "model", "revision": "rev", "dimensions": 2}
+    snapshot = tmp_path / "embedding-snapshot.json"
+    _write_snapshot(snapshot, backend=identity, vectors={entry.id: [1.0, 0.0] for entry in entries})
+    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+    payload["similarity_text_sha256"]["snapshot-a"] = "0" * 64
+    snapshot.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"snapshot-a.*similarity-text digest mismatch"):
+        MODULE.load_embedding_snapshot(
+            snapshot,
+            entries,
+            identity,
+            expected_l1_digest="a" * 64,
+            expected_cluster_digest="b" * 64,
+        )
+
+
 def _write_l1(directory: Path, record_id: str = "item-a", instance: str = "first") -> None:
     directory.mkdir(parents=True, exist_ok=True)
     record = {
@@ -316,6 +344,11 @@ def test_capture_reuses_compatible_existing_vectors_and_requests_only_new_entrie
         "provenance": {"l1_sha256": "a" * 64, "cluster_sha256": "b" * 64},
         "backend": {"name": "http", "model": "fake", "revision": "r1", "dimensions": 2},
         "embeddings": {"old": [1.0, 0.0]},
+        "similarity_text_sha256": {
+            "old": MODULE.similarity_text_digest(
+                next(entry for entry in MODULE.load_entries(l1) if entry.id == "old")
+            )
+        },
     }) + "\n", encoding="utf-8")
     requested: list[list[str]] = []
 
@@ -335,6 +368,39 @@ def test_capture_reuses_compatible_existing_vectors_and_requests_only_new_entrie
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert requested == [[MODULE.similarity_text(MODULE.load_entries(l1)[0])]]
     assert payload["embeddings"] == {"new": [0.0, 1.0], "old": [1.0, 0.0]}
+
+
+def test_capture_reembeds_stable_id_when_similarity_text_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stable L1 id must never authorize reuse after its embedding text changes."""
+    l1 = tmp_path / "L1"
+    _write_l1(l1, record_id="stable", instance="original text")
+    cluster_code = tmp_path / "cluster.py"
+    cluster_code.write_text("stable code\n", encoding="utf-8")
+    output = tmp_path / "snapshot.json"
+    requested: list[list[str]] = []
+
+    def request_vectors(_base_url: str, texts: list[str], _timeout: float) -> np.ndarray:
+        requested.append(texts)
+        return np.asarray([[1.0, 0.0] if len(requested) == 1 else [0.0, 1.0]], dtype=np.float32)
+
+    monkeypatch.setattr(CAPTURE, "_request_vectors", request_vectors)
+    args = CAPTURE._parser().parse_args([
+        "--input-dir", str(l1), "--output", str(output),
+        "--model", "fake", "--revision", "r1", "--dimensions", "2",
+        "--cluster-code", str(cluster_code),
+    ])
+
+    CAPTURE.capture(args)
+    original_text = MODULE.similarity_text(MODULE.load_entries(l1)[0])
+    _write_l1(l1, record_id="stable", instance="changed text")
+    changed_text = MODULE.similarity_text(MODULE.load_entries(l1)[0])
+    CAPTURE.capture(args)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert requested == [[original_text], [changed_text]]
+    assert payload["embeddings"] == {"stable": [0.0, 1.0]}
 
 
 @pytest.mark.parametrize("changed_input", ["l1", "cluster"])
@@ -658,6 +724,12 @@ def test_atomic_snapshot_write_persists_recovery_name_before_replacement(
 def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(
     tmp_path: Path, monkeypatch
 ) -> None:
+    """Unchanged text reuses byte-stable vectors; explicit refresh replaces them.
+
+    This is the post-hindsight#144 contract: recapture with the same backend
+    identity does not consult live vectors for unchanged similarity text, while
+    ``--refresh-embeddings`` deliberately performs a complete live recapture.
+    """
     l1 = tmp_path / "L1"
     _write_l1(l1, "item-a", "first")
     record = json.loads((l1 / "one.jsonl").read_text())
@@ -681,6 +753,12 @@ def test_controlled_capture_is_loadable_exact_coverage_atomic_and_repeatable(
             "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
             "--model", "fake", "--revision", "r1", "--dimensions", "2",
             "--cluster-code", str(MODULE_PATH),
+        ]) == 0
+        assert output.read_bytes() == first_bytes
+        assert CAPTURE.main([
+            "--input-dir", str(l1), "--output", str(output), "--backend-url", url,
+            "--model", "fake", "--revision", "r1", "--dimensions", "2",
+            "--cluster-code", str(MODULE_PATH), "--refresh-embeddings",
         ]) == 0
     finally:
         server.shutdown()

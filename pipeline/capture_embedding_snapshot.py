@@ -190,13 +190,16 @@ def _atomic_write_json(
             rollback.unlink(missing_ok=True)
 
 
-def _reusable_embeddings(output: Path, backend: dict[str, object]) -> dict[str, list[object]]:
-    """Return prior vectors only when their format and backend identity are compatible.
+def _reusable_embeddings(
+    output: Path,
+    backend: dict[str, object],
+    similarity_text_sha256: dict[str, str],
+) -> dict[str, list[object]]:
+    """Return vectors whose format, backend, ID, and embedding text still match.
 
-    The L1 digest is deliberately not checked here: a canonical add changes it.
-    Replay checks the newly written digest after the release has rebuilt the
-    clusters.  Any malformed or differently-versioned prior snapshot falls
-    back to a complete recapture rather than being partially trusted.
+    A canonical add changes the whole-corpus L1 digest, so reuse is authorized
+    per entry instead. Any malformed or differently-versioned prior snapshot
+    falls back to a complete recapture rather than being partially trusted.
     """
     try:
         payload = json.loads(output.read_text(encoding="utf-8"))
@@ -207,6 +210,16 @@ def _reusable_embeddings(output: Path, backend: dict[str, object]) -> dict[str, 
         embeddings = payload.get("embeddings")
         if not isinstance(embeddings, dict) or not all(isinstance(key, str) for key in embeddings):
             return {}
+        recorded_text_digests = payload.get("similarity_text_sha256")
+        if not isinstance(recorded_text_digests, dict) or set(recorded_text_digests) != set(embeddings):
+            return {}
+        if any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in recorded_text_digests.values()
+        ):
+            return {}
         dimensions = int(backend["dimensions"])
         reusable: dict[str, list[object]] = {}
         for entry_id, vector in embeddings.items():
@@ -216,7 +229,8 @@ def _reusable_embeddings(output: Path, backend: dict[str, object]) -> dict[str, 
                 return {}
             if not np.isfinite(np.asarray(vector, dtype=np.float32)).all():
                 return {}
-            reusable[entry_id] = vector
+            if recorded_text_digests[entry_id] == similarity_text_sha256.get(entry_id):
+                reusable[entry_id] = vector
         return reusable
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return {}
@@ -232,6 +246,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--revision", required=True)
     parser.add_argument("--dimensions", type=int, required=True)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--refresh-embeddings",
+        action="store_true",
+        help="ignore reusable vectors and request fresh embeddings for every L1 entry",
+    )
     return parser
 
 
@@ -252,7 +271,12 @@ def capture(args: argparse.Namespace) -> None:
         or cluster.cluster_code_config_digest(args.cluster_code) != cluster_digest
     ):
         raise ValueError("provenance changed while capture inputs were being read")
-    reusable = _reusable_embeddings(args.output, backend)
+    text_digests = {entry.id: cluster.similarity_text_digest(entry) for entry in entries}
+    reusable = (
+        {}
+        if args.refresh_embeddings
+        else _reusable_embeddings(args.output, backend, text_digests)
+    )
     missing_entries = [entry for entry in entries if entry.id not in reusable]
     if missing_entries:
         texts = [cluster.similarity_text(entry) for entry in missing_entries]
@@ -279,6 +303,7 @@ def capture(args: argparse.Namespace) -> None:
         },
         "backend": backend,
         "embeddings": {entry.id: reusable[entry.id] for entry in entries},
+        "similarity_text_sha256": text_digests,
     }
 
     def verify_provenance_unchanged() -> None:

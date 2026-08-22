@@ -109,7 +109,7 @@
     }
   ],
   "provenance": {
-    "cluster_sha256": "0083d6387659a753fb90cf975221259db2a65eabddaffcea223736d2d5e00143",
+    "cluster_sha256": "c7156e487cbc9cf17eac040990192de2893d2c88fca746fac495aa3e94a2e743",
     "corpus_size": 736,
     "l1_sha256": "22e48043f9121458376cbc408f854c9c8a873787b2c8d0c6cdd49bbe891779fb"
   },

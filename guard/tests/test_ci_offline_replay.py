@@ -33,7 +33,7 @@ REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "942da6bc6fbd54a80f74d081e9accec4bbbb227b1c5daa6e1c51b898dc7e7e44"
+INTENDED_WORKFLOW_SHA256 = "8a9c3b3859d7501eebc86f1e7076a997c20d4275185eeea7fff6e6e221ba2ad0"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.

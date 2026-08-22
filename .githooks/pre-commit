@@ -38,7 +38,6 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     && { ! git -C "$REPO_ROOT" diff --quiet -- catalog/failure-modes.md catalog/id-ledger.txt \
          || ! git -C "$REPO_ROOT" diff --cached --quiet -- catalog/failure-modes.md catalog/id-ledger.txt; }; then
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
-    python3 "$REPO_ROOT/pipeline/cluster.py"
     # Reconcile ONLY the two L1 sources the regeneration above actually writes --
     # the same two named in GENERATED below. The unscoped run also reads four
     # sibling repos this commit never touched, so a backlog in any of them made
@@ -54,9 +53,23 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
         --source homelab-canon --source fleet-dispatch-schema
 
+    # L2 is released by add-failure-mode.sh's controlled snapshot transaction.
+    # Never regenerate it here through the live embedding backend: replay the
+    # released snapshot after L1 extraction and reject any provenance or
+    # partition mismatch instead.
+    if ! REPLAY_OUTPUT="$(python3 "$REPO_ROOT/pipeline/replay_l2.py")"; then
+        echo "ERROR: regenerated L2 artifacts do not replay from the committed embedding snapshot." >&2
+        exit 1
+    fi
+    if [[ "$REPLAY_OUTPUT" != "replay-l2: PASS:"* ]]; then
+        echo "ERROR: pipeline/replay_l2.py did not report replay-l2: PASS:." >&2
+        exit 1
+    fi
+
     GENERATED=(
         pipeline/L1/homelab-canon.jsonl
         pipeline/L1/fleet-dispatch-schema.jsonl
+        pipeline/L2/embedding-snapshot.json
         pipeline/L2/clusters.jsonl
     )
     if ! git -C "$REPO_ROOT" diff --quiet -- "${GENERATED[@]}"; then

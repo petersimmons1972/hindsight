@@ -746,6 +746,13 @@ PY
   printf '%s\n' '| FM-002 | A | new | new | Judgment |' >>"$STAGE/catalog/failure-modes.md"
   printf '%s\n' 'FM-002' >>"$STAGE/catalog/id-ledger.txt"
   git -C "$STAGE" add catalog/failure-modes.md catalog/id-ledger.txt
+  # The hook must only verify the controlled L2 release; it must not derive a
+  # replacement partition through the live backend.  Produce that release here
+  # but deliberately leave its artifacts unstaged for the first hook run.
+  run env TRACE="$WORK/hook-release-trace" python3 "$STAGE/pipeline/extract_mechanical.py"
+  [ "$status" -eq 0 ]
+  run env TRACE="$WORK/hook-release-trace" python3 "$STAGE/pipeline/capture_embedding_snapshot.py"
+  [ "$status" -eq 0 ]
 
   run bash "$STAGE/.githooks/pre-commit"
   # It still demands the regenerated artifacts be staged -- that gate is intact.
@@ -754,7 +761,8 @@ PY
   [[ "$output" == *"NOT CHECKED by this run"* ]]
 
   git -C "$STAGE" add pipeline/L1/homelab-canon.jsonl \
-    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/clusters.jsonl
+    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
+    pipeline/L2/clusters.jsonl
   run bash "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]
 }
@@ -786,17 +794,24 @@ PY
   printf '%s\n' 'FM-002' >>"$STAGE/catalog/id-ledger.txt"
   git -C "$STAGE" add catalog/failure-modes.md catalog/id-ledger.txt
   trace="$WORK/changed-trace"
+  run env TRACE="$trace" python3 "$STAGE/pipeline/extract_mechanical.py"
+  [ "$status" -eq 0 ]
+  run env TRACE="$trace" python3 "$STAGE/pipeline/capture_embedding_snapshot.py"
+  [ "$status" -eq 0 ]
+  : >"$trace"
 
   run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"pipeline/L1/homelab-canon.jsonl"* ]]
   [[ "$output" == *"pipeline/L1/fleet-dispatch-schema.jsonl"* ]]
+  [[ "$output" == *"pipeline/L2/embedding-snapshot.json"* ]]
   [[ "$output" == *"pipeline/L2/clusters.jsonl"* ]]
   [[ "$output" == *"stage"* ]]
 
   git -C "$STAGE" add pipeline/L1/homelab-canon.jsonl \
-    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/clusters.jsonl
+    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
+    pipeline/L2/clusters.jsonl
   : >"$trace"
   run env TRACE="$trace" bash "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]

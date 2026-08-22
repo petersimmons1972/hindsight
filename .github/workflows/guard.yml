@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up parser runtime
-        if: matrix.shard == 'tools'
+        if: matrix.shard != 'pytest-release'
         uses: actions/setup-node@v4
         with:
           node-version: 24.11.0

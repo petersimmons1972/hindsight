@@ -640,81 +640,13 @@ PYEOF
     REPLAY_OUTPUT="$(python3 "$REPO_ROOT/pipeline/replay_l2.py")"
     printf '%s\n' "$REPLAY_OUTPUT"
 
-    # These three literals are deliberately independent test oracles: they
-    # catch corpus drift made outside this filing flow. They are updated here,
-    # after the pipeline has reported its measured result, rather than derived
-    # at test time. Do not infer cluster count from entry count: the replay
-    # report is the sole source for both values.
-    python3 - "$REPLAY_OUTPUT" \
-        "$REPO_ROOT/pipeline/tests/test_replay_l2.py" \
-        "$REPO_ROOT/pipeline/tests/test_replay_l2_mutations.py" <<'PYEOF'
-import re
-import sys
-from pathlib import Path
-
-report, replay_test, mutations_test = sys.argv[1:]
-matches = re.findall(r"^replay-l2: PASS: (\d+) entries, (\d+) clusters$", report, flags=re.MULTILINE)
-if len(matches) != 1:
-    raise SystemExit(
-        "ERROR: replay pin update requires exactly one replay-l2 PASS report; "
-        f"found {len(matches)}"
-    )
-entries, clusters = matches[0]
-
-specifications = (
-    (
-        Path(replay_test),
-        "default replay output pin",
-        re.compile(
-            r'(assert REPLAY\.main\(\[\]\) == 0 and "PASS: )\d+ entries, \d+ clusters(" in capsys\.readouterr\(\)\.out)'
-        ),
-        rf'\g<1>{entries} entries, {clusters} clusters\g<2>',
-    ),
-    (
-        Path(mutations_test),
-        "offline replay stdout pin",
-        re.compile(
-            r'(assert captured\.out == "replay-l2: PASS: )\d+ entries, \d+ clusters(\\n")'
-        ),
-        rf'\g<1>{entries} entries, {clusters} clusters\g<2>',
-    ),
-    (
-        Path(mutations_test),
-        "embedding cardinality pin",
-        re.compile(r'(assert len\(payload\["embeddings"\]\) == )\d+'),
-        rf'\g<1>{entries}',
-    ),
-)
-
-rewrites: dict[Path, str] = {}
-for path, label, pattern, replacement in specifications:
-    try:
-        source = rewrites.get(path, path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise SystemExit(f"ERROR: replay pin {label} is unavailable: {path}: {exc}") from exc
-    updated, count = pattern.subn(replacement, source)
-    if count != 1:
-        raise SystemExit(
-            f"ERROR: replay pin {label} is unlocatable or ambiguous in {path}: found {count} matches"
-        )
-    rewrites[path] = updated
-
-# All locations were validated before the first write. The surrounding shell
-# transaction has snapshots for both source files, so any later write error is
-# restored by its existing undo trap.
-for path, updated in rewrites.items():
-    path.write_text(updated, encoding="utf-8")
-PYEOF
-
-    (
-        cd "$REPO_ROOT"
-        env -u PYTEST_ADDOPTS PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-            python3 -m pytest \
-            "$REPO_ROOT/pipeline/tests/test_replay_l2.py" \
-            "$REPO_ROOT/pipeline/tests/test_replay_l2_mutations.py" \
-            -q -p no:cacheprovider \
-            -k 'test_committed_snapshot_replays_through_real_default_loader or test_default_committed_replay_succeeds_with_network_poisoned'
-    )
+    # Replay pins are updated and verified by one plain-Python registry.  This
+    # deliberately does not invoke pytest: ambient collection/plugin settings
+    # can make a test runner exit zero without executing a test.  The verifier
+    # itself runs the real replay, reads the snapshot cardinality, compares all
+    # registered literals, and derives its exit status from those comparisons.
+    python3 "$REPO_ROOT/pipeline/replay_pins.py" rewrite --repo-root "$REPO_ROOT"
+    python3 "$REPO_ROOT/pipeline/replay_pins.py" verify --repo-root "$REPO_ROOT"
 
     # Report every L1 source so consumer-sync drift remains a visible health
     # signal, but gate this write only on homelab-canon: it is the sole source

@@ -383,13 +383,7 @@ def test_successful_canonical_add_derives_all_replay_pins_and_undo_restores_them
 
 
 def test_bad_pin_written_by_the_transaction_fails_and_rolls_back(sandbox, tmp_path: Path) -> None:
-    """The pin update is not complete until its own tests pass.
-
-    The Python shim corrupts one freshly-written literal immediately after the
-    production updater succeeds.  Before hindsight#138, the filing reported
-    success; the regression is that it must run the two pin test files, fail,
-    and restore the complete transaction.
-    """
+    """The direct pin verifier must reject and roll back a freshly bad literal."""
     repo = sandbox("honest")
     protected = [
         repo / CATALOG_REL,
@@ -415,17 +409,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-if sys.argv[1:3] == ["-m", "pytest"]:
-    pin = Path(next(argument for argument in sys.argv[3:] if argument.endswith("pipeline/tests/test_replay_l2.py")))
-    assert "PASS: 999999 entries, 999999 clusters" in pin.read_text(encoding="utf-8")
-    print("forced bad replay pin")
-    raise SystemExit(1)
-
 result = subprocess.run([sys.executable, *sys.argv[1:]])
-if result.returncode == 0 and sys.argv[1:2] == ["-"] and any(
-    argument.endswith("pipeline/tests/test_replay_l2.py") for argument in sys.argv[2:]
-):
-    pin = Path(next(argument for argument in sys.argv[2:] if argument.endswith("pipeline/tests/test_replay_l2.py")))
+if result.returncode == 0 and Path(sys.argv[1]).name == "replay_pins.py" and "rewrite" in sys.argv[2:]:
+    pin = Path(sys.argv[1]).parents[1] / "pipeline/tests/test_replay_l2.py"
     source = pin.read_text(encoding="utf-8")
     pin.write_text(re.sub(r"PASS: \\d+ entries, \\d+ clusters", "PASS: 999999 entries, 999999 clusters", source, count=1), encoding="utf-8")
 sys.exit(result.returncode)
@@ -449,8 +435,8 @@ sys.exit(result.returncode)
     assert added.returncode != 0, _report(
         "the filing reported success after a wrong pin was written", added
     )
-    assert "forced bad replay pin" in added.stdout.lower(), _report(
-        "the re-verification did not report the bad replay pin", added
+    assert "replay pin default replay output pin" in added.stdout.lower(), _report(
+        "the direct verifier did not report the bad replay pin", added
     )
     assert {path: _digest(path) for path in protected} == before
 
@@ -601,6 +587,36 @@ def test_stale_literal_replay_pins_fail_after_successful_add(sandbox) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("pin_name", "relative", "pattern", "replacement"),
+    [
+        ("default replay output pin", PIN_RELATIVES[0], r'PASS: \d+ entries, \d+ clusters', "PASS: 999999 entries, 999999 clusters"),
+        ("offline replay stdout pin", PIN_RELATIVES[1], r'PASS: \d+ entries, \d+ clusters', "PASS: 999999 entries, 999999 clusters"),
+        ("embedding cardinality pin", PIN_RELATIVES[1], r'len\(payload\["embeddings"\]\) == \d+', 'len(payload["embeddings"]) == 999999'),
+    ],
+)
+def test_direct_replay_pin_verifier_rejects_each_corrupted_pin(
+    sandbox, pin_name: str, relative: Path, pattern: str, replacement: str
+) -> None:
+    """Each literal is independently compared by plain Python, not pytest."""
+    repo = sandbox("honest")
+    path = repo / relative
+    source = path.read_text(encoding="utf-8")
+    corrupted, count = re.subn(pattern, replacement, source, count=1)
+    assert count == 1
+    path.write_text(corrupted, encoding="utf-8")
+
+    verified = _run(
+        [sys.executable, "pipeline/replay_pins.py", "verify", "--repo-root", str(repo)],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert verified.returncode != 0, _report("corrupted pin passed direct verification", verified)
+    assert f"replay pin {pin_name}" in verified.stdout, _report(
+        "direct verifier did not name the corrupted pin", verified
+    )
+
+
 # ── the negatives: an add without a real release must be caught ───────────────
 
 
@@ -666,20 +682,38 @@ def test_destroyed_snapshot_is_restored_when_the_add_rolls_back(sandbox) -> None
     assert _replay(repo).returncode == 0
 
 
-def test_add_ignores_ambient_pytest_collect_only_and_executes_pins(sandbox) -> None:
-    """A collection-only override cannot suppress the replay-pin test run."""
+@pytest.mark.parametrize(
+    ("attack", "extra_env", "pytest_ini"),
+    [
+        ("PYTEST_PLUGINS=skipall", {"PYTEST_PLUGINS": "skipall"}, None),
+        ("PYTEST_PLUGINS=spoof", {"PYTEST_PLUGINS": "spoof"}, None),
+        ("PYTEST_ADDOPTS=--collect-only", {"PYTEST_ADDOPTS": "--collect-only"}, None),
+        ("pytest.ini addopts=--collect-only", {}, "[pytest]\naddopts = --collect-only\n"),
+    ],
+)
+def test_add_directly_verifies_pins_despite_hostile_pytest_configuration(
+    sandbox, attack: str, extra_env: dict[str, str], pytest_ini: str | None
+) -> None:
+    """The write path has no pytest subprocess for these attacks to suppress."""
     repo = sandbox("honest")
+    if pytest_ini is not None:
+        (repo / "pytest.ini").write_text(pytest_ini, encoding="utf-8")
     added = _add(
         repo,
-        "ambient pytest collection-only must not certify a replay-pin update",
-        extra_env={"PYTEST_ADDOPTS": "--collect-only"},
+        f"hostile pytest configuration must not certify a replay pin: {attack}",
+        extra_env=extra_env,
     )
 
     assert added.returncode == 0, _report(
-        "the add did not complete after ignoring ambient pytest collection-only", added
+        f"the add did not complete under {attack}", added
     )
-    assert "2 passed" in added.stdout, _report(
-        "ambient pytest collection-only suppressed replay-pin execution", added
+    verified = _run(
+        [sys.executable, "pipeline/replay_pins.py", "verify", "--repo-root", str(repo)],
+        repo,
+        CHECK_TIMEOUT,
+    )
+    assert verified.returncode == 0, _report(
+        f"{attack} left a replay pin incorrect after a successful add", added, verified
     )
 
 

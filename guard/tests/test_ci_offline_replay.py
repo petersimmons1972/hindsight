@@ -33,7 +33,7 @@ REQUIRE_REAL_CI = REPO / "bin" / "require-real-ci.sh"
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "7f5182b3744efeb3b347e14f27c59317e4d821b8590cbd5aca96c2af9f5d306a"
+INTENDED_WORKFLOW_SHA256 = "f6b030026082a576e0507a1e577e9c371794abb25f4c3cd2dcbcf9601a8ed7fe"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -46,6 +46,10 @@ _NEGATION = re.compile(
 _CI = re.compile(r"\bCI\b")
 _SOURCE_ARG = re.compile(r"--source[=\s]+(?:'([^']*)'|\"([^\"]*)\"|([^\s\\]+))")
 _GATE_ARG = re.compile(r"--gate[=\s]+(?:'([^']*)'|\"([^\"]*)\"|([^\s\\]+))")
+_MATRIX_SHARD_LIST = re.compile(r"(?m)^        shard: \[([^\]\n]+)\]$")
+_STEP_SHARD_IF = re.compile(
+    r"^        if: matrix\.shard\s*(==|!=)\s*'([^']+)'$"
+)
 
 
 # ── evidence loaders: an unreadable evidence source must FAIL, never skip ─────
@@ -81,6 +85,27 @@ def _step_blocks(workflow: str) -> list[tuple[str, ...]]:
         elif blocks and (line.startswith("        ") or not line.strip()):
             blocks[-1].append(line)
     return [tuple(block) for block in blocks]
+
+
+def _declared_matrix_shards(workflow: str) -> tuple[str, ...]:
+    """Return the one declared matrix.shard list, failing on ambiguity."""
+    declarations = _MATRIX_SHARD_LIST.findall(workflow)
+    assert len(declarations) == 1, (
+        "guard.yml must declare exactly one inline matrix.shard list; found "
+        f"{len(declarations)}"
+    )
+    shards = tuple(item.strip() for item in declarations[0].split(","))
+    assert shards and all(shards), (
+        "matrix.shard must declare at least one non-empty value"
+    )
+    assert len(shards) == len(set(shards)), (
+        f"matrix.shard contains duplicate values: {shards}"
+    )
+    return shards
+
+
+def _step_label(block: tuple[str, ...]) -> str:
+    return block[0].removeprefix("      - ")
 
 
 def _reconcile_commands(workflow: str) -> list[str]:
@@ -186,6 +211,65 @@ def test_pinned_workflow_evidence_source_must_be_present() -> None:
     )
 
 
+def test_every_step_shard_literal_is_declared() -> None:
+    workflow = _read(WORKFLOW)
+    declared = _declared_matrix_shards(workflow)
+    guarded_steps = 0
+
+    for block in _step_blocks(workflow):
+        shard_lines = [line for line in block if "matrix.shard" in line]
+        if not shard_lines:
+            continue
+        assert len(shard_lines) == 1, (
+            f"{_step_label(block)} must have exactly one matrix.shard condition; "
+            f"found {shard_lines}"
+        )
+        comparison = _STEP_SHARD_IF.fullmatch(shard_lines[0])
+        assert comparison is not None, (
+            f"{_step_label(block)} has an unsupported matrix.shard condition: "
+            f"{shard_lines[0].strip()!r}"
+        )
+        literal = comparison.group(2)
+        assert literal in declared, (
+            f"{_step_label(block)} uses unknown matrix.shard literal {literal!r}; "
+            f"declared shards are {declared}"
+        )
+        guarded_steps += 1
+
+    assert guarded_steps, "guard.yml has no step-level matrix.shard conditions"
+
+
+def test_pytest_steps_are_gated_to_their_own_shards() -> None:
+    workflow = _read(WORKFLOW)
+    release_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0] == "      - name: Run Python tests (release shard)"
+    ]
+    assert release_steps == [(
+        "      - name: Run Python tests (release shard)",
+        "        if: matrix.shard == 'pytest-release'",
+        (
+            "        run: python3 -m pytest "
+            "bin/tests/test_add_failure_mode_release.py -n 3 --dist=load "
+            "--max-worker-restart=0 -q --durations=25"
+        ),
+    )]
+
+    rest_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0] == "      - name: Run Python tests (remaining shard)"
+    ]
+    assert rest_steps == [(
+        "      - name: Run Python tests (remaining shard)",
+        "        if: matrix.shard == 'pytest-rest'",
+        (
+            "        run: python3 -m pytest guard/tests/ pipeline/tests/ "
+            "bin/tests/ --ignore=bin/tests/test_add_failure_mode_release.py "
+            "-q --durations=25"
+        ),
+    )]
+
+
 def test_matrix_timeouts_render_to_measured_caps() -> None:
     workflow = _read(WORKFLOW)
     timeout_lines = [
@@ -239,9 +323,18 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
         "Acorn and must receive the same pinned parser runtime as tools"
     )
 
+    dependency_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0] == "      - name: Install Python dependencies"
+    ]
+    assert dependency_steps == [(
+        "      - name: Install Python dependencies",
+        "        run: python3 -m pip install numpy pytest pytest-xdist==3.8.0",
+    )]
+
     release = (
         "python3 -m pytest bin/tests/test_add_failure_mode_release.py "
-        "-q --durations=25"
+        "-n 3 --dist=load --max-worker-restart=0 -q --durations=25"
     )
     remainder = (
         "python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ "
@@ -249,8 +342,8 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     )
     assert workflow.count(release) == 1
     assert workflow.count(remainder) == 1
-    assert "pytest-xdist" not in workflow
-    assert " -n " not in workflow
+    assert workflow.count("pytest-xdist==3.8.0") == 1
+    assert workflow.count(" -n 3 ") == 1
 
     headers = [block[0] for block in _step_blocks(workflow)]
     assert headers == [

@@ -48,7 +48,7 @@ jobs:
           python3 -m venv --system-site-packages .venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - name: Install Python dependencies
-        run: python3 -m pip install numpy pytest
+        run: python3 -m pip install numpy pytest pytest-xdist==3.8.0
       - name: Report parser dependencies
         if: matrix.shard == 'tools'
         run: |
@@ -59,7 +59,7 @@ jobs:
         run: python3 guard/failure_mode_catalog_guard.py
       - name: Run Python tests (release shard)
         if: matrix.shard == 'pytest-release'
-        run: python3 -m pytest bin/tests/test_add_failure_mode_release.py -q --durations=25
+        run: python3 -m pytest bin/tests/test_add_failure_mode_release.py -n 3 --dist=load --max-worker-restart=0 -q --durations=25
       - name: Run Python tests (remaining shard)
         if: matrix.shard == 'pytest-rest'
         run: python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ --ignore=bin/tests/test_add_failure_mode_release.py -q --durations=25

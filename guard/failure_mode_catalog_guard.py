@@ -21,7 +21,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-ROW_RE = re.compile(r"^\| (FM-(\d{2,3})) \|")
+CANONICAL_ID_RE = re.compile(r"^FM-(\d{2,3})$")
+SUPERSEDES_CLAIM_RE = re.compile(r"\bSupersedes (FM-\d{2,3})\b")
+SUPERSEDED_TOMBSTONE_RE = re.compile(r"\bSUPERSEDED by (FM-\d{2,3})\b")
+# These two prose-only relationships predate the transactional correction path
+# and cannot be repaired without rewriting canonical catalog history.  Exact
+# pairs are grandfathered; every later relationship must carry both markers.
+LEGACY_UNBOUND_SUPERSESSION_PAIRS = frozenset(
+    {
+        ("FM-377", "FM-374"),
+        ("FM-378", "FM-375"),
+    }
+)
 # Legacy schemes are only a defect when used as a ROW ID. The same strings
 # appear legitimately as provenance annotations inside the bug-class column
 # (e.g. "Container Runtime - Design (FM-RC-01)") and must not be flagged.
@@ -632,13 +643,17 @@ def machine_enforcement_bearing(report: EnforcementReport) -> int:
 def parse_rows(text: str) -> list[CatalogRow]:
     rows: list[CatalogRow] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
-        match = ROW_RE.match(line)
+        if not line.startswith("|") or "|" not in line[1:]:
+            continue
+        first_cell, _separator, _remainder = line[1:].partition("|")
+        fm_id = first_cell.strip()
+        match = CANONICAL_ID_RE.fullmatch(fm_id)
         if not match:
             continue
         rows.append(
             CatalogRow(
-                fm_id=match.group(1),
-                number=int(match.group(2)),
+                fm_id=fm_id,
+                number=int(match.group(1)),
                 line=line_number,
             )
         )
@@ -737,6 +752,33 @@ def validate_catalog(
             errors.append(
                 f"duplicate canonical ID {fm_id} on lines {', '.join(map(str, lines))}"
             )
+
+    catalog_lines = text.splitlines()
+    claims: set[tuple[str, str]] = set()
+    tombstones: set[tuple[str, str]] = set()
+    for row in rows:
+        row_text = catalog_lines[row.line - 1]
+        claims.update(
+            (row.fm_id, target)
+            for target in SUPERSEDES_CLAIM_RE.findall(row_text)
+        )
+        tombstones.update(
+            (superseding, row.fm_id)
+            for superseding in SUPERSEDED_TOMBSTONE_RE.findall(row_text)
+        )
+
+    for superseding, target in sorted(
+        claims - tombstones - LEGACY_UNBOUND_SUPERSESSION_PAIRS
+    ):
+        errors.append(
+            f"supersession mismatch: {superseding} claims Supersedes {target}, "
+            f"but {target} is not tombstoned as SUPERSEDED by {superseding}"
+        )
+    for superseding, target in sorted(tombstones - claims):
+        errors.append(
+            f"supersession mismatch: {target} is tombstoned as SUPERSEDED by "
+            f"{superseding}, but {superseding} does not claim Supersedes {target}"
+        )
 
     # G3: the advisory ordering rule was REMOVED here, not demoted again.
     # Measured on 150 rows: zero gaps, zero duplicates, five out-of-order

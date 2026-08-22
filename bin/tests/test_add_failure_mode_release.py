@@ -435,6 +435,23 @@ def test_correction_tombstones_original_and_appends_superseding_row(
     assert guard.returncode == 0, _report("the committed correction pair failed its guard", guard)
 
 
+def test_add_cannot_smuggle_supersedes_claim_without_tombstone(sandbox) -> None:
+    """The ordinary add path cannot publish one half of a correction pair."""
+    repo = sandbox("honest")
+    catalog = repo / CATALOG_REL
+    ledger = repo / LEDGER_REL
+    before = (catalog.read_bytes(), ledger.read_bytes())
+
+    added = _add(repo, "an ordinary filing that claims Supersedes FM-85")
+
+    assert added.returncode != 0, _report(
+        "add-failure-mode.sh accepted an unbound supersession claim", added
+    )
+    assert "claims Supersedes FM-85" in added.stdout, added.stdout
+    assert "FM-85 is not tombstoned" in added.stdout, added.stdout
+    assert (catalog.read_bytes(), ledger.read_bytes()) == before
+
+
 def test_sigkill_before_atomic_catalog_exchange_leaves_the_old_pair(sandbox) -> None:
     """A kill after preparation may expose neither a half row nor a half ledger."""
     repo = sandbox("honest")

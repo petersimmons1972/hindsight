@@ -98,8 +98,8 @@
   ],
   "provenance": {
     "cluster_sha256": "46bf6281e0d8e6897b7d95fcd4db8424655835695c3b278f3704533aac92814e",
-    "corpus_size": 739,
-    "l1_sha256": "8665425467de3e6b4c2b9a90adcd565eb00ad3b25422713f4a701563d9015141"
+    "corpus_size": 745,
+    "l1_sha256": "02b05657bd8f89c8dd696b706ebf3d0e8788b46a13caf8313ed141fafea0d33e"
   },
   "reconciled_floors": {
     "released": {

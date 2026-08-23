@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-217 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+221 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -221,3 +221,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-423** [NARROW] A CI-red diagnosis must be checked against a step that actually executed on the cited branch and commit
 - **FM-425** [NARROW] A mutation gate for an any-of-N or presence check must corrupt the specific identity under test while leaving plausible neighbors intact.
 - **FM-426** [NARROW] A pre-commit gate must snapshot and restore files from private copies; it must never use version-control restore commands against the working tree under test.
+- **FM-427** [NARROW] Change-scoped acceptance must compare findings and gitlinks against a captured baseline, not require repository-wide absolute zero
+- **FM-428** [NARROW] Text-existence guard passes when guarded behavior is disabled but source text is left intact
+- **FM-429** [NARROW] Rewriting a text-matching security guard produces a narrower recognizer than the one it replaces, regressing vs the prior version
+- **FM-431** [NARROW] git worktree isolation protects files per-worktree but not git CONFIG, so a lane can silently weaken shared state (e.g. core.hooksPath) for every worktree and the primary checkout

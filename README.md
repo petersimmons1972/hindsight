@@ -76,10 +76,14 @@ branch-controlled hooks, such as required CI and the merge gate.
 
 Because `core.hooksPath` is shared clone configuration, the installer first
 requires every currently registered worktree to contain executable, non-symlink
-hooks and the worktree verifier. Its final operation is Git's atomic config
-write; it performs no fallible work after that write. Re-run the installer after
-adding a worktree so the inventory is checked again. A worktree added later from
-an older revision can otherwise lack the branch-controlled tripwire entirely.
+hooks. A revision whose `HEAD` contains the worktree verifier must also have that
+verifier present as a regular non-symlink executable. A legacy revision whose
+`HEAD` predates the verifier is armable as-is: the shared relative setting selects
+its own older hooks without copying untracked files into that worktree. The
+installer's final operation is Git's atomic config write; it performs no fallible
+work after that write. Re-run the installer after adding a worktree so the
+inventory is checked again. A worktree added later from a revision that lacks
+`.githooks/` can otherwise lack the branch-controlled tripwire entirely.
 
 ## Adding an entry
 

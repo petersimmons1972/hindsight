@@ -16,7 +16,7 @@ reject_ambiguous_git_environment() {
       die "refusing repository-routing Git environment variable $name"
     fi
   done
-  for name in GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; do
+  for name in GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS; do
     if [[ -v "$name" ]]; then
       die "refusing command-scope Git configuration from $name"
     fi
@@ -30,22 +30,102 @@ assert_regular_executable() {
   fi
 }
 
+assert_verifier_for_revision() {
+  local worktree="$1"
+  local physical="$2"
+  local verifier_entry
+
+  if ! verifier_entry="$(
+    git -C "$physical" ls-tree --name-only HEAD -- bin/verify-hook-worktree.sh 2>&1
+  )"; then
+    die "cannot inspect registered worktree HEAD: $worktree"
+  fi
+  case "$verifier_entry" in
+    '') ;;
+    bin/verify-hook-worktree.sh)
+      assert_regular_executable "$physical/bin/verify-hook-worktree.sh"
+      ;;
+    *) die "Git returned an unexpected verifier entry for $worktree" ;;
+  esac
+}
+
+read_repository_worktree_config() {
+  local output rc
+  local -a values=()
+
+  if output="$(
+    git config --file "$COMMON_CONFIG" --type=bool --get-all extensions.worktreeConfig 2>&1
+  )"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 1 ]; then
+    WORKTREE_CONFIG_ENABLED=0
+    return
+  fi
+  if [ "$rc" -ne 0 ]; then
+    die "cannot read extensions.worktreeConfig as a repository boolean: $output"
+  fi
+
+  mapfile -t values <<<"$output"
+  if [ "${#values[@]}" -ne 1 ]; then
+    die "expected exactly one repository extensions.worktreeConfig value"
+  fi
+  case "${values[0]}" in
+    true) WORKTREE_CONFIG_ENABLED=1 ;;
+    false) WORKTREE_CONFIG_ENABLED=0 ;;
+    *) die "Git returned an invalid normalized extensions.worktreeConfig value" ;;
+  esac
+}
+
 assert_no_higher_priority_hookspath() {
-  local entry origin
+  local entry origin output rc worktree physical
   local -a worktree_values=()
   local -a local_entries=()
 
-  mapfile -t worktree_values < <(
-    git -C "$REPO_ROOT" config --worktree --get-all core.hooksPath 2>/dev/null || true
-  )
-  if [ "${#worktree_values[@]}" -ne 0 ]; then
-    die "a higher-priority worktree core.hooksPath override is active"
+  read_repository_worktree_config
+  if [ "$WORKTREE_CONFIG_ENABLED" -eq 1 ]; then
+    while IFS= read -r -d '' entry; do
+      case "$entry" in
+        'worktree '*)
+          worktree="${entry#worktree }"
+          if [ ! -d "$worktree" ]; then
+            die "registered worktree is unavailable: $worktree; prune or repair it first"
+          fi
+          physical="$(cd "$worktree" && pwd -P)"
+          if output="$(
+            git -C "$physical" config --worktree --get-all core.hooksPath 2>&1
+          )"; then
+            rc=0
+          else
+            rc=$?
+          fi
+          if [ "$rc" -eq 0 ]; then
+            mapfile -t worktree_values <<<"$output"
+            if [ "${#worktree_values[@]}" -ne 0 ]; then
+              die "a higher-priority worktree core.hooksPath override is active in $worktree"
+            fi
+          elif [ "$rc" -ne 1 ]; then
+            die "cannot inspect worktree core.hooksPath in $worktree: $output"
+          fi
+          ;;
+      esac
+    done < <(git -C "$REPO_ROOT" worktree list --porcelain -z)
   fi
 
-  mapfile -t local_entries < <(
-    git -C "$REPO_ROOT" config --local --includes --show-origin --get-all core.hooksPath \
-      2>/dev/null || true
-  )
+  if output="$(
+    git config --file "$COMMON_CONFIG" --includes --show-origin --get-all core.hooksPath 2>&1
+  )"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
+    mapfile -t local_entries <<<"$output"
+  elif [ "$rc" -ne 1 ]; then
+    die "cannot inspect direct local core.hooksPath: $output"
+  fi
   if [ "${#local_entries[@]}" -gt 1 ]; then
     die "expected exactly one direct local core.hooksPath or none, found ${#local_entries[@]}"
   fi
@@ -75,7 +155,7 @@ assert_relative_hook_resolution() {
           die "registered worktree is unavailable: $worktree; prune or repair it first"
         fi
         physical="$(cd "$worktree" && pwd -P)"
-        assert_regular_executable "$physical/bin/verify-hook-worktree.sh"
+        assert_verifier_for_revision "$worktree" "$physical"
         for hook in pre-commit pre-push; do
           assert_regular_executable "$physical/.githooks/$hook"
           resolved="$(

@@ -89,7 +89,7 @@ write_kill_at_config_handoff_git() {
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'case " $* " in' \
-    '  *" config --local --replace-all core.hooksPath .githooks "*)' \
+    '  *" config --local "*"core.hooksPath .githooks "*)' \
     '    printf "reached\n" >"$HANDOFF_MARKER"' \
     '    kill -KILL $$' \
     '    ;;' \
@@ -315,7 +315,21 @@ run_installer_from_linked() {
   [ "$status" -eq 1 ]
 }
 
-@test "malformed repository worktreeConfig fails before changing shared config" {
+@test "false repository worktreeConfig skips the aliased worktree scope without changing it" {
+  make_single_fixture
+  absolute_hooks="$PRIMARY/.githooks"
+  git -C "$PRIMARY" config --local extensions.worktreeConfig false
+  git -C "$PRIMARY" config --local core.hooksPath "$absolute_hooks"
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$PRIMARY" config --local --get core.hooksPath)" = .githooks ]
+  [ "$(git -C "$PRIMARY" config --local --type=bool --get extensions.worktreeConfig)" = false ]
+}
+
+@test "malformed repository worktreeConfig fails closed before changing shared config" {
   make_single_fixture
   printf '[extensions]\n\tworktreeConfig = not-a-bool\n' >>"$PRIMARY/.git/config"
   before="$(config_hash)"
@@ -324,7 +338,8 @@ run_installer_from_linked() {
     _ "$PRIMARY" "$REPO_ROOT"
 
   [ "$status" -eq 1 ]
-  [[ "$output" == *"cannot read extensions.worktreeConfig as a repository boolean"* ]]
+  [[ "$output" == *"not inside a Git worktree"* || \
+    "$output" == *"cannot read extensions.worktreeConfig as a repository boolean"* ]]
   [ "$(config_hash)" = "$before" ]
 }
 
@@ -717,5 +732,9 @@ run_installer_from_linked() {
   run grep -F 'accident tripwire, not a security or merge gate' "$REPO_ROOT/README.md"
   [ "$status" -eq 0 ]
   run grep -F 'new worktree created from an older revision' "$REPO_ROOT/README.md"
+  [ "$status" -eq 0 ]
+  run grep -F 'legacy revision whose' "$REPO_ROOT/README.md"
+  [ "$status" -eq 0 ]
+  run grep -F 'without copying untracked files' "$REPO_ROOT/README.md"
   [ "$status" -eq 0 ]
 }

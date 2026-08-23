@@ -39,7 +39,16 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 GUARD="$REPO_ROOT/bin/check-reset-soft-commit.sh"
 # Not our repo (or guard removed): degrade to a no-op rather than to an error.
 [ -x "$GUARD" ] || exit 0
-bash "$REPO_ROOT/bin/verify-hook-worktree.sh" "$0"
+VERIFIER="$REPO_ROOT/bin/verify-hook-worktree.sh"
+if [ ! -x "$VERIFIER" ]; then
+    echo "ERROR: selected pre-push hook cannot verify the active worktree." >&2
+    echo "  Required executable is missing or not executable: $VERIFIER" >&2
+    echo "  This indicates version skew or a hook selected from another worktree." >&2
+    echo "Update this worktree to a revision containing bin/install-hooks.sh, then run it." >&2
+    echo "Refusing the push instead of running an unverified hook." >&2
+    exit 1
+fi
+bash "$VERIFIER" "$0"
 
 # stdin: <local_ref> <local_sha> <remote_ref> <remote_sha> per ref.
 TIP_ARGS=()

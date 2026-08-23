@@ -5,7 +5,16 @@ if ! REPO_ROOT="$(git rev-parse --show-toplevel)"; then
     echo "ERROR: pre-commit must run from inside the worktree being committed." >&2
     exit 1
 fi
-bash "$REPO_ROOT/bin/verify-hook-worktree.sh" "$0"
+VERIFIER="$REPO_ROOT/bin/verify-hook-worktree.sh"
+if [ ! -x "$VERIFIER" ]; then
+    echo "ERROR: selected pre-commit hook cannot verify the active worktree." >&2
+    echo "  Required executable is missing or not executable: $VERIFIER" >&2
+    echo "  This indicates version skew or a hook selected from another worktree." >&2
+    echo "Update this worktree to a revision containing bin/install-hooks.sh, then run it." >&2
+    echo "Refusing the commit instead of running an unverified hook." >&2
+    exit 1
+fi
+bash "$VERIFIER" "$0"
 python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py"
 
 # Plan-index truth (issue #92): load-bearing when the index or its evidence

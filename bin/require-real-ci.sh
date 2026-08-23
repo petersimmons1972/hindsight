@@ -3,7 +3,7 @@
 # genuinely, completely, successfully ran.
 #
 # Background (FM-149 / FM-150): this repo had CI runs sitting in `queued` for
-# eight hours because the runner scaleset didn't exist. The `guard` check
+# eight hours because the runner scaleset didn't exist. A required guard check
 # reported an EMPTY conclusion, which GitHub renders BLANK, not red — so
 # nothing flagged the problem and PRs merged on a gate that never executed.
 #
@@ -37,7 +37,10 @@ set -o pipefail
 PROG="$(basename "$0")"
 
 REPO="petersimmons1972/hindsight"
-REQUIRED_CSV="guard"
+# GitHub suffixes a matrix job's display name with its matrix value. Keep this
+# exact closed set aligned with .github/workflows/guard.yml; an unsuffixed
+# "guard" check is not emitted by that workflow.
+REQUIRED_CSV="guard (pytest-release),guard (pytest-rest),guard (tools)"
 JSON_FILE=""
 PR=""
 MAX_WAIT_MINUTES="15"

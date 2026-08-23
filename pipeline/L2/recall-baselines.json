@@ -39,9 +39,9 @@
         "together": 2
       },
       "dedup-identity-key": {
-        "fraction": 0.6666666666666666,
+        "fraction": 1.0,
         "members": 3,
-        "together": 2
+        "together": 3
       },
       "fail-silent-gate": {
         "fraction": 1.0,
@@ -98,8 +98,8 @@
   ],
   "provenance": {
     "cluster_sha256": "46bf6281e0d8e6897b7d95fcd4db8424655835695c3b278f3704533aac92814e",
-    "corpus_size": 745,
-    "l1_sha256": "02b05657bd8f89c8dd696b706ebf3d0e8788b46a13caf8313ed141fafea0d33e"
+    "corpus_size": 749,
+    "l1_sha256": "b534bf518314f3f6a65dad3709c4f930e2a1b739acb8897e9dde82024268fd0e"
   },
   "reconciled_floors": {
     "released": {

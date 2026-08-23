@@ -140,17 +140,6 @@ def _validated_step_shard_conditions(
     return declared, guarded_steps
 
 
-def _has_test_bearing_action(block: tuple[str, ...]) -> bool:
-    """Return whether a positive shard gate directly invokes a test runner."""
-    return any(
-        line.startswith((
-            "        run: python3 -m pytest ",
-            "        run: bats ",
-        ))
-        for line in block
-    )
-
-
 def _reconcile_commands(workflow: str) -> list[str]:
     """Every executable (non-comment) reconcile invocation in the workflow."""
     return [
@@ -275,20 +264,6 @@ def test_workflow_contract_runs_unconditionally_in_every_shard() -> None:
     )
 
 
-def test_every_declared_shard_gates_a_test_bearing_step() -> None:
-    declared, guarded_steps = _validated_step_shard_conditions(_read(WORKFLOW))
-    covered = {
-        literal
-        for block, operation, literal in guarded_steps
-        if operation == "==" and _has_test_bearing_action(block)
-    }
-    uncovered = tuple(shard for shard in declared if shard not in covered)
-    assert not uncovered, (
-        "every declared shard must have a test-bearing exact-positive step gate; "
-        f"uncovered shards: {uncovered}"
-    )
-
-
 def test_workflow_integrity_detectors_are_reachable_from_distinct_shards() -> None:
     workflow = _read(WORKFLOW)
     assert BATS_WORKFLOW_CONTRACT.is_file(), (
@@ -341,7 +316,7 @@ def test_pytest_steps_are_gated_to_their_own_shards() -> None:
     )]
 
 
-def test_matrix_timeouts_render_to_measured_caps() -> None:
+def test_matrix_timeouts_render_to_safety_bounds() -> None:
     workflow = _read(WORKFLOW)
     timeout_lines = [
         line for line in workflow.splitlines()

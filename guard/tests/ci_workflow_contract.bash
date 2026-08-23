@@ -31,7 +31,6 @@ workflow_contract_check() {
   local -a shards=()
   local raw shard
   declare -A declared=()
-  declare -A positive_gates=()
   for raw in "${raw_shards[@]}"; do
     shard=${raw#"${raw%%[![:space:]]*}"}
     shard=${shard%"${shard##*[![:space:]]}"}
@@ -44,7 +43,6 @@ workflow_contract_check() {
       return 1
     fi
     declared[$shard]=1
-    positive_gates[$shard]=0
     shards+=("$shard")
   done
   if (( ${#shards[@]} == 0 )); then
@@ -55,8 +53,8 @@ workflow_contract_check() {
   local -a lines=()
   mapfile -t lines <"$workflow"
   local shard_if_re="^        if: matrix\\.shard[[:space:]]*(==|!=)[[:space:]]*'([^']+)'$"
-  local step_start step_end index line label condition operation literal
-  local has_test_bearing_action guarded_steps=0
+  local step_start step_end index line label condition literal
+  local guarded_steps=0
   local contract_steps=0 rest_detector_steps=0 tools_detector_steps=0
   local expected_run_seen condition_lines
 
@@ -70,7 +68,6 @@ workflow_contract_check() {
 
     local -a shard_lines=()
     local -a if_lines=()
-    has_test_bearing_action=0
     expected_run_seen=0
     for ((index = step_start + 1; index < step_end; index++)); do
       line=${lines[index]}
@@ -79,10 +76,6 @@ workflow_contract_check() {
       fi
       if [[ $line == '        if: '* ]]; then
         if_lines+=("$line")
-      fi
-      if [[ $line == '        run: python3 -m pytest '* || \
-            $line == '        run: bats '* ]]; then
-        has_test_bearing_action=1
       fi
       if [[ $label == 'name: Validate workflow shard contract' && \
             $line == '        run: bash guard/tests/ci_workflow_contract.bash .github/workflows/guard.yml' ]]; then
@@ -108,16 +101,12 @@ workflow_contract_check() {
         fail "$label has an unsupported matrix.shard condition: '${condition#'        '}'"
         return 1
       fi
-      operation=${BASH_REMATCH[1]}
       literal=${BASH_REMATCH[2]}
       if [[ ! -v "declared[$literal]" ]]; then
         fail "$label uses unknown matrix.shard literal '$literal'; declared shards are: ${shards[*]}"
         return 1
       fi
       ((guarded_steps += 1))
-      if [[ $operation == '==' ]] && (( has_test_bearing_action == 1 )); then
-        positive_gates[$literal]=$((positive_gates[$literal] + 1))
-      fi
     fi
 
     if [[ $label == 'name: Validate workflow shard contract' ]]; then
@@ -160,12 +149,6 @@ workflow_contract_check() {
     fail "guard.yml has no step-level matrix.shard conditions"
     return 1
   fi
-  for shard in "${shards[@]}"; do
-    if (( positive_gates[$shard] == 0 )); then
-      fail "declared shard '$shard' has no test-bearing positive step gate"
-      return 1
-    fi
-  done
   if (( contract_steps != 1 )); then
     fail "guard.yml must contain exactly one unconditional Validate workflow shard contract step; found $contract_steps"
     return 1

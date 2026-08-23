@@ -34,7 +34,7 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "52145902e4cbee8e0b773216b35f2fbd475d23720227549d80e3b118047c8c01"
+INTENDED_WORKFLOW_SHA256 = "3c9513a494d12a2e4b0c9d35db3cc04766710de01144b4850866ce29d2b3b809"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -140,17 +140,15 @@ def _validated_step_shard_conditions(
     return declared, guarded_steps
 
 
-def _has_substantive_action(block: tuple[str, ...]) -> bool:
-    """Reject structural coverage supplied only by a canonical no-op action."""
-    for line in block:
-        if line.startswith("        uses: "):
-            return True
-        if not line.startswith("        run: "):
-            continue
-        action = line.removeprefix("        run: ").strip()
-        if not re.fullmatch(r"(?:true|:|exit\s+0|echo(?:\s+.*)?)", action):
-            return True
-    return False
+def _has_test_bearing_action(block: tuple[str, ...]) -> bool:
+    """Return whether a positive shard gate directly invokes a test runner."""
+    return any(
+        line.startswith((
+            "        run: python3 -m pytest ",
+            "        run: bats ",
+        ))
+        for line in block
+    )
 
 
 def _reconcile_commands(workflow: str) -> list[str]:
@@ -260,16 +258,33 @@ def test_every_step_shard_literal_is_declared() -> None:
     _validated_step_shard_conditions(_read(WORKFLOW))
 
 
-def test_every_declared_shard_gates_a_substantive_step() -> None:
+def test_workflow_contract_runs_unconditionally_in_every_shard() -> None:
+    contract_steps = [
+        block for block in _step_blocks(_read(WORKFLOW))
+        if block[0] == "      - name: Validate workflow shard contract"
+    ]
+    assert contract_steps == [(
+        "      - name: Validate workflow shard contract",
+        (
+            "        run: bash guard/tests/ci_workflow_contract.bash "
+            ".github/workflows/guard.yml"
+        ),
+    )], (
+        "the workflow contract must be an unconditional matrix pre-step; "
+        "a shard-specific test step cannot be its only execution anchor"
+    )
+
+
+def test_every_declared_shard_gates_a_test_bearing_step() -> None:
     declared, guarded_steps = _validated_step_shard_conditions(_read(WORKFLOW))
     covered = {
         literal
         for block, operation, literal in guarded_steps
-        if operation == "==" and _has_substantive_action(block)
+        if operation == "==" and _has_test_bearing_action(block)
     }
     uncovered = tuple(shard for shard in declared if shard not in covered)
     assert not uncovered, (
-        "every declared shard must have a substantive exact-positive step gate; "
+        "every declared shard must have a test-bearing exact-positive step gate; "
         f"uncovered shards: {uncovered}"
     )
 
@@ -404,6 +419,7 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     headers = [block[0] for block in _step_blocks(workflow)]
     assert headers == [
         "      - uses: actions/checkout@v4",
+        "      - name: Validate workflow shard contract",
         "      - name: Set up parser runtime",
         "      - name: Set up Bats parser runtime",
         "      - name: Set up virtualenv",

@@ -37,6 +37,10 @@ jobs:
     timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 30 || 30 }}
     steps:
       - uses: actions/checkout@v4
+      # This pre-step is deliberately unconditional: every expanded matrix job
+      # validates all shard gates before any shard-specific test can be skipped.
+      - name: Validate workflow shard contract
+        run: bash guard/tests/ci_workflow_contract.bash .github/workflows/guard.yml
       - name: Set up parser runtime
         if: matrix.shard != 'pytest-release'
         uses: actions/setup-node@v4

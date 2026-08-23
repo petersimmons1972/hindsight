@@ -56,8 +56,9 @@ workflow_contract_check() {
   mapfile -t lines <"$workflow"
   local shard_if_re="^        if: matrix\\.shard[[:space:]]*(==|!=)[[:space:]]*'([^']+)'$"
   local step_start step_end index line label condition operation literal
-  local action_value has_substantive_action guarded_steps=0
-  local rest_detector_steps=0 tools_detector_steps=0 expected_run_seen
+  local has_test_bearing_action guarded_steps=0
+  local contract_steps=0 rest_detector_steps=0 tools_detector_steps=0
+  local expected_run_seen condition_lines
 
   for ((step_start = 0; step_start < ${#lines[@]}; step_start++)); do
     [[ ${lines[step_start]} == '      - '* ]] || continue
@@ -68,20 +69,24 @@ workflow_contract_check() {
     done
 
     local -a shard_lines=()
-    has_substantive_action=0
+    local -a if_lines=()
+    has_test_bearing_action=0
     expected_run_seen=0
     for ((index = step_start + 1; index < step_end; index++)); do
       line=${lines[index]}
       if [[ $line == *matrix.shard* ]]; then
         shard_lines+=("$line")
       fi
-      if [[ $line == '        uses: '* ]]; then
-        has_substantive_action=1
-      elif [[ $line == '        run: '* ]]; then
-        action_value=${line#'        run: '}
-        if [[ ! $action_value =~ ^(true|:|exit[[:space:]]+0|echo([[:space:]].*)?)$ ]]; then
-          has_substantive_action=1
-        fi
+      if [[ $line == '        if: '* ]]; then
+        if_lines+=("$line")
+      fi
+      if [[ $line == '        run: python3 -m pytest '* || \
+            $line == '        run: bats '* ]]; then
+        has_test_bearing_action=1
+      fi
+      if [[ $label == 'name: Validate workflow shard contract' && \
+            $line == '        run: bash guard/tests/ci_workflow_contract.bash .github/workflows/guard.yml' ]]; then
+        expected_run_seen=1
       fi
       if [[ $label == 'name: Run Python tests (remaining shard)' && \
             $line == '        run: python3 -m pytest guard/tests/ pipeline/tests/ bin/tests/ --ignore=bin/tests/test_add_failure_mode_release.py -q --durations=25' ]]; then
@@ -110,12 +115,23 @@ workflow_contract_check() {
         return 1
       fi
       ((guarded_steps += 1))
-      if [[ $operation == '==' ]] && (( has_substantive_action == 1 )); then
+      if [[ $operation == '==' ]] && (( has_test_bearing_action == 1 )); then
         positive_gates[$literal]=$((positive_gates[$literal] + 1))
       fi
     fi
 
-    if [[ $label == 'name: Run Python tests (remaining shard)' ]]; then
+    if [[ $label == 'name: Validate workflow shard contract' ]]; then
+      ((contract_steps += 1))
+      condition_lines=${#if_lines[@]}
+      if (( condition_lines != 0 )); then
+        fail "Validate workflow shard contract must be unconditional; found $condition_lines if condition(s)"
+        return 1
+      fi
+      if (( expected_run_seen != 1 )); then
+        fail "Validate workflow shard contract must run the pinned contract command"
+        return 1
+      fi
+    elif [[ $label == 'name: Run Python tests (remaining shard)' ]]; then
       ((rest_detector_steps += 1))
       if [[ ${shard_lines[0]-} != "        if: matrix.shard == 'pytest-rest'" ]]; then
         fail "Run Python tests (remaining shard) must run on 'pytest-rest'"
@@ -146,10 +162,14 @@ workflow_contract_check() {
   fi
   for shard in "${shards[@]}"; do
     if (( positive_gates[$shard] == 0 )); then
-      fail "declared shard '$shard' has no substantive positive step gate"
+      fail "declared shard '$shard' has no test-bearing positive step gate"
       return 1
     fi
   done
+  if (( contract_steps != 1 )); then
+    fail "guard.yml must contain exactly one unconditional Validate workflow shard contract step; found $contract_steps"
+    return 1
+  fi
   if (( rest_detector_steps != 1 )); then
     fail "guard.yml must contain exactly one Run Python tests (remaining shard) detector step; found $rest_detector_steps"
     return 1

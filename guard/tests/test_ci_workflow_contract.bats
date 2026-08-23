@@ -17,6 +17,15 @@ teardown() {
   [[ "$output" == *"workflow-contract: OK"* ]]
 }
 
+@test "the contract is an unconditional pre-step in every matrix shard" {
+  sed "/- name: Validate workflow shard contract/{n;i\        if: matrix.shard == 'tools'
+  }" "$WORKFLOW" >"$TMPDIR/guard.yml"
+
+  run bash "$CONTRACT" "$TMPDIR/guard.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Validate workflow shard contract must be unconditional"* ]]
+}
+
 @test "tools rejects an undeclared pytest-rest gate" {
   sed "s/if: matrix.shard == 'pytest-rest'/if: matrix.shard == 'nope'/" \
     "$WORKFLOW" >"$TMPDIR/guard.yml"
@@ -53,7 +62,29 @@ teardown() {
 
   run bash "$CONTRACT" "$TMPDIR/guard.yml"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"declared shard 'ghost' has no substantive positive step gate"* ]]
+  [[ "$output" == *"declared shard 'ghost' has no test-bearing positive step gate"* ]]
+}
+
+@test "a block-scalar no-op does not count as a shard check" {
+  sed "s/shard: \[pytest-release, pytest-rest, tools\]/shard: [pytest-release, pytest-rest, tools, ghost]/" \
+    "$WORKFLOW" >"$TMPDIR/guard.yml"
+  sed -i "/- name: Validate canonical catalog/i\      - name: Ghost coverage\n        if: matrix.shard == 'ghost'\n        run: |\n          true" \
+    "$TMPDIR/guard.yml"
+
+  run bash "$CONTRACT" "$TMPDIR/guard.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declared shard 'ghost' has no test-bearing positive step gate"* ]]
+}
+
+@test "a Python no-op does not count as a shard check" {
+  sed "s/shard: \[pytest-release, pytest-rest, tools\]/shard: [pytest-release, pytest-rest, tools, ghost]/" \
+    "$WORKFLOW" >"$TMPDIR/guard.yml"
+  sed -i "/- name: Validate canonical catalog/i\      - name: Ghost coverage\n        if: matrix.shard == 'ghost'\n        run: python3 -c pass" \
+    "$TMPDIR/guard.yml"
+
+  run bash "$CONTRACT" "$TMPDIR/guard.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declared shard 'ghost' has no test-bearing positive step gate"* ]]
 }
 
 @test "a no-op gate cannot hide a remapped pytest-rest detector" {

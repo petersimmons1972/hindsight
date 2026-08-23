@@ -19,8 +19,21 @@ setup() {
 @test "T1: all required checks COMPLETED/SUCCESS -> exit 0" {
   # The one fixture-backed test of the production default: all three exact
   # GitHub matrix check names must be present and successful.
-  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_all_success.json"
+  # Fixture deliberately carries ONLY the matrix check names, no unsuffixed "guard":
+  # this is the one test of the production REQUIRED_CSV default, so it must FAIL if that
+  # default is reverted or a shard is dropped. t1_all_success.json keeps the unsuffixed
+  # entry for the many tests that pass --required guard explicitly.
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_matrix_only_success.json"
   [ "$status" -eq 0 ]
+}
+
+@test "T1b: the production default rejects a FAILED release shard (kills a dropped-shard REQUIRED_CSV)" {
+  # Behavioural pin for the CONTENT of the default REQUIRED_CSV, not just its behaviour on an
+  # all-success board. If any shard is dropped from the default list, this fixture stops being
+  # rejected and the test goes red. An all-success fixture cannot catch that, because a shorter
+  # required list is still fully satisfied by a board carrying extra successful checks.
+  run "$SCRIPT" 999 --json-file "$FIXTURES/t1_release_shard_failed.json"
+  [ "$status" -ne 0 ]
 }
 
 @test "T2: required check QUEUED with no conclusion -> exit 2, names the check" {

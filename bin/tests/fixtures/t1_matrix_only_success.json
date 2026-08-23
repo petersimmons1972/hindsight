@@ -1,0 +1,32 @@
+{
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "name": "guard (pytest-release)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (pytest-rest)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "guard (tools)",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS"
+    },
+    {
+      "__typename": "CheckRun",
+      "name": "GitGuardian Security Checks",
+      "status": "COMPLETED",
+      "conclusion": "SUCCESS",
+      "startedAt": "2026-08-01T22:10:51Z",
+      "completedAt": "2026-08-01T22:10:52Z",
+      "detailsUrl": "https://dashboard.gitguardian.com",
+      "workflowName": ""
+    }
+  ]
+}

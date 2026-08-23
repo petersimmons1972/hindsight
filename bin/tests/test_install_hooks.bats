@@ -49,6 +49,37 @@ make_linked_fixture() {
   git -C "$LINKED" commit -q --no-verify -m 'fix hook'
 }
 
+make_single_fixture() {
+  git init -q "$PRIMARY"
+  git -C "$PRIMARY" config user.name fixture
+  git -C "$PRIMARY" config user.email fixture@example.invalid
+  mkdir -p "$PRIMARY/.githooks" "$PRIMARY/bin"
+  write_marker_hook "$PRIMARY/.githooks/pre-commit" single-commit
+  write_marker_hook "$PRIMARY/.githooks/pre-push" single-push
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$PRIMARY/bin/verify-hook-worktree.sh"
+  chmod +x "$PRIMARY/bin/verify-hook-worktree.sh"
+  git -C "$PRIMARY" add .githooks bin/verify-hook-worktree.sh
+  git -C "$PRIMARY" commit -q --no-verify -m baseline
+}
+
+make_legacy_verifier_fixture() {
+  git init -q "$PRIMARY"
+  git -C "$PRIMARY" config user.name fixture
+  git -C "$PRIMARY" config user.email fixture@example.invalid
+  mkdir -p "$PRIMARY/.githooks" "$PRIMARY/bin"
+  write_marker_hook "$PRIMARY/.githooks/pre-commit" legacy-commit
+  write_marker_hook "$PRIMARY/.githooks/pre-push" legacy-push
+  git -C "$PRIMARY" add .githooks
+  git -C "$PRIMARY" commit -q --no-verify -m 'legacy hooks without verifier'
+  legacy_tip="$(git -C "$PRIMARY" rev-parse HEAD)"
+
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$PRIMARY/bin/verify-hook-worktree.sh"
+  chmod +x "$PRIMARY/bin/verify-hook-worktree.sh"
+  git -C "$PRIMARY" add bin/verify-hook-worktree.sh
+  git -C "$PRIMARY" commit -q --no-verify -m 'add verifier'
+  git -C "$PRIMARY" worktree add -q --detach "$STALE" "$legacy_tip"
+}
+
 config_hash() {
   git hash-object "$PRIMARY/.git/config"
 }
@@ -200,6 +231,116 @@ run_installer_from_linked() {
   [ "$(config_hash)" = "$before" ]
 }
 
+@test "single-worktree install ignores the aliased worktree read when the extension is unset" {
+  make_single_fixture
+  absolute_hooks="$PRIMARY/.githooks"
+  git -C "$PRIMARY" config --local core.hooksPath "$absolute_hooks"
+
+  run git -C "$PRIMARY" config --file "$PRIMARY/.git/config" \
+    --type=bool --get extensions.worktreeConfig
+  [ "$status" -eq 1 ]
+  [ "$(git -C "$PRIMARY" config --local --get core.hooksPath)" = "$absolute_hooks" ]
+  [ "$(git -C "$PRIMARY" config --worktree --get core.hooksPath)" = "$absolute_hooks" ]
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$PRIMARY" config --local --get-all core.hooksPath)" = .githooks ]
+  [ "$(git -C "$PRIMARY" config --local --get-all core.hooksPath | wc -l)" -eq 1 ]
+  [ "$(git -C "$PRIMARY" rev-parse --path-format=absolute --git-path hooks/pre-commit)" = \
+    "$PRIMARY/.githooks/pre-commit" ]
+  run git -C "$PRIMARY" config --file "$PRIMARY/.git/config" \
+    --type=bool --get extensions.worktreeConfig
+  [ "$status" -eq 1 ]
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already configured and verified"* ]]
+}
+
+@test "installer rejects a worktree override owned by a sibling worktree" {
+  make_linked_fixture
+  git -C "$PRIMARY" config extensions.worktreeConfig true
+  git -C "$LINKED" config --worktree core.hooksPath "$WORK/sibling-override"
+  before="$(config_hash)"
+  original="$(git -C "$PRIMARY" config --local --get core.hooksPath)"
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"higher-priority worktree core.hooksPath override"* ]]
+  [[ "$output" == *"$LINKED"* ]]
+  [ "$(git -C "$PRIMARY" config --local --get core.hooksPath)" = "$original" ]
+  [ "$(config_hash)" = "$before" ]
+}
+
+@test "installer recognizes all true Git boolean spellings for worktreeConfig" {
+  root_work="$WORK"
+  for spelling in yes on 1; do
+    WORK="$root_work/$spelling"
+    PRIMARY="$WORK/primary"
+    LINKED="$WORK/linked"
+    STALE="$WORK/stale"
+    TRACE="$WORK/hook-trace"
+    export TRACE
+    make_linked_fixture
+    git -C "$PRIMARY" config extensions.worktreeConfig "$spelling"
+    [ "$(git -C "$PRIMARY" config --local --type=bool --get extensions.worktreeConfig)" = true ]
+    git -C "$LINKED" config --worktree core.hooksPath "$WORK/override"
+
+    run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+      _ "$PRIMARY" "$REPO_ROOT"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"higher-priority worktree core.hooksPath override"* ]]
+  done
+}
+
+@test "global worktreeConfig does not create a repository worktree scope" {
+  make_single_fixture
+  absolute_hooks="$PRIMARY/.githooks"
+  git -C "$PRIMARY" config --local core.hooksPath "$absolute_hooks"
+  git config --file "$GLOBAL_CONFIG" extensions.worktreeConfig true
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 0 ]
+  [ "$(git -C "$PRIMARY" config --local --get core.hooksPath)" = .githooks ]
+  run git -C "$PRIMARY" config --file "$PRIMARY/.git/config" \
+    --type=bool --get extensions.worktreeConfig
+  [ "$status" -eq 1 ]
+}
+
+@test "malformed repository worktreeConfig fails before changing shared config" {
+  make_single_fixture
+  printf '[extensions]\n\tworktreeConfig = not-a-bool\n' >>"$PRIMARY/.git/config"
+  before="$(config_hash)"
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot read extensions.worktreeConfig as a repository boolean"* ]]
+  [ "$(config_hash)" = "$before" ]
+}
+
+@test "legacy GIT_CONFIG routing is rejected before changing shared config" {
+  make_single_fixture
+  before="$(config_hash)"
+
+  run env GIT_CONFIG="$WORK/decoy.gitconfig" \
+    bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"command-scope Git configuration from GIT_CONFIG"* ]]
+  [ "$(config_hash)" = "$before" ]
+}
+
 @test "installer rejects a false relative resolution before changing shared config" {
   make_linked_fixture
   fake_bin="$WORK/fake-bin"
@@ -253,6 +394,57 @@ run_installer_from_linked() {
   [[ "$output" == *"registered worktree is not armed"* ]]
   [[ "$output" == *"$STALE/.githooks/pre-push"* ]]
   [ "$(git -C "$LINKED" config --local --get core.hooksPath)" = "$original" ]
+  [ "$(config_hash)" = "$before" ]
+}
+
+@test "installer arms a legacy worktree whose HEAD predates the verifier" {
+  make_legacy_verifier_fixture
+  before_status="$(git -C "$STALE" status --porcelain)"
+  [ ! -e "$STALE/bin/verify-hook-worktree.sh" ]
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 0 ]
+  [ ! -e "$STALE/bin/verify-hook-worktree.sh" ]
+  [ "$(git -C "$STALE" status --porcelain)" = "$before_status" ]
+  [ "$(git -C "$PRIMARY" rev-parse --path-format=absolute --git-path hooks/pre-commit)" = \
+    "$PRIMARY/.githooks/pre-commit" ]
+  [ "$(git -C "$STALE" rev-parse --path-format=absolute --git-path hooks/pre-commit)" = \
+    "$STALE/.githooks/pre-commit" ]
+  : >"$TRACE"
+  git -C "$STALE" commit -q --allow-empty -m 'legacy worktree armed'
+  [ "$(<"$TRACE")" = legacy-commit ]
+}
+
+@test "installer refuses an unavailable registered sibling with the exact diagnostic" {
+  make_linked_fixture
+  git -C "$PRIMARY" worktree add -q -b unavailable "$STALE"
+  rm -rf "$STALE"
+  before="$(config_hash)"
+  original="$(git -C "$PRIMARY" config --local --get core.hooksPath)"
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 1 ]
+  [ "$output" = "install-hooks: registered worktree is unavailable: $STALE; prune or repair it first" ]
+  [ "$(git -C "$PRIMARY" config --local --get core.hooksPath)" = "$original" ]
+  [ "$(config_hash)" = "$before" ]
+}
+
+@test "HEAD-tracked verifier deleted from disk is broken rather than legacy" {
+  make_single_fixture
+  rm "$PRIMARY/bin/verify-hook-worktree.sh"
+  git -C "$PRIMARY" cat-file -e HEAD:bin/verify-hook-worktree.sh
+  before="$(config_hash)"
+
+  run bash -c 'cd "$1" && bash "$2/bin/install-hooks.sh"' \
+    _ "$PRIMARY" "$REPO_ROOT"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"registered worktree is not armed"* ]]
+  [[ "$output" == *"bin/verify-hook-worktree.sh"* ]]
   [ "$(config_hash)" = "$before" ]
 }
 

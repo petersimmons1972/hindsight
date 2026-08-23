@@ -296,6 +296,7 @@ make_staged_repo() {
     "$WORK/fleet/orchestration" "$WORK/fleet-dispatch/migrations" \
     "$WORK/claude-codex/docs"
   cp "$TOOL" "$STAGE/bin/add-failure-mode.sh"
+  cp "$ROOT/bin/verify-hook-worktree.sh" "$STAGE/bin/verify-hook-worktree.sh"
   cp "$ROOT/.githooks/pre-commit" "$STAGE/.githooks/pre-commit"
   # The copied hook's direct cluster invocation is a live HTTP operation in a
   # production checkout. Keep its regeneration/staging contract hermetic here
@@ -883,7 +884,7 @@ PY
   [ -z "$(git -C "$STAGE" diff --name-only)" ]
 }
 
-@test "pre-commit uses the linked worktree rather than its absolute hooksPath checkout" {
+@test "pre-commit uses the linked worktree from its checked-out hook" {
   make_staged_repo
   git -C "$STAGE" init -q
   git -C "$STAGE" config user.name fixture
@@ -904,18 +905,18 @@ PY
   [ "$status" -eq 0 ]
   : >"$trace"
 
-  # The generated artifacts are deliberately left unstaged.  A hook rooted at
-  # its absolute hooksPath checkout misses them and passes; the correct hook
-  # must regenerate in this linked worktree and reject the stale staging area.
+  # The generated artifacts are deliberately left unstaged. The checked-out
+  # hook must regenerate in this linked worktree and reject the stale staging
+  # area.
   run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
-    _ "$stale_worktree" "$STAGE/.githooks/pre-commit"
+    _ "$stale_worktree" "$stale_worktree/.githooks/pre-commit"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not staged"* ]]
 
   git -C "$STAGE" worktree remove --force "$stale_worktree"
 }
 
-@test "pre-commit ignores dirty generated artifacts in its absolute hooksPath checkout" {
+@test "pre-commit ignores dirty generated artifacts in a sibling checkout" {
   make_staged_repo
   git -C "$STAGE" init -q
   git -C "$STAGE" config user.name fixture
@@ -944,7 +945,7 @@ PY
   printf '%s\n' 'main-checkout-drift' >>"$STAGE/pipeline/L2/clusters.jsonl"
   : >"$clean_trace"
   run env TRACE="$clean_trace" bash -c 'cd "$1" && bash "$2"' \
-    _ "$clean_worktree" "$STAGE/.githooks/pre-commit"
+    _ "$clean_worktree" "$clean_worktree/.githooks/pre-commit"
   [ "$status" -eq 0 ]
 
   git -C "$STAGE" worktree remove --force "$clean_worktree"
@@ -973,7 +974,7 @@ PY
   : >"$trace"
 
   run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
-    _ "$linked_worktree" "$STAGE/.githooks/pre-commit"
+    _ "$linked_worktree" "$linked_worktree/.githooks/pre-commit"
   [ "$status" -eq 0 ]
 
   git -C "$STAGE" worktree remove --force "$linked_worktree"

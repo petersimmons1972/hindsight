@@ -5,6 +5,7 @@ if ! REPO_ROOT="$(git rev-parse --show-toplevel)"; then
     echo "ERROR: pre-commit must run from inside the worktree being committed." >&2
     exit 1
 fi
+bash "$REPO_ROOT/bin/verify-hook-worktree.sh" "$0"
 python3 "$REPO_ROOT/guard/failure_mode_catalog_guard.py"
 
 # Plan-index truth (issue #92): load-bearing when the index or its evidence

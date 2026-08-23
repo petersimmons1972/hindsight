@@ -20,8 +20,8 @@
 #     any hook. It cannot stop a determined or scripted push.
 #   * It is inert in a fresh clone. It runs only because this repo's LOCAL
 #     `core.hooksPath` is set to `.githooks`, which is git CONFIG, not committed
-#     content. Until an operator runs `git config core.hooksPath .githooks`,
-#     nothing here fires. Do NOT "fix" that by writing to the machine-wide
+#     content. Until an operator runs `bin/install-hooks.sh`, nothing here
+#     fires. Do NOT "fix" that by writing to the machine-wide
 #     ~/.config/git/hooks -- that directory is shared by every repo on this box
 #     and an installer already clobbered it once (FM-408).
 #   * It reads the HEAD reflog of the repo it runs in. A push made from a

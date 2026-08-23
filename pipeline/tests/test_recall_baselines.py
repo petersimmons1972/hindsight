@@ -65,7 +65,7 @@ def test_committed_artifact_matches_the_committed_partition() -> None:
 def test_reconciled_released_dedup_floor_is_the_measured_two_thirds() -> None:
     """#121 records the known corpus-growth floor as exact reconciled arithmetic.
 
-    The released partition at 736 entries holds two of the three
+    The released partition at 739 entries holds two of the three
     ``dedup-identity-key`` records together.  This is a corpus-growth artifact
     past roughly 673 entries, not #118 and not a per-entry-quality judgment.
     Keeping the numerator and denominator alongside the fraction prevents a
@@ -76,7 +76,7 @@ def test_reconciled_released_dedup_floor_is_the_measured_two_thirds() -> None:
     assert (floor["together"], floor["members"], floor["fraction"]) == (2, 3, 2 / 3)
     assert "corpus growth" in floor["cause"]
     assert "#118" in floor["cause"]
-    assert payload["provenance"]["corpus_size"] == 736
+    assert payload["provenance"]["corpus_size"] == 739
 
     measured = MODULE.measure(["released"])["released"][RECONCILED_FAMILY]
     assert measured == {key: floor[key] for key in ("together", "members", "fraction")}

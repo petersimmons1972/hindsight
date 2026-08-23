@@ -260,6 +260,9 @@ snapshot.write_text(json.dumps({
     "provenance": {"l1_sha256": l1_digest, "cluster_sha256": cluster_digest},
     "backend": dict(cl.HTTP_BACKEND_IDENTITY),
     "embeddings": embeddings,
+    "similarity_text_sha256": {
+        entry.id: cl.similarity_text_digest(entry) for entry in entries
+    },
 }) + "\n", encoding="utf-8")
 
 matrix = cl.load_embedding_snapshot(

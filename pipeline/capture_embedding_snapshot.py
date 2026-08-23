@@ -190,6 +190,52 @@ def _atomic_write_json(
             rollback.unlink(missing_ok=True)
 
 
+def _reusable_embeddings(
+    output: Path,
+    backend: dict[str, object],
+    similarity_text_sha256: dict[str, str],
+) -> dict[str, list[object]]:
+    """Return vectors whose format, backend, ID, and embedding text still match.
+
+    A canonical add changes the whole-corpus L1 digest, so reuse is authorized
+    per entry instead. Any malformed or differently-versioned prior snapshot
+    falls back to a complete recapture rather than being partially trusted.
+    """
+    try:
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema") != cluster.SNAPSHOT_SCHEMA:
+            return {}
+        if cluster._validate_backend_identity(payload.get("backend"), source="snapshot") != backend:
+            return {}
+        embeddings = payload.get("embeddings")
+        if not isinstance(embeddings, dict) or not all(isinstance(key, str) for key in embeddings):
+            return {}
+        recorded_text_digests = payload.get("similarity_text_sha256")
+        if not isinstance(recorded_text_digests, dict) or set(recorded_text_digests) != set(embeddings):
+            return {}
+        if any(
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            for digest in recorded_text_digests.values()
+        ):
+            return {}
+        dimensions = int(backend["dimensions"])
+        reusable: dict[str, list[object]] = {}
+        for entry_id, vector in embeddings.items():
+            if not isinstance(vector, list) or len(vector) != dimensions:
+                return {}
+            if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in vector):
+                return {}
+            if not np.isfinite(np.asarray(vector, dtype=np.float32)).all():
+                return {}
+            if recorded_text_digests[entry_id] == similarity_text_sha256.get(entry_id):
+                reusable[entry_id] = vector
+        return reusable
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-dir", type=Path, default=Path(__file__).with_name("L1"))
@@ -200,6 +246,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--revision", required=True)
     parser.add_argument("--dimensions", type=int, required=True)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--refresh-embeddings",
+        action="store_true",
+        help="ignore reusable vectors and request fresh embeddings for every L1 entry",
+    )
     return parser
 
 
@@ -220,18 +271,30 @@ def capture(args: argparse.Namespace) -> None:
         or cluster.cluster_code_config_digest(args.cluster_code) != cluster_digest
     ):
         raise ValueError("provenance changed while capture inputs were being read")
-    texts = [cluster.similarity_text(entry) for entry in entries]
-    matrix = _request_vectors(base_url, texts, args.timeout)
-    if matrix.shape != (len(entries), args.dimensions):
-        raise ValueError(
-            f"embedding dimensions mismatch: received shape {matrix.shape}, expected {(len(entries), args.dimensions)}"
+    text_digests = {entry.id: cluster.similarity_text_digest(entry) for entry in entries}
+    reusable = (
+        {}
+        if args.refresh_embeddings
+        else _reusable_embeddings(args.output, backend, text_digests)
+    )
+    missing_entries = [entry for entry in entries if entry.id not in reusable]
+    if missing_entries:
+        texts = [cluster.similarity_text(entry) for entry in missing_entries]
+        matrix = _request_vectors(base_url, texts, args.timeout)
+        if matrix.shape != (len(missing_entries), args.dimensions):
+            raise ValueError(
+                "embedding dimensions mismatch: "
+                f"received shape {matrix.shape}, expected {(len(missing_entries), args.dimensions)}"
+            )
+        if not np.isfinite(matrix).all():
+            raise ValueError("embedding vectors must be finite")
+        norms = np.linalg.norm(matrix, axis=1)
+        if np.any(norms == 0):
+            raise ValueError("embedding vectors must not be zero")
+        matrix = matrix / norms[:, None]
+        reusable.update(
+            {entry.id: matrix[index].tolist() for index, entry in enumerate(missing_entries)}
         )
-    if not np.isfinite(matrix).all():
-        raise ValueError("embedding vectors must be finite")
-    norms = np.linalg.norm(matrix, axis=1)
-    if np.any(norms == 0):
-        raise ValueError("embedding vectors must not be zero")
-    matrix = matrix / norms[:, None]
     payload: dict[str, object] = {
         "schema": cluster.SNAPSHOT_SCHEMA,
         "provenance": {
@@ -239,9 +302,8 @@ def capture(args: argparse.Namespace) -> None:
             "cluster_sha256": cluster_digest,
         },
         "backend": backend,
-        "embeddings": {
-            entry.id: matrix[index].tolist() for index, entry in enumerate(entries)
-        },
+        "embeddings": {entry.id: reusable[entry.id] for entry in entries},
+        "similarity_text_sha256": text_digests,
     }
 
     def verify_provenance_unchanged() -> None:

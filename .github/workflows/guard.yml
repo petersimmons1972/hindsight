@@ -23,18 +23,17 @@ jobs:
       matrix:
         shard: [pytest-release, pytest-rest, tools]
     runs-on: homelab-arc
-    # Completed healthy xdist release pytest measurements: 198.30s, 199.26s,
-    # 719.98s, and 966.12s. The worst is 966.12s; 30m is 1.86x that pytest
-    # duration and the next five-minute job bound above a separately observed
-    # 25m job timeout that censored an active run after 1476s of pytest.
+    # SAFETY BOUNDS, NOT PERFORMANCE TARGETS: real-runner release observations
+    # were 1775s (cancelled), 1776s (cancelled), 835s, 1013s, 753s, and 209s.
+    # Two of six reached the old 1800s job bound. Tools observations were 53s,
+    # 185s, 302s, 346s, 370s, and 430s. The new bounds give 3600 / 1776 = 2.03x
+    # and 900 / 430 = 2.09x over the observed maxima.
     #
-    # SAFETY BOUND: timeout-minutes measures the whole job, while the numbers
-    # above measure pytest only. At 30m GitHub terminates the release job
-    # regardless of cause. This bound does not distinguish a broken test or
-    # hang from runner contention, setup delay, or infrastructure failure.
-    # There is no comparable post-xdist broken-class sample, so this is not a
-    # classifier for the historical monolithic broken runs.
-    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || matrix.shard == 'pytest-release' && 30 || 30 }}
+    # timeout-minutes covers setup, dependency installation, test execution,
+    # teardown, runner contention, and infrastructure delays, not pytest time
+    # alone. A job timeout cannot distinguish a hang from a healthy contended
+    # runner. Performance remains tracked separately in #164.
+    timeout-minutes: ${{ matrix.shard == 'tools' && 15 || matrix.shard == 'pytest-release' && 60 || 30 }}
     steps:
       - uses: actions/checkout@v4
       # This pre-step is deliberately unconditional: every expanded matrix job

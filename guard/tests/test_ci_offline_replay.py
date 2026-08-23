@@ -34,7 +34,7 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "3c9513a494d12a2e4b0c9d35db3cc04766710de01144b4850866ce29d2b3b809"
+INTENDED_WORKFLOW_SHA256 = "7c0a8984f7d02e3358b0b8443e0fbaa58e96bfbdb4b6b1dda87cbb11a05ba89c"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -327,7 +327,7 @@ def test_matrix_timeouts_render_to_safety_bounds() -> None:
     assert {
         shard: _render_matrix_timeout(expression, shard)
         for shard in ("tools", "pytest-release", "pytest-rest")
-    } == {"tools": 10, "pytest-release": 30, "pytest-rest": 30}
+    } == {"tools": 15, "pytest-release": 60, "pytest-rest": 30}
 
 
 def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
@@ -346,11 +346,11 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
         "the unsuffixed job name is not a reported check"
     )
     timeout = (
-        "    timeout-minutes: ${{ matrix.shard == 'tools' && 10 || "
-        "matrix.shard == 'pytest-release' && 30 || 30 }}"
+        "    timeout-minutes: ${{ matrix.shard == 'tools' && 15 || "
+        "matrix.shard == 'pytest-release' && 60 || 30 }}"
     )
     assert workflow.count(timeout) == 1, (
-        "tools, pytest-release, and pytest-rest must time out at 10, 30, and "
+        "tools, pytest-release, and pytest-rest must time out at 15, 60, and "
         "30 minutes respectively"
     )
 

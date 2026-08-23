@@ -60,7 +60,13 @@ pipeline/                  L0 manifest → L1 extraction → L2 clusters → L3 
 | Legacy scheme as a *provenance annotation* | allowed | `Container Runtime — Design (FM-RC-01)` is a breadcrumb, not a defect. |
 | Rows out of numeric order | warning | Cosmetic. The catalog is multi-section and curated; fatal enforcement would force a destructive re-sort or block every append. A guard that makes you damage the document gets disabled. |
 
-Install: `git config core.hooksPath .githooks`
+Install once per clone: `bin/install-hooks.sh`
+
+The installer stores the literal local value `core.hooksPath=.githooks` in the
+shared repository config. Git resolves that relative path from whichever
+worktree is active, so a linked worktree runs the hook version checked out in
+that worktree rather than a possibly stale hook from a sibling checkout. Both
+hooks also fail loudly if an absolute path later selects a sibling's copy.
 
 ## Adding an entry
 

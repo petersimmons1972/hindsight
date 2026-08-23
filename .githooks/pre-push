@@ -18,19 +18,18 @@
 # that does not ship the guard.
 #
 # ACTIVATION (per clone, one command, no global config):
-#     git config core.hooksPath .githooks
-# This is git CONFIG, not committed content: until someone runs it in a clone,
-# this hook does not exist as far as git is concerned. That is deliberate.
+#     bin/install-hooks.sh
+# The installer stores the literal local value `.githooks`. This is git CONFIG,
+# not committed content: until someone runs it in a clone, this hook does not
+# exist as far as git is concerned. That is deliberate.
 #
 # MEASURED on this machine (git 2.43.0, 2026-08-21), because it is a footgun:
 # `core.hooksPath` is shared by a checkout and ALL of its linked worktrees, and
-# here it is set to the ABSOLUTE path /home/psimmons/projects/hindsight/.githooks.
-# So a worktree runs the MAIN checkout's copy of this file, not its own -- which
-# means this hook does not guard a worktree until it is merged and present in
-# the main checkout. It is written to survive that: it locates the guard through
-# `git rev-parse --show-toplevel`, so the main checkout's copy still inspects the
-# WORKTREE being pushed from. (A relative `.githooks` value resolves per-worktree
-# instead -- also verified. Either way the hook body is correct.)
+# it was set to the ABSOLUTE path /home/psimmons/projects/hindsight/.githooks.
+# Therefore a worktree ran the MAIN checkout's copy of this file, not its own. The
+# installer fixes selection at the source: relative `.githooks` resolves inside
+# the active worktree. The verifier below also refuses a sibling-selected copy
+# loudly if an absolute path is reintroduced.
 
 set -euo pipefail
 
@@ -40,6 +39,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 GUARD="$REPO_ROOT/bin/check-reset-soft-commit.sh"
 # Not our repo (or guard removed): degrade to a no-op rather than to an error.
 [ -x "$GUARD" ] || exit 0
+bash "$REPO_ROOT/bin/verify-hook-worktree.sh" "$0"
 
 # stdin: <local_ref> <local_sha> <remote_ref> <remote_sha> per ref.
 TIP_ARGS=()

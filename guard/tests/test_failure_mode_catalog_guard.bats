@@ -19,9 +19,10 @@ teardown() {
   repo="$TMPDIR/repo"
   fake_bin="$TMPDIR/bin"
   fake_python_log="$TMPDIR/python.log"
-  mkdir -p "$repo/.githooks" "$repo/catalog" "$repo/pipeline/L1" \
+  mkdir -p "$repo/.githooks" "$repo/bin" "$repo/catalog" "$repo/pipeline/L1" \
     "$repo/pipeline/L2" "$fake_bin"
   cp "$REPO_ROOT/.githooks/pre-commit" "$repo/.githooks/pre-commit"
+  cp "$REPO_ROOT/bin/verify-hook-worktree.sh" "$repo/bin/verify-hook-worktree.sh"
   chmod +x "$repo/.githooks/pre-commit"
 
   printf 'baseline\n' >"$repo/catalog/failure-modes.md"

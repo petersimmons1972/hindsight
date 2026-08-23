@@ -60,7 +60,30 @@ pipeline/                  L0 manifest → L1 extraction → L2 clusters → L3 
 | Legacy scheme as a *provenance annotation* | allowed | `Container Runtime — Design (FM-RC-01)` is a breadcrumb, not a defect. |
 | Rows out of numeric order | warning | Cosmetic. The catalog is multi-section and curated; fatal enforcement would force a destructive re-sort or block every append. A guard that makes you damage the document gets disabled. |
 
-Install: `git config core.hooksPath .githooks`
+Install once per clone: `bin/install-hooks.sh`
+
+The installer stores the literal local value `core.hooksPath=.githooks` in the
+shared repository config. Git resolves that relative path from whichever
+worktree is active, so a linked worktree runs the hook version checked out in
+that worktree rather than a possibly stale hook from a sibling checkout. Both
+hooks also fail loudly if an absolute path later selects a sibling's copy.
+
+This is a breaking change in the hook trust model: the active branch controls the hook bytes
+and can modify or delete them. These hooks are an accident tripwire, not a security or merge gate.
+`--no-verify`, an uninstalled clone, a deliberately altered hook, and a new worktree created from an older revision
+that lacks `.githooks/` all remain bypasses. Authoritative enforcement belongs outside
+branch-controlled hooks, such as required CI and the merge gate.
+
+Because `core.hooksPath` is shared clone configuration, the installer first
+requires every currently registered worktree to contain executable, non-symlink
+hooks. A revision whose `HEAD` contains the worktree verifier must also have that
+verifier present as a regular non-symlink executable. A legacy revision whose
+`HEAD` predates the verifier is armable as-is: the shared relative setting selects
+its own older hooks without copying untracked files into that worktree. The
+installer's final operation is Git's atomic config write; it performs no fallible
+work after that write. Re-run the installer after adding a worktree so the
+inventory is checked again. A worktree added later from a revision that lacks
+`.githooks/` can otherwise lack the branch-controlled tripwire entirely.
 
 ## Adding an entry
 

@@ -6,7 +6,7 @@
 # commit carries paths the author never touched. Exit 0 otherwise.
 #
 # Every test builds a real throwaway git repo under BATS_TEST_TMPDIR and pins
-# core.hooksPath INTO that repo, so no test can reach the machine-wide
+# the relative core.hooksPath inside that repo, so no test can reach machine-wide
 # ~/.config/git/hooks (which is this box's global core.hooksPath -- see FM-408).
 #
 # Each firing case is paired with a NEGATIVE CONTROL: the same file damage
@@ -27,9 +27,9 @@ setup() {
 new_repo() {
   local d="$1"
   git init -q -b main "$d"
-  # Pin hooks INSIDE the throwaway repo. Non-negotiable.
-  mkdir -p "$d/.git/pinned-hooks"
-  git -C "$d" config core.hooksPath "$d/.git/pinned-hooks"
+  # Pin hooks INSIDE the throwaway worktree. Non-negotiable.
+  mkdir -p "$d/.githooks"
+  git -C "$d" config core.hooksPath .githooks
   git -C "$d" config user.name  "bats"
   git -C "$d" config user.email "bats@local"
   git -C "$d" config commit.gpgsign false
@@ -274,9 +274,12 @@ seed_upstream() {
 
   mkdir -p "$REPO/bin"
   cp "$SCRIPT" "$REPO/bin/check-reset-soft-commit.sh"
+  cp "$BATS_TEST_DIRNAME/../verify-hook-worktree.sh" \
+    "$REPO/bin/verify-hook-worktree.sh"
   chmod +x "$REPO/bin/check-reset-soft-commit.sh"
-  cp "$HOOK" "$REPO/.git/pinned-hooks/pre-push"
-  chmod +x "$REPO/.git/pinned-hooks/pre-push"
+  chmod +x "$REPO/bin/verify-hook-worktree.sh"
+  cp "$HOOK" "$REPO/.githooks/pre-push"
+  chmod +x "$REPO/.githooks/pre-push"
 
   git init -q --bare "$BATS_TEST_TMPDIR/origin.git"
   g remote add origin "$BATS_TEST_TMPDIR/origin.git"

@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-224 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+225 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -228,3 +228,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-433** [NARROW] gh run view --json jobs merges step data ACROSS RETRY ATTEMPTS, so a completed prior attempt's steps make a currently-running attempt read as fully concluded
 - **FM-435** [NARROW] gh pr merge can print a GraphQL mutation error and still exit 0, so 'set -e' does not trip and downstream code proceeds believing the merge happened
 - **FM-437** [NARROW] Dispatched lane attempted to substitute a self-authored 'SEALED' replacement check-script for the frozen acceptance gate
+- **FM-442** [NARROW] Cross-harness reviewer's line-cited findings were fabricated against real code

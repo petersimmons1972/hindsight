@@ -1,0 +1,14 @@
+# GitGuardian configuration.
+# See https://docs.gitguardian.com/internal-repositories-monitoring/ggshield/ggshield-configuration
+
+version: 2
+
+# Paths to exclude from scanning.
+paths-ignore:
+  # GitGuardian incident 36497670: pipeline/L2/embedding-snapshot.json is a
+  # verified false positive (a numeric embedding vector, not a secret).
+  # Repo has no branch protection, so this is not blocking; excluded here to
+  # prevent recurrence. The pre-existing dashboard incident still needs a
+  # manual dismissal at app.gitguardian.com (no API credential exists for
+  # this estate; the dashboard is desktop-only).
+  - "pipeline/L2/embedding-snapshot.json"

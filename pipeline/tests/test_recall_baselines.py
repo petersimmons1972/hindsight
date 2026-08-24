@@ -125,6 +125,17 @@ def test_reconciled_floor_refuses_a_genuinely_degraded_staged_partition(
     assert "released/dedup-identity-key: 0.6667 -> 0.3333" in capsys.readouterr().err
 
 
+def test_find_drops_uses_reconciled_floor_above_a_raw_baseline_drop() -> None:
+    """A #121 floor replaces, rather than merely decorates, its raw baseline."""
+    recorded = {
+        "baselines": {"released": {"f": {"fraction": 1.0}}},
+        "reconciled_floors": {"released": {"f": {"fraction": 0.6667}}},
+    }
+    measured = {"released": {"f": {"fraction": 0.7}}}
+
+    assert MODULE.find_drops(recorded, measured) == []
+
+
 def test_verify_refuses_when_current_recall_is_below_the_recorded_baseline(
     artifact: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

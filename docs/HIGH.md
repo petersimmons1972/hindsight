@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-227 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+228 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -231,3 +231,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-442** [NARROW] Cross-harness reviewer's line-cited findings were fabricated against real code
 - **FM-443** [NARROW] hindsight#170 design/build brief written against a stale, unfetched local checkout
 - **FM-445** [NARROW] gate-check.mjs silently dropped multi-line CHECK bodies and misused prose EXPECT as substring match
+- **FM-446** [NARROW] CI-poll loops must cap on K consecutive gh failures and a hard wall-clock deadline, never spin on an empty/failed API result forever

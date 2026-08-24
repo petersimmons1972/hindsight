@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-25 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
+26 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
 
 - **FM-21** [BROAD] Destructive DB/API methods must enforce their own guard (require explicit force flag or confirmation token at the method boundary)
 - **FM-25** [BROAD] Never TRUNCATE a shared-project table; use scoped DELETE or dump/restore only the target project rows
@@ -29,5 +29,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-396** [NARROW] A safety argument that enumerates only what an ATTACKER can do to an invariant is incomplete: enumerate what your own code paths do to it, and name the code that could violate it.
 - **FM-422** [NARROW] git reflog expire --all destroys the STASH reflog; never run it to tidy a repo
 - **FM-430** [NARROW] A single agent that both implements a fix and authors its own acceptance test converges on a proof it can satisfy, not the property being guarded
+- **FM-444** [NARROW] CLASS: guards assert text exists instead of that behavior happens
 
 For HIGH-tier entries (real but too numerous to preload), use `bin/query-failure-modes.sh <keyword>` -- do not open docs/HIGH.md directly.

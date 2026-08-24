@@ -148,7 +148,10 @@ def load_artifact(path: Path = DEFAULT_ARTIFACT) -> dict[str, object]:
 def find_drops(
     recorded: dict[str, object], measured: dict[str, dict[str, dict[str, object]]]
 ) -> list[tuple[str, str, float, float]]:
-    """(backend, family, recorded_fraction, measured_fraction) for every drop.
+    """(backend, family, effective_floor_fraction, measured_fraction) for every drop.
+
+    A recorded reconciliation floor replaces the raw baseline for its matching
+    backend/family; otherwise the raw baseline remains the comparison floor.
 
     A backend or family that is measured but has no recorded baseline is NOT a
     drop -- it is a new row, recorded on the next `--update`. A recorded row
@@ -158,15 +161,21 @@ def find_drops(
     """
     drops: list[tuple[str, str, float, float]] = []
     baselines = recorded.get("baselines", {})
+    reconciled_floors = recorded.get("reconciled_floors", {})
     for backend_name, families in measured.items():
         recorded_backend = baselines.get(backend_name)
         if not recorded_backend:
             continue
+        reconciled_backend = reconciled_floors.get(backend_name, {})
         for family, stats in families.items():
             recorded_family = recorded_backend.get(family)
             if recorded_family is None:
                 continue
-            was = float(recorded_family["fraction"])
+            reconciled_family = reconciled_backend.get(family)
+            effective_floor = (
+                reconciled_family if reconciled_family is not None else recorded_family
+            )
+            was = float(effective_floor["fraction"])
             now = float(stats["fraction"])
             # Tolerance, not equality: these are ratios of small integers that
             # round-trip through JSON. A ratchet that fires on the last bit of a

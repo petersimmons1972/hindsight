@@ -34,7 +34,7 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "7c0a8984f7d02e3358b0b8443e0fbaa58e96bfbdb4b6b1dda87cbb11a05ba89c"
+INTENDED_WORKFLOW_SHA256 = "dbbfae877d5050f6cd5db5850998d1ab393317ea18ab0f1469e6618d8c04283d"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -407,6 +407,7 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
         "      - name: Verify recall baselines against the committed partition",
         "      - name: Run bats tests",
         "      - name: Run bin/ tool bats tests (require-real-ci, land)",
+        "      - name: Verify bin/ tool bats tests actually ran (hindsight#170)",
         "      - name: Reconcile L1 corpus (declared reduced check)",
         "      - name: Validate L1 schema",
         "      - name: Verify enforcement",
@@ -426,8 +427,57 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
     python_rest = workflow.index("      - name: Run Python tests (remaining shard)\n")
     replay = workflow.index("      - name: Replay committed L2 offline\n")
     bats = workflow.index("      - name: Run bats tests\n")
+    bin_bats = workflow.index(
+        "      - name: Run bin/ tool bats tests (require-real-ci, land)\n"
+    )
+    bin_bats_verify = workflow.index(
+        "      - name: Verify bin/ tool bats tests actually ran (hindsight#170)\n"
+    )
     validation = workflow.index("      - name: Reconcile L1 corpus")
-    assert python_release < python_rest < replay < bats < validation
+    assert (
+        python_release < python_rest < replay < bats < bin_bats < bin_bats_verify
+        < validation
+    )
+
+    # Exact-pin both hindsight#170 step blocks inside the sha256'd workflow so a
+    # mutant that reverts only the consumer (leaving the producer edited) still
+    # fails the pin, and so neither block can drift without updating this test.
+    bin_bats_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0] == "      - name: Run bin/ tool bats tests (require-real-ci, land)"
+    ]
+    assert bin_bats_steps == [(
+        "      - name: Run bin/ tool bats tests (require-real-ci, land)",
+        "        if: matrix.shard == 'tools'",
+        (
+            "        # Bats 1.14.0 supports this; preserve captured diagnostic "
+            "output on regressions."
+        ),
+        "        run: |",
+        "          set -o pipefail",
+        (
+            "          bats --print-output-on-failure --report-formatter tap "
+            "--output .bats-report bin/tests/*.bats"
+        ),
+    )]
+    bin_bats_verify_steps = [
+        block for block in _step_blocks(workflow)
+        if block[0]
+        == "      - name: Verify bin/ tool bats tests actually ran (hindsight#170)"
+    ]
+    assert bin_bats_verify_steps == [(
+        "      - name: Verify bin/ tool bats tests actually ran (hindsight#170)",
+        "        if: matrix.shard == 'tools'",
+        (
+            "        run: python3 bin/verify_bats_report.py "
+            ".bats-report/report.tap bin/tests"
+        ),
+    )]
+    # Consumer must share the producer shard gate and must not carry an escape
+    # hatch (continue-on-error or a second/different if:).
+    consumer_block = "\n".join(bin_bats_verify_steps[0])
+    assert "continue-on-error:" not in consumer_block
+    assert consumer_block.count("\n        if:") == 1
 
     forbidden = {
         "pipeline/cluster.py",

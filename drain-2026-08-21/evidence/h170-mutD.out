@@ -1,0 +1,4 @@
+=== Mutation D ===
+simulate: producer_runs=1 producer_rc=0 consumer_runs=0 consumer_coe=0 consumer_rc=0
+mutD1 caught by workflow pin / exact step block
+mutD2 continue-on-error caught by workflow pin

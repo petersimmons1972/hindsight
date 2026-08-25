@@ -92,7 +92,12 @@ jobs:
       - name: Run bin/ tool bats tests (require-real-ci, land)
         if: matrix.shard == 'tools'
         # Bats 1.14.0 supports this; preserve captured diagnostic output on regressions.
-        run: bats --print-output-on-failure bin/tests/*.bats
+        run: |
+          set -o pipefail
+          bats --print-output-on-failure --report-formatter tap --output .bats-report bin/tests/*.bats
+      - name: Verify bin/ tool bats tests actually ran (hindsight#170)
+        if: matrix.shard == 'tools'
+        run: python3 bin/verify_bats_report.py .bats-report/report.tap bin/tests
       - name: Reconcile L1 corpus (declared reduced check)
         if: matrix.shard == 'tools'
         # CI checks out only this repo, so four of the five sources are not on

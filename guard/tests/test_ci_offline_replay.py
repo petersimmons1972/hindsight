@@ -34,7 +34,7 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "9f9321641a8fdf826ee33a5c4bfdfeb90e1387acb9b9aaec8a2ed63a0a822cc8"
+INTENDED_WORKFLOW_SHA256 = "f28992a8b9cbe17ecce355b60968040ddf9ec3478af47f23f5e5e24b5c77c78a"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -279,7 +279,11 @@ def test_workflow_integrity_detectors_are_reachable_from_distinct_shards() -> No
     assert bats_steps == [(
         "      - name: Run bats tests",
         "        if: matrix.shard == 'tools'",
-        "        run: bats guard/tests/*.bats",
+        (
+            "        # Bats 1.14.0 supports this; preserve captured diagnostic "
+            "output on regressions."
+        ),
+        "        run: bats --print-output-on-failure guard/tests/*.bats",
     )], (
         "the independent Bats workflow detector must remain reachable from tools"
     )

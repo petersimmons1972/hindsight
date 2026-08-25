@@ -86,7 +86,7 @@ workflow_contract_check() {
         expected_run_seen=1
       fi
       if [[ $label == 'name: Run bats tests' && \
-            $line == '        run: bats guard/tests/*.bats' ]]; then
+            $line == '        run: bats --print-output-on-failure guard/tests/*.bats' ]]; then
         expected_run_seen=1
       fi
     done

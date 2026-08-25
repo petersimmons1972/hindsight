@@ -88,7 +88,8 @@ jobs:
         run: python3 pipeline/recall_baselines.py --backend released
       - name: Run bats tests
         if: matrix.shard == 'tools'
-        run: bats guard/tests/*.bats
+        # Bats 1.14.0 supports this; preserve captured diagnostic output on regressions.
+        run: bats --print-output-on-failure guard/tests/*.bats
       - name: Run bin/ tool bats tests (require-real-ci, land)
         if: matrix.shard == 'tools'
         # Bats 1.14.0 supports this; preserve captured diagnostic output on regressions.

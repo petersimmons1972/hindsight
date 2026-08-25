@@ -1,3 +1,9 @@
+<!-- SUPERSEDED IN PART 2026-08-25 (A3/R9 leaf; safety/a3/SUPERSEDED.tsv) — FM-361 ONLY.
+Stale: FM-361 claims catalog-guard's bin/tests/*.bats CI step is "persistently red on main".
+True now: last 5 CI runs on main (catalog-guard workflow) are all green (independently
+re-verified via `gh run list --branch main`, 2026-08-24). Rest of this pointer is unaffected.
+Replacement/authority: gh-run-list--branch-main(catalog-guard-green) -->
+
 # hindsight — CRITICAL pointer
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.

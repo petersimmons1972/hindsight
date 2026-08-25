@@ -1,0 +1,3 @@
+=== Mutation C ===
+simulate: producer_runs=1 producer_rc=0 consumer_runs=1 consumer_coe=0 consumer_rc=1
+mutC caught by title cross-ref

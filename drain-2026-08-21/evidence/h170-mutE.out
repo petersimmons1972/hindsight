@@ -1,0 +1,3 @@
+=== Mutation E ===
+simulate: producer_rc=1 (job red before consumer)
+mutE caught (pipefail and/or not-ok consumer)

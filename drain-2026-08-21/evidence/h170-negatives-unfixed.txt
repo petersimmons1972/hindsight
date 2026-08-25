@@ -1,0 +1,19 @@
+hindsight#170 negative controls — measured 2026-08-25 on UNFIXED tree
+HEAD 1d4b960 / workflow sha256 7c0a8984f7d02e3358b0b8443e0fbaa58e96bfbdb4b6b1dda87cbb11a05ba89c
+No consumer step; producer is:
+  run: bats --print-output-on-failure bin/tests/*.bats
+
+NEG_A_if_false_alone: producer_runs=False pin_ok=False job_ok=True suite_green=False
+  (job silences bats; pytest pin catches careless form)
+
+NEG_B_if_false_plus_pin: producer_runs=False pin_ok=True job_ok=True suite_green=True
+  (original issue shape — fully coordinated accidental+pin)
+
+NEG_C_tap_forge_plus_pin: producer_runs=True pin_ok=True job_ok=True suite_green=True
+  (no consumer to cross-check titles)
+
+NEG_D_no_consumer_today: suite_green=True
+  (consumer absent; silence is the default)
+
+NEG_E_pipe_no_pipefail_plus_pin: producer_runs=True pin_ok=True job_ok=True suite_green=True
+  (swallowed red suite exit; no consumer re-assert)

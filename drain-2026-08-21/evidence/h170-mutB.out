@@ -1,0 +1,4 @@
+=== Mutation B ===
+mutB pin_rc=1 (nonzero expected: exact step-block pin still red)
+simulate: producer_runs=0 producer_rc=0 consumer_runs=1 consumer_coe=0 consumer_rc=1
+mutB consumer caught missing TAP (sha256-only rewrite insufficient)

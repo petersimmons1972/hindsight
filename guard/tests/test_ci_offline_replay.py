@@ -34,7 +34,7 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "dbbfae877d5050f6cd5db5850998d1ab393317ea18ab0f1469e6618d8c04283d"
+INTENDED_WORKFLOW_SHA256 = "9f9321641a8fdf826ee33a5c4bfdfeb90e1387acb9b9aaec8a2ed63a0a822cc8"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
@@ -455,6 +455,7 @@ def test_catalog_guard_runs_only_the_committed_offline_l2_replay() -> None:
         ),
         "        run: |",
         "          set -o pipefail",
+        "          mkdir -p .bats-report",
         (
             "          bats --print-output-on-failure --report-formatter tap "
             "--output .bats-report bin/tests/*.bats"

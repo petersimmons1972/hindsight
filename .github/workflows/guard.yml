@@ -94,6 +94,7 @@ jobs:
         # Bats 1.14.0 supports this; preserve captured diagnostic output on regressions.
         run: |
           set -o pipefail
+          mkdir -p .bats-report
           bats --print-output-on-failure --report-formatter tap --output .bats-report bin/tests/*.bats
       - name: Verify bin/ tool bats tests actually ran (hindsight#170)
         if: matrix.shard == 'tools'

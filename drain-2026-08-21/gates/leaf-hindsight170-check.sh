@@ -38,15 +38,23 @@ print(n)
 }
 
 write_legit_tap() {
+  # Titles must be extracted the SAME way bats actually evaluates an @test
+  # "title" (a bash double-quoted string, so e.g. \$RC -> $RC) -- a
+  # hand-rolled second regex here previously diverged from
+  # bin/verify_bats_report.py's own extractor and copied raw \$ escapes
+  # verbatim, which does not match what real bats reports in TAP (caught by
+  # CI on hindsight#170: guard (tools) run 32856407100, a real title in
+  # bin/tests/test_require_real_ci.bats:390 failed the cross-reference).
+  # Import the verifier's own collect_source_titles instead of re-deriving
+  # titles, so this fixture can never drift from the thing it's proving.
   local out=$1
   "$PY" -c "
+import importlib.util
 from pathlib import Path
-import re
-titles=[]
-for p in sorted(Path(r'$W/bin/tests').glob('*.bats')):
-    for line in p.read_text().splitlines():
-        m=re.match(r'^\s*@test\s+\"((?:\\\\.|[^\"\\\\])*)\"', line)
-        if m: titles.append(m.group(1))
+spec = importlib.util.spec_from_file_location('verify_bats_report', r'$VERIFY')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+titles = mod.collect_source_titles(Path(r'$W/bin/tests'))
 assert titles
 Path(r'$out').parent.mkdir(parents=True, exist_ok=True)
 lines=['1..%d'%len(titles)] + [f'ok {i} {t}' for i,t in enumerate(titles,1)]

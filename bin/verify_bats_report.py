@@ -36,6 +36,34 @@ def _die(msg: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+def _unescape_dquote_title(raw: str) -> str:
+    """Undo bash double-quote backslash escaping for an @test "title" body.
+
+    A bats @test title is parsed by bash as a double-quoted string, where a
+    backslash retains its special meaning only before $, `, ", \\, or a
+    newline (which it splices away); every other backslash+char sequence
+    passes through literally. Without this, a title containing e.g. \\$RC
+    is captured here as the two characters '\\$RC', but bats reports the
+    *evaluated* title '$RC' in its TAP output -- a real mismatch that made a
+    legitimate title fail the cross-reference (hindsight#170 CI: guard
+    (tools) run 32856407100, bin/tests/test_require_real_ci.bats:390).
+    """
+    out: list[str] = []
+    i = 0
+    n = len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "\\" and i + 1 < n and raw[i + 1] in ('$', '`', '"', '\\', '\n'):
+            nxt = raw[i + 1]
+            if nxt != "\n":
+                out.append(nxt)
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def collect_source_titles(tests_dir: Path) -> list[str]:
     """Return @test titles from *.bats under tests_dir, in file/line order."""
     if not tests_dir.is_dir():
@@ -51,7 +79,7 @@ def collect_source_titles(tests_dir: Path) -> list[str]:
         for line_no, line in enumerate(text.splitlines(), 1):
             match = _AT_TEST_RE.match(line)
             if match:
-                titles.append(match.group(1))
+                titles.append(_unescape_dquote_title(match.group(1)))
             elif re.match(r"^\s*@test\b", line):
                 _die(
                     f"unsupported @test shape at {path}:{line_no}: {line.strip()!r} "

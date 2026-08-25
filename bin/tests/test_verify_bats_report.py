@@ -67,6 +67,29 @@ def test_happy_path_exact_titles_and_count(tmp_path: Path, vmod) -> None:
     assert "OK (3 cases" in proc.stdout
 
 
+def test_escaped_dollar_in_title_matches_evaluated_tap_title(
+    tmp_path: Path, vmod
+) -> None:
+    """Regression: hindsight#170 CI (guard (tools) run 32856407100) found a
+    real @test title containing \\$RC (bin/tests/test_require_real_ci.bats:390)
+    -- bash evaluates that double-quoted @test title's \\$RC to the literal
+    $RC before bats ever reports it in TAP, so the raw source text and the
+    TAP-reported title differ unless the extractor undoes that unescaping.
+    """
+    raw_source_title = r"kills a mutated \$RC check"
+    evaluated_title = "kills a mutated $RC check"
+    tests = tmp_path / "tests"
+    report = tmp_path / "report.tap"
+    tests.mkdir(parents=True, exist_ok=True)
+    (tests / "suite.bats").write_text(
+        f'@test "{raw_source_title}" {{\n  true\n}}\n', encoding="utf-8"
+    )
+    _write_tap(report, ["1..1", f"ok 1 {evaluated_title}"])
+    vmod.verify(report, tests)
+    proc = _run(str(report), str(tests))
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_hash_inside_title_is_not_a_tap_directive(tmp_path: Path, vmod) -> None:
     """Regression: 'issue #89' must not be truncated at '#' (bats keeps it)."""
     titles = [

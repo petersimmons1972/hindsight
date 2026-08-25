@@ -104,10 +104,10 @@
   "reconciled_floors": {
     "released": {
       "dedup-identity-key": {
-        "cause": "hindsight#121: measured corpus growth past roughly 673 entries fragmented this released recall to 2/3 at n=736; it is not #118 and not a per-entry-quality regression.",
-        "fraction": 0.6666666666666666,
+        "cause": "hindsight#121: measured corpus growth past roughly 673 entries fragmented this released recall to 2/3 at n=736; further corpus growth reclustered all three dedup-identity-key records together (3/3) at n=762. Retained as historical reconciliation evidence of the resolved carve-out, re-pinned to the current measured value so this record cannot silently launder a future drop back toward 2/3; it is not #118 and not a per-entry-quality regression.",
+        "fraction": 1.0,
         "members": 3,
-        "together": 2
+        "together": 3
       }
     }
   },

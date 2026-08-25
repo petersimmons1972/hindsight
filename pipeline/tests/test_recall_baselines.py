@@ -65,18 +65,21 @@ def test_committed_artifact_matches_the_committed_partition() -> None:
 def test_reconciled_released_dedup_floor_is_the_measured_two_thirds() -> None:
     """#121 records the known corpus-growth floor as exact reconciled arithmetic.
 
-    The released partition at 739 entries holds two of the three
-    ``dedup-identity-key`` records together.  This is a corpus-growth artifact
-    past roughly 673 entries, not #118 and not a per-entry-quality judgment.
-    Keeping the numerator and denominator alongside the fraction prevents a
-    rounded literal from quietly becoming a lower floor.
+    The released partition originally fragmented to 2/3 at n=736 (a
+    corpus-growth artifact past roughly 673 entries, not #118 and not a
+    per-entry-quality judgment). Further corpus growth to the current 762
+    entries reclustered all three ``dedup-identity-key`` records together
+    (3/3); the reconciliation record is re-pinned to that measured value so
+    it cannot silently launder a future drop back toward 2/3. Keeping the
+    numerator and denominator alongside the fraction prevents a rounded
+    literal from quietly becoming a lower floor.
     """
     payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
     floor = payload["reconciled_floors"]["released"][RECONCILED_FAMILY]
-    assert (floor["together"], floor["members"], floor["fraction"]) == (2, 3, 2 / 3)
+    assert (floor["together"], floor["members"], floor["fraction"]) == (3, 3, 1.0)
     assert "corpus growth" in floor["cause"]
     assert "#118" in floor["cause"]
-    assert payload["provenance"]["corpus_size"] == 739
+    assert payload["provenance"]["corpus_size"] == 762
 
     measured = MODULE.measure(["released"])["released"][RECONCILED_FAMILY]
     assert measured == {key: floor[key] for key in ("together", "members", "fraction")}
@@ -98,7 +101,7 @@ def test_update_preserves_reconciled_floors(artifact: Path) -> None:
 def test_reconciled_floor_refuses_a_genuinely_degraded_staged_partition(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A staged 1/3 partition must remain red below #121's 2/3 floor."""
+    """A staged 1/3 partition must remain red below the recorded reconciled floor."""
     rows = [json.loads(line) for line in (REPO / "pipeline" / "L2" / "clusters.jsonl").read_text(
         encoding="utf-8"
     ).splitlines()]
@@ -122,7 +125,7 @@ def test_reconciled_floor_refuses_a_genuinely_degraded_staged_partition(
     before = COMMITTED.read_bytes()
     assert _run(COMMITTED, "--clusters", str(clusters)) == 1
     assert COMMITTED.read_bytes() == before
-    assert "released/dedup-identity-key: 0.6667 -> 0.3333" in capsys.readouterr().err
+    assert "released/dedup-identity-key: 1.0000 -> 0.3333" in capsys.readouterr().err
 
 
 def test_find_drops_uses_reconciled_floor_above_a_raw_baseline_drop() -> None:

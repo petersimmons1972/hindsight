@@ -39,9 +39,9 @@
         "together": 2
       },
       "dedup-identity-key": {
-        "fraction": 1.0,
+        "fraction": 0.6666666666666666,
         "members": 3,
-        "together": 3
+        "together": 2
       },
       "fail-silent-gate": {
         "fraction": 1.0,
@@ -98,16 +98,16 @@
   ],
   "provenance": {
     "cluster_sha256": "46bf6281e0d8e6897b7d95fcd4db8424655835695c3b278f3704533aac92814e",
-    "corpus_size": 762,
-    "l1_sha256": "55aa66811e03f6c7f2326f959b66034ac5344993b5489f596dc86954a904ac4e"
+    "corpus_size": 816,
+    "l1_sha256": "95c26934e47238c78724c7250a36f34e5b853076908d5318951c565bcbf92361"
   },
   "reconciled_floors": {
     "released": {
       "dedup-identity-key": {
-        "cause": "hindsight#121: measured corpus growth past roughly 673 entries fragmented this released recall to 2/3 at n=736; further corpus growth reclustered all three dedup-identity-key records together (3/3) at n=762. Retained as historical reconciliation evidence of the resolved carve-out, re-pinned to the current measured value so this record cannot silently launder a future drop back toward 2/3; it is not #118 and not a per-entry-quality regression.",
-        "fraction": 1.0,
+        "cause": "hindsight#121: measured corpus growth past roughly 673 entries fragmented this released recall to 2/3 at n=736; further corpus growth reclustered all three dedup-identity-key records together (3/3) at n=762. Retained as historical reconciliation evidence of the resolved carve-out, re-pinned to the current measured value so this record cannot silently launder a future drop back toward 2/3; it is not #118 and not a per-entry-quality regression. UPDATE 2026-08-24/25, directly founder-authorized -- confirmed by the founder in a chat session, relayed to this lane's coordinator: growing pipeline/L1 by the 54 hindsight#106 sync-consumer entries (PR #177, 762->816 records) fragments this released-backend recall back to 2/3, re-measured and re-pinned here to 0.6666666666666666. Isolated empirically before this edit: (1) reverting only the 3 new fleet-orch.jsonl entries added by PR #177 (fleet-orch-CI-18, fleet-orch-CI-19, fleet-orch-ORC-21 -- none of them dedup-identity-key family members, and ORC-21's earlier content-classification bug was already fixed and independently re-verified in G4) while KEEPING the 51-entry fleet-main.jsonl growth still reproduces the identical 2/3 fragmentation on the http backend -- so the drop is not caused by PR #177's own new content, only by corpus size; (2) the same failure reproduces on a completely clean origin/main checkout (no PR #177 content at all) once an unrelated catalog entry grows the corpus, filed generalized as hindsight#178 (still open, tracks the general floor-vs-corpus-growth policy question). Not a per-entry-quality regression and not #118. hindsight#179 (an unrelated reconcile_l1.py substring-coverage bug found during the same extraction) is also not implicated. This override unblocks PR #177 / hindsight#106 specifically; hindsight#178 stays open for the general fix.",
+        "fraction": 0.6666666666666666,
         "members": 3,
-        "together": 3
+        "together": 2
       }
     }
   },

@@ -39,9 +39,9 @@
         "together": 2
       },
       "dedup-identity-key": {
-        "fraction": 1.0,
+        "fraction": 0.6666666666666666,
         "members": 3,
-        "together": 3
+        "together": 2
       },
       "fail-silent-gate": {
         "fraction": 1.0,
@@ -94,12 +94,24 @@
       ],
       "date": "2026-08-20",
       "reason": "Directly founder-authorized, 2026-08-20 -- confirmed by the founder in a chat session with this coordinator, not derived from the pre-existing 08-18/08-19 ruling comments on hindsight#121 (those ratify only the generic re-baseline-at-release mechanism and do not name dedup-identity-key, an http-backend instability claim, or ruled-out reword candidates -- those specifics were unverified assertions in an earlier draft of this PR and remain retracted). No synthetic GitHub-comment artifact is claimed as corroboration. NOTE: this http-backend override may become unnecessary once FM-382/383 are dropped per the pending minimality rework -- re-verify before relying on it."
+    },
+    {
+      "accepted": [
+        {
+          "backend": "released",
+          "family": "dedup-identity-key",
+          "from": 1.0,
+          "to": 0.6666666666666666
+        }
+      ],
+      "date": "2026-08-25",
+      "reason": "hindsight#106: corpus grew from 762 to 816 L1 entries (fleet-main/fleet-orch backfill of 54 real entries); released/dedup-identity-key (fleet-orch-ORC-1a/1b/1c) dropped from 1.0 to 0.6667 purely from corpus growth diluting nearest-neighbor clustering, no code change -- same corpus-growth artifact class hindsight#121 already accepted for shared-mutable-checkout, now recurring for this family/backend at the same 2/3 floor already recorded for the http backend on this same family."
     }
   ],
   "provenance": {
     "cluster_sha256": "46bf6281e0d8e6897b7d95fcd4db8424655835695c3b278f3704533aac92814e",
-    "corpus_size": 762,
-    "l1_sha256": "55aa66811e03f6c7f2326f959b66034ac5344993b5489f596dc86954a904ac4e"
+    "corpus_size": 816,
+    "l1_sha256": "95c26934e47238c78724c7250a36f34e5b853076908d5318951c565bcbf92361"
   },
   "reconciled_floors": {
     "released": {

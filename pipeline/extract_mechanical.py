@@ -121,7 +121,16 @@ emit("fleet-dispatch-schema", records)
 _BULLET_RE = re.compile(r"^(?:-\s*)?\*\*([^*]+?):\*\*\s?(.*)$")
 _DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 _META_LABELS = re.compile(r"provenance|evidence", re.IGNORECASE)
-_CHECK_LABELS = re.compile(r"countermeasure|response|catches|fix", re.IGNORECASE)
+# The three source files use three vocabularies for the incident-description
+# bullet(s): Lie/Tell/Root cause, Symptom/Cause, Where/Cause. Enumerated
+# explicitly and kept short and closed, because everything NOT matched here
+# defaults to `check` (see classification loop below) -- flagged by
+# independent review: an earlier version defaulted the other way and folded
+# verification-only bullets (`Direction matters`, `Test`) that this corpus
+# also uses (fleet/orchestration/FAILURE-MODES.md ORC-21) into `instance`.
+# Countermeasure/Response/etc. do not need their own list because "not an
+# instance label and not a meta label" already means check.
+_INSTANCE_LABELS = re.compile(r"^(lie|tell|root cause|symptom|cause|where)$", re.IGNORECASE)
 
 
 def _heading_re() -> re.Pattern[str]:
@@ -210,12 +219,18 @@ def parse_domain_sections(text: str) -> dict[str, dict[str, object]]:
             joined = " ".join(bullets[label])
             if not joined:
                 continue
-            if _META_LABELS.search(label):
+            label_norm = re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
+            if _META_LABELS.search(label_norm):
                 meta_parts.append(joined)
-            elif _CHECK_LABELS.search(label):
-                check_parts.append(joined)
-            else:
+            elif _INSTANCE_LABELS.match(label_norm):
                 instance_parts.append(joined)
+            else:
+                # Closed default: Countermeasure/Response/Catches it/Fix, plus
+                # anything this parser has not seen a vocabulary for yet
+                # (e.g. "Direction matters", "Test"), is check material --
+                # verification/remediation content, never the incident
+                # description. Measured wrong the other way on ORC-21.
+                check_parts.append(joined)
 
         instance = " ".join(instance_parts) if instance_parts else title
         check = " ".join(check_parts) if check_parts else None
@@ -274,6 +289,18 @@ def extract_fleet_domain(slug: str, id_prefix: str) -> int:
             if local_id not in sections:
                 sections[local_id] = sec
                 source_of[local_id] = f
+            else:
+                # Cross-file collision within one slug's source set (measured:
+                # "CI-1" is registered separately in both
+                # fleet/orchestration/FAILURE-MODES.md and
+                # fleet/CODING-INVARIANTS.md, under different content).
+                # Same disclosed, deterministic policy as the same-file case:
+                # keep whichever file was listed first in ENUMERABLE.
+                print(
+                    f"    NOTE: {local_id!r} also registered in {f} "
+                    f"(keeping the entry from {source_of[local_id]})",
+                    file=sys.stderr,
+                )
 
     found, _n_lines = extracted(slug)
     missing = sorted(truth - found)

@@ -82,9 +82,9 @@ before changing any status:
   tested (`cfc0ebb`, PR #76) and was retired with its host subsystem — so these are not "never
   mechanized" gaps. Building tests at the claimed paths would be hollow coverage the issues
   themselves forbid.
-- **#21** — the coordinator-owned fixture is merged in PR #63. W1/W2 remain founder-blocked because
-  the required disk-spooled artifacts have no permitted path under Plan 06 §7/§14; do not invent a
-  scratch or outside-repo spool.
+- **#21** — the coordinator-owned fixture is merged in PR #63. UNBLOCKED by founder ruling
+  2026-08-22 (`docs/DECISIONS.md` row 27): a persisted spool at `pipeline/L3/work/` is permitted.
+  Plan 06 §7 is now the file contract; dispatch per plan 06.
 - **Plan 05 remaining locality work** — its original tracker (#20) closed with PR #52; the remaining
   capability is still represented by PR #12 and blocked behind the `plans/04` chain landing.
 - **`plans/04` chain (PRs #40 ← #41 ← #43 ← #44 ← #46)** — round 4 verification returned

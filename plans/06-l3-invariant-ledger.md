@@ -1,8 +1,9 @@
 # PLAN-06 — L3 synthesis as a validated ledger, not prose
-Issue: petersimmons1972/hindsight#21 · Status: FOUNDER-BLOCKED — plan 02 is complete and the
-coordinator fixture landed in PR #63, but W1/W2 require disk-spooled inputs absent from §7/§14's
-allowed-file contract. Founder must authorize exact retained artifact paths and review/retention
-policy before W1 dispatch. Founder ruling 1, reshaped.
+Issue: petersimmons1972/hindsight#21 · Status: IN FLIGHT (founder ruling 2026-08-22, `docs/DECISIONS.md`
+row 27) — plan 02 is complete and the coordinator fixture landed in PR #63. The founder ruled a
+persisted spool at `pipeline/L3/work/` is PERMITTED, resolving the contradiction between this
+header (which claimed no permitted spool path existed) and this plan's own §7 entry added in PR #84
+— the header was the stale side. Founder ruling 1, reshaped.
 
 ## 1. CONTEXT YOU DO NOT HAVE
 

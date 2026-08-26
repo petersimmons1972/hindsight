@@ -233,6 +233,67 @@ def test_invariant_field_rejects_empty_or_blank(tmp_path, invariant_value, prese
     assert "invariant" in combined.lower(), f"expected an invariant-named failure, got: {combined}"
 
 
+@pytest.mark.parametrize(
+    "substitute_value",
+    [12, {"a": 1}, ["x"], True],
+    ids=["bare-int", "dict", "list", "bare-bool"],
+)
+def test_d4_rejects_non_string_procedural_substitute(tmp_path, substitute_value):
+    """Same type-confusion class as D3/invariant, in the third field
+    check_row grades with a plain truthiness/str() check: a naive
+    `not substitute or not str(substitute).strip()` lets a non-string
+    substitute through once stringified/truthy (12 -> "12", non-blank)."""
+    row = {
+        "cluster_ids": ["fixture-multirepo"],
+        "source_repos": ["repo-a", "repo-b"],
+        "kind": "judgment",
+        "invariant": "A generalized claim for the D4 type-confusion regression case.",
+        "procedural_substitute": substitute_value,
+    }
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, row)
+    clusters = tmp_path / "clusters.jsonl"
+    _write_clusters(clusters)
+    result = _run(ledger, clusters)
+    assert result.returncode == 1, (
+        f"procedural_substitute={substitute_value!r} unexpectedly validated: "
+        f"{result.stdout + result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "procedural_substitute" in combined, f"expected a named D4 failure, got: {combined}"
+    assert "Traceback" not in combined
+
+
+@pytest.mark.parametrize(
+    "path_value",
+    [12, {"a": 1}, ["x"], True],
+    ids=["bare-int", "dict", "list", "bare-bool"],
+)
+def test_d2_rejects_non_string_enforcement_path(tmp_path, path_value):
+    """Same type-confusion class, in enforcement.path: a non-string path
+    previously cleared the truthiness gate (`not enforcement.get("path")`)
+    and then crashed os.path.isabs() with an uncaught TypeError under
+    --assert-paths-exist, instead of a structured D2 failure."""
+    row = {
+        "cluster_ids": ["fixture-multirepo"],
+        "source_repos": ["repo-a", "repo-b"],
+        "kind": "machine",
+        "invariant": "A generalized claim for the D2 type-confusion regression case.",
+        "enforcement": {"repo": "hindsight", "path": path_value},
+    }
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, row)
+    clusters = tmp_path / "clusters.jsonl"
+    _write_clusters(clusters)
+    result = _run(ledger, clusters, extra_args=["--assert-paths-exist"], repo_root=REPO_ROOT)
+    assert result.returncode == 1, (
+        f"enforcement.path={path_value!r} unexpectedly validated: {result.stdout + result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "D2" in combined, f"expected a named D2 failure, got: {combined}"
+    assert "Traceback" not in combined
+
+
 def test_real_ledger_rows_all_have_nonempty_invariant():
     """Ground truth: the committed seed ledger must itself satisfy the new
     invariant-emptiness check (not just the synthetic fixture cases)."""

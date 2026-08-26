@@ -128,11 +128,18 @@ def check_row(row, assert_paths_exist, repo_root):
 
     if kind == "machine":
         enforcement = row.get("enforcement")
-        if not isinstance(enforcement, dict) or not enforcement.get("path"):
-            errors.append("kind=machine but enforcement is not a {repo, path} object (D2)")
+        candidate = enforcement.get("path") if isinstance(enforcement, dict) else None
+        if (
+            not isinstance(enforcement, dict)
+            or not isinstance(candidate, str)
+            or not candidate.strip()
+        ):
+            errors.append(
+                "kind=machine but enforcement is not a {repo, path} object with "
+                "a non-blank string path (D2)"
+            )
         elif assert_paths_exist:
             repo = enforcement.get("repo")
-            candidate = enforcement["path"]
             if repo != LOCAL_REPO_NAME:
                 errors.append(
                     f"enforcement.path {candidate!r} is claimed against repo "
@@ -151,7 +158,7 @@ def check_row(row, assert_paths_exist, repo_root):
                     )
     else:  # judgment
         substitute = row.get("procedural_substitute")
-        if not substitute or not str(substitute).strip():
+        if not isinstance(substitute, str) or not substitute.strip():
             errors.append(
                 "kind=judgment but procedural_substitute is empty (D4 -- "
                 "unenforceable and offering nothing in its place is not a "

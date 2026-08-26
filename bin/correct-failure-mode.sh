@@ -2,7 +2,9 @@
 # correct-failure-mode.sh — append a superseding record for a refuted catalog row.
 #
 # Usage:
-#   correct-failure-mode.sh -t TIER --disposition KIND --recurrence-of c-NNN|none \
+#   correct-failure-mode.sh -t TIER --disposition KIND \
+#     --ladder-rung RUNG|--ladder-rung-infeasible REASON \
+#     --recurrence-of c-NNN|none \
 #     FM-NNN "REFUTATION" "CORRECTED LESSON"
 #
 # A correction preserves every substantive cell on the original row, prepends
@@ -17,12 +19,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ADD_TOOL="$REPO_ROOT/bin/add-failure-mode.sh"
 
 usage() {
-    sed -n '2,10p' "$0" | sed 's/^# \?//'
+    sed -n '2,12p' "$0" | sed 's/^# \?//'
     exit "${1:-1}"
 }
 
 TIER=""
 DISPOSITION=""
+LADDER_ARGS=()
+LADDER_SEEN=0
 RECURRENCE=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -35,6 +39,24 @@ while [[ $# -gt 0 ]]; do
         --disposition)
             [[ $# -ge 2 && -z "$DISPOSITION" ]] || { echo "ERROR: --disposition requires one value" >&2; exit 1; }
             DISPOSITION="$2"
+            shift 2
+            ;;
+        --ladder-rung)
+            [[ $# -ge 2 && $LADDER_SEEN -eq 0 ]] || {
+                echo "ERROR: provide exactly one of --ladder-rung or --ladder-rung-infeasible" >&2
+                exit 1
+            }
+            LADDER_ARGS=(--ladder-rung "$2")
+            LADDER_SEEN=1
+            shift 2
+            ;;
+        --ladder-rung-infeasible)
+            [[ $# -ge 2 && $LADDER_SEEN -eq 0 ]] || {
+                echo "ERROR: provide exactly one of --ladder-rung or --ladder-rung-infeasible" >&2
+                exit 1
+            }
+            LADDER_ARGS=(--ladder-rung-infeasible "$2")
+            LADDER_SEEN=1
             shift 2
             ;;
         --recurrence-of)
@@ -53,8 +75,8 @@ done
     echo "ERROR: expected TARGET_ID, REFUTATION, and CORRECTED_LESSON" >&2
     usage
 }
-[[ -n "$TIER" && -n "$DISPOSITION" && -n "$RECURRENCE" ]] || {
-    echo "ERROR: --tier, --disposition, and --recurrence-of are required" >&2
+[[ -n "$TIER" && -n "$DISPOSITION" && -n "$RECURRENCE" && $LADDER_SEEN -eq 1 ]] || {
+    echo "ERROR: --tier, --disposition, --ladder-rung (or --ladder-rung-infeasible), and --recurrence-of are required" >&2
     exit 1
 }
 
@@ -95,6 +117,7 @@ DESCRIPTION="CORRECTION: $TARGET_ID is superseded, not erased. Refuted stated ca
     -c "$CLASS" \
     -t "$TIER" \
     --disposition "$DISPOSITION" \
+    "${LADDER_ARGS[@]}" \
     --recurrence-of "$RECURRENCE" \
     --supersedes "$TARGET_ID" \
     "$LESSON" "$DESCRIPTION"

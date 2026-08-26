@@ -47,7 +47,7 @@ file_digest() {
   ledger_before="$(file_digest "$LEDGER")"
 
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "a terminal SUCCESS was treated as proof the work finished"
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "a terminal SUCCESS was treated as proof the work finished"
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"Candidates for human review. This tool does not determine duplication."* ]]
@@ -66,7 +66,7 @@ file_digest() {
   lines_before="$(wc -l <"$LEDGER")"
 
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "new failure description" --recurrence-of none
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "new failure description" --recurrence-of none
 
   [ "$status" -eq 0 ]
   grep -Fq "| $expected_id |" "$CATALOG"
@@ -91,7 +91,7 @@ file_digest() {
   ledger_before="$(file_digest "$LEDGER")"
 
   run env CATALOG="$CATALOG" CRITICALITY="$crit" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A -t HIGH --disposition advisory \
+    bash "$TOOL" -c A -t HIGH --disposition advisory --ladder-rung prose-rule \
     "printed undo must own a criticality override" --recurrence-of none
 
   [ "$status" -eq 0 ]
@@ -114,7 +114,7 @@ file_digest() {
 
 @test "cluster decision is recorded while every other value aborts without writes" {
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "clustered failure description" --recurrence-of c-001
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "clustered failure description" --recurrence-of c-001
   [ "$status" -eq 0 ]
   grep -F 'clustered failure description' "$CATALOG" | grep -Fq 'recurrence_of: c-001'
 
@@ -123,7 +123,7 @@ file_digest() {
   catalog_before="$(file_digest "$CATALOG")"
   ledger_before="$(file_digest "$LEDGER")"
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "invalid recurrence description" --recurrence-of bogus
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "invalid recurrence description" --recurrence-of bogus
   [ "$status" -ne 0 ]
   [[ "$output" == *"c-NNN"* ]]
   [[ "$output" == *"none"* ]]
@@ -136,7 +136,7 @@ file_digest() {
   ledger_before="$(file_digest "$LEDGER")"
 
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "repeated recurrence option" \
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "repeated recurrence option" \
       --recurrence-of bogus --recurrence-of none
 
   [ "$status" -ne 0 ]
@@ -151,7 +151,7 @@ file_digest() {
   ledger_before="$(file_digest "$LEDGER")"
 
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "unknown cluster recurrence" --recurrence-of c-999
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "unknown cluster recurrence" --recurrence-of c-999
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"c-999"* ]]
@@ -172,7 +172,7 @@ file_digest() {
 
   for corpus in "$empty" "$missing" "$unreadable"; do
     run env CATALOG="$CATALOG" CORPUS="$corpus" \
-      bash "$TOOL" -c A --disposition advisory "x" --recurrence-of none
+      bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "x" --recurrence-of none
     [ "$status" -ne 0 ]
     [[ "$output" == *"$corpus"* ]]
     [ "$(file_digest "$CATALOG")" = "$catalog_before" ]
@@ -182,7 +182,7 @@ file_digest() {
 
 @test "a populated corpus with zero candidates is a successful measured lookup" {
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "quartz zephyr" --recurrence-of none
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "quartz zephyr" --recurrence-of none
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Candidates for human review. This tool does not determine duplication."* ]]
@@ -404,7 +404,7 @@ PY
   recall_baselines_before="$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "terminal success proof finished" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule "terminal success proof finished" --recurrence-of none
 
   [ "$status" -eq 0 ]
   add_output="$output"
@@ -449,7 +449,7 @@ PY
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
     HINDSIGHT_ALLOW_RECALL_DROP_REASON="must-not-reach-the-release-tool" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule \
     "the known recalled floor needs no override" --recurrence-of none
 
   [ "$status" -eq 0 ]
@@ -463,7 +463,7 @@ PY
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$WORK/no-tier-trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A --disposition advisory "missing tier" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A --disposition advisory --ladder-rung prose-rule "missing tier" --recurrence-of none
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"-t/--tier is required"* ]]
@@ -474,7 +474,7 @@ PY
 
 @test "-t rejects an unknown tier value" {
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A -t URGENT --disposition advisory "bogus tier" --recurrence-of none
+    bash "$TOOL" -c A -t URGENT --disposition advisory --ladder-rung prose-rule "bogus tier" --recurrence-of none
   [ "$status" -ne 0 ]
   [[ "$output" == *"CRITICAL, HIGH, MEDIUM, or LOW"* ]]
 }
@@ -484,7 +484,7 @@ PY
   trace="$WORK/tier-trace"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t CRITICAL --disposition advisory "tier recorded at filing time" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t CRITICAL --disposition advisory --ladder-rung prose-rule "tier recorded at filing time" --recurrence-of none
 
   [ "$status" -eq 0 ]
   [ -f "$STAGE/catalog/criticality.jsonl" ]
@@ -512,7 +512,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
   trace="$WORK/pointer-trace"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t CRITICAL --disposition advisory "pointer sync on write" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t CRITICAL --disposition advisory --ladder-rung prose-rule "pointer sync on write" --recurrence-of none
 
   [ "$status" -eq 0 ]
   [ -f "$STAGE/docs/POINTER.md" ]
@@ -533,7 +533,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
   trace="$WORK/dotdot-trace"
 
   run env CATALOG="$STAGE/catalog/../catalog/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "dot dot alias" --recurrence-of c-001
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule "dot dot alias" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
@@ -546,7 +546,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
   trace="$WORK/symlink-trace"
 
   run env CATALOG="$WORK/catalog-link/failure-modes.md" TRACE="$trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "symlink alias" --recurrence-of c-001
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule "symlink alias" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
   [ "$(tr '\n' ' ' <"$trace")" = "extract release reconcile " ]
@@ -560,7 +560,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" TRACE="$WORK/topology-trace" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A --disposition advisory "missing topology" --recurrence-of c-001
+    bash "$STAGE/bin/add-failure-mode.sh" -c A --disposition advisory --ladder-rung prose-rule "missing topology" --recurrence-of c-001
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"fleet-dispatch/migrations/0017_failure_class.sql"* ]]
@@ -574,7 +574,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
   catalog_before="$(file_digest "$CATALOG")"
   ledger_before="$(file_digest "$LEDGER")"
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "tampered undo" --recurrence-of none
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "tampered undo" --recurrence-of none
   [ "$status" -eq 0 ]
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
@@ -597,7 +597,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
 
 @test "a mid-restore copy failure rolls every target back to its pre-undo state" {
   run env CATALOG="$CATALOG" CORPUS="$CORPUS_DIR" \
-    bash "$TOOL" -c A --disposition advisory "mid restore failure" --recurrence-of none
+    bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule "mid restore failure" --recurrence-of none
   [ "$status" -eq 0 ]
   journal="$(printf '%s\n' "$output" | sed -n 's/^UNDO: .* --undo //p' | tail -n 1)"
   [ -n "$journal" ]
@@ -714,7 +714,7 @@ PY
   l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "full loop no stub" --recurrence-of none
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule "full loop no stub" --recurrence-of none
 
   [ "$status" -eq 0 ]
   grep -Fq '| FM-002 |' "$STAGE/catalog/failure-modes.md"
@@ -752,7 +752,7 @@ PY
   make_real_reconcile_repo
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "unrelated backlog must not block" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule "unrelated backlog must not block" \
       --recurrence-of none
 
   [ "$status" -eq 0 ]
@@ -779,7 +779,7 @@ PY
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" LOSSY=1 \
-    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory "lossy extraction must still fail" \
+    bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory --ladder-rung prose-rule "lossy extraction must still fail" \
       --recurrence-of none
 
   [ "$status" -ne 0 ]
@@ -964,7 +964,7 @@ PY
   DIRECT_WORKTREE="$linked_worktree"
   git -C "$STAGE" worktree add -q -b direct-worktree "$linked_worktree"
   trace="$WORK/direct-trace"
-  run env TRACE="$trace" bash -c 'cd "$1" && bash bin/add-failure-mode.sh -c A -t HIGH --disposition advisory "direct hook fixture" --recurrence-of none' \
+  run env TRACE="$trace" bash -c 'cd "$1" && bash bin/add-failure-mode.sh -c A -t HIGH --disposition advisory --ladder-rung prose-rule "direct hook fixture" --recurrence-of none' \
     _ "$linked_worktree"
   [ "$status" -eq 0 ]
   git -C "$linked_worktree" add catalog/failure-modes.md catalog/id-ledger.txt \

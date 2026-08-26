@@ -212,6 +212,7 @@ def _add(
 ) -> subprocess.CompletedProcess[str]:
     argv = ["bash", str(repo / "bin" / "add-failure-mode.sh"),
             "-c", "A", "-t", "LOW", "--disposition", "advisory",
+            "--ladder-rung", "prose-rule",
             "--recurrence-of", "none", description]
     env = dict(os.environ)
     env.pop("CORPUS", None)
@@ -237,7 +238,8 @@ def _correct(
 ) -> subprocess.CompletedProcess[str]:
     argv = [
         "bash", str(repo / "bin" / "correct-failure-mode.sh"),
-        "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+        "-t", "LOW", "--disposition", "advisory", "--ladder-rung", "prose-rule",
+        "--recurrence-of", "none",
         target, refutation, lesson,
     ]
     if env is None:
@@ -476,7 +478,8 @@ def test_sigkill_before_atomic_catalog_exchange_leaves_the_old_pair(sandbox) -> 
 
     argv = [
         "bash", str(repo / "bin" / "correct-failure-mode.sh"),
-        "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+        "-t", "LOW", "--disposition", "advisory", "--ladder-rung", "prose-rule",
+        "--recurrence-of", "none",
         "FM-404", "refuted by timestamps", "measure the actual queue wait",
     ]
     proc = subprocess.Popen(
@@ -544,7 +547,8 @@ def test_sigkill_during_post_exchange_rollback_leaves_the_old_pair(sandbox) -> N
 
     argv = [
         "bash", str(repo / "bin" / "correct-failure-mode.sh"),
-        "-t", "LOW", "--disposition", "advisory", "--recurrence-of", "none",
+        "-t", "LOW", "--disposition", "advisory", "--ladder-rung", "prose-rule",
+        "--recurrence-of", "none",
         "FM-404", "refuted by timestamps", "measure the actual queue wait",
     ]
     proc = subprocess.Popen(
@@ -722,6 +726,7 @@ def test_undo_restores_a_future_artifact_recorded_by_the_journal(tmp_path: Path)
     added = subprocess.run(
         [
             "bash", str(tool), "-c", "A", "--disposition", "advisory",
+            "--ladder-rung", "prose-rule",
             "--recurrence-of", "none", "every journaled future artifact must be undoable",
         ],
         cwd=repo,

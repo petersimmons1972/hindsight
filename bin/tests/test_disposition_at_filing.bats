@@ -42,7 +42,7 @@ add_env() {
   catalog_before="$(file_digest "$CATALOG")"
   ledger_before="$(file_digest "$LEDGER")"
 
-  run add_env bash "$TOOL" -c A --disposition bogus \
+  run add_env bash "$TOOL" -c A --disposition bogus --ladder-rung prose-rule \
     "invalid disposition description" --recurrence-of none
 
   [ "$status" -ne 0 ]
@@ -74,7 +74,7 @@ add_env() {
 @test "recurrence of a cluster force-promotes advisory to mechanize" {
   expected_id="$(python3 "$ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
 
-  run add_env bash "$TOOL" -c A --disposition advisory \
+  run add_env bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule \
     "recurring cluster force promote" --recurrence-of c-001
 
   [ "$status" -eq 0 ]
@@ -95,7 +95,7 @@ assert row['disposition'] == 'mechanize', row
 @test "recurrence of none records the requested advisory disposition" {
   expected_id="$(python3 "$ROOT/guard/failure_mode_catalog_guard.py" --next-id "$CATALOG")"
 
-  run add_env bash "$TOOL" -c A --disposition advisory \
+  run add_env bash "$TOOL" -c A --disposition advisory --ladder-rung prose-rule \
     "novel advisory filing" --recurrence-of none
 
   [ "$status" -eq 0 ]

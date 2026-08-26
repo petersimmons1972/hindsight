@@ -18,6 +18,18 @@
 #               Required. Closed set. Recorded in catalog/criticality.jsonl.
 #               A filing with --recurrence-of c-NNN is force-promoted to
 #               mechanize regardless of this flag (--recurrence-of none is not).
+#   --ladder-rung structural|mechanical-gate|prose-rule
+#               Required (exactly one of this or --ladder-rung-infeasible).
+#               Closed set naming the highest nameable failure-elimination
+#               ladder rung (structural fix > mechanical gate > prose rule).
+#               Recorded in catalog/criticality.jsonl as ladder_rung.
+#               This check verifies the field's presence and shape, not its
+#               truth — it targets forgetting, not evasion.
+#   --ladder-rung-infeasible REASON
+#               Alternative to --ladder-rung when neither a structural fix nor
+#               a mechanical gate nor a prose rule placement is nameable.
+#               Non-empty free text. Records ladder_rung=infeasible and
+#               ladder_rung_reason. Same presence/shape (not truth) limit.
 #   --recurrence-of c-NNN|none
 #               Record the human recurrence decision after corpus review.
 #               c-NNN is a cluster id, not an FM id.
@@ -222,11 +234,16 @@ TIER=""
 TIER_SEEN=0
 DISPOSITION=""
 DISPOSITION_SEEN=0
+LADDER_RUNG=""
+LADDER_RUNG_SEEN=0
+LADDER_RUNG_INFEASIBLE=""
+LADDER_RUNG_INFEASIBLE_SEEN=0
 RECURRENCE_OF=""
 RECURRENCE_SEEN=0
 SUPERSEDES=""
 POSITIONAL=()
 DISPOSITION_VALUES="mechanize, brief-inject, or advisory"
+LADDER_RUNG_VALUES="structural, mechanical-gate, or prose-rule"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -266,6 +283,42 @@ while [[ $# -gt 0 ]]; do
                     ;;
             esac
             DISPOSITION_SEEN=1
+            shift 2
+            ;;
+        --ladder-rung)
+            [[ $# -ge 2 ]] || {
+                echo "ERROR: --ladder-rung requires $LADDER_RUNG_VALUES" >&2
+                exit 1
+            }
+            [[ $LADDER_RUNG_SEEN -eq 0 ]] || {
+                echo "ERROR: --ladder-rung may be given once; accepted values are $LADDER_RUNG_VALUES" >&2
+                exit 1
+            }
+            case "$2" in
+                structural|mechanical-gate|prose-rule) LADDER_RUNG="$2" ;;
+                *)
+                    echo "ERROR: --ladder-rung accepts $LADDER_RUNG_VALUES" >&2
+                    exit 1
+                    ;;
+            esac
+            LADDER_RUNG_SEEN=1
+            shift 2
+            ;;
+        --ladder-rung-infeasible)
+            [[ $# -ge 2 ]] || {
+                echo "ERROR: --ladder-rung-infeasible requires a non-empty reason" >&2
+                exit 1
+            }
+            [[ $LADDER_RUNG_INFEASIBLE_SEEN -eq 0 ]] || {
+                echo "ERROR: --ladder-rung-infeasible may be given once" >&2
+                exit 1
+            }
+            [[ -n "${2//[[:space:]]/}" ]] || {
+                echo "ERROR: --ladder-rung-infeasible requires a non-empty reason" >&2
+                exit 1
+            }
+            LADDER_RUNG_INFEASIBLE="$2"
+            LADDER_RUNG_INFEASIBLE_SEEN=1
             shift 2
             ;;
         --recurrence-of)
@@ -310,6 +363,18 @@ done
     echo "ERROR: --disposition is required; accepted values are $DISPOSITION_VALUES" >&2
     exit 1
 }
+
+if [[ $LADDER_RUNG_SEEN -eq 1 && $LADDER_RUNG_INFEASIBLE_SEEN -eq 1 ]]; then
+    echo "ERROR: provide exactly one of --ladder-rung or --ladder-rung-infeasible" >&2
+    exit 1
+fi
+if [[ $LADDER_RUNG_SEEN -eq 0 && $LADDER_RUNG_INFEASIBLE_SEEN -eq 0 ]]; then
+    echo "ERROR: --ladder-rung is required (or --ladder-rung-infeasible); accepted values are $LADDER_RUNG_VALUES" >&2
+    exit 1
+fi
+if [[ $LADDER_RUNG_INFEASIBLE_SEEN -eq 1 ]]; then
+    LADDER_RUNG="infeasible"
+fi
 
 [[ ${#POSITIONAL[@]} -le 2 ]] || {
     echo "ERROR: expected TITLE and optional DESCRIPTION" >&2
@@ -636,16 +701,17 @@ PYEOF
 # happened, which is precisely the failure the ledger exists to catch.
 printf '%s\n' "$FM_ID" >> "$LEDGER"
 
-# Disposition (and tier, when supplied) are recorded beside the catalog so a
-# scratch CATALOG override never writes the real catalog/criticality.jsonl.
-# Existing rows without a disposition field are pre-O2; readers must tolerate
-# their absence rather than treating it as mechanize.
-python3 - "$CRITICALITY" "$FM_ID" "${TIER:-}" "$TITLE" "$DESC" "$EFFECTIVE_DISPOSITION" <<'PYEOF'
+# Disposition, ladder rung (and tier, when supplied) are recorded beside the
+# catalog so a scratch CATALOG override never writes the real
+# catalog/criticality.jsonl. Existing rows without a disposition / ladder_rung
+# field are pre-requirement; readers must tolerate their absence rather than
+# treating missing values as defaults.
+python3 - "$CRITICALITY" "$FM_ID" "${TIER:-}" "$TITLE" "$DESC" "$EFFECTIVE_DISPOSITION" "$LADDER_RUNG" "$LADDER_RUNG_INFEASIBLE" <<'PYEOF'
 import datetime
 import json
 import sys
 
-path, fm_id, tier, title, desc, disposition = sys.argv[1:7]
+path, fm_id, tier, title, desc, disposition, ladder_rung, ladder_rung_reason = sys.argv[1:9]
 evidence = f"{title} {desc}".strip()
 row = {
     "fm_id": fm_id,
@@ -657,7 +723,10 @@ row = {
     "scored_by": "add-failure-mode.sh (write-time)",
     "date": datetime.date.today().isoformat(),
     "disposition": disposition,
+    "ladder_rung": ladder_rung,
 }
+if ladder_rung == "infeasible":
+    row["ladder_rung_reason"] = ladder_rung_reason
 with open(path, "a", encoding="utf-8") as fh:
     fh.write(json.dumps(row) + "\n")
 PYEOF
@@ -792,5 +861,10 @@ if [[ "$EFFECTIVE_DISPOSITION" != "$DISPOSITION" ]]; then
     echo "  disposition: ${EFFECTIVE_DISPOSITION} (force-promoted from ${DISPOSITION} by --recurrence-of ${RECURRENCE_OF})"
 else
     echo "  disposition: ${EFFECTIVE_DISPOSITION}"
+fi
+if [[ "$LADDER_RUNG" == "infeasible" ]]; then
+    echo "  ladder_rung: infeasible (${LADDER_RUNG_INFEASIBLE})"
+else
+    echo "  ladder_rung: ${LADDER_RUNG}"
 fi
 echo "  table:  ${TABLE_ROW}"

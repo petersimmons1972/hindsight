@@ -15,10 +15,19 @@ around. See plans/06-l3-invariant-ledger.md D1-D6 for the full contract:
       path is unverifiable from here and is treated as a failure under
       --assert-paths-exist, same reasoning as a missing path: an unverifiable
       "machine" claim reads as covered without being checked.
-  D3  a row's source_repos, deduplicated, must have >=2 distinct entries.
-      Duplicate-only repos ("repo-a","repo-a") do not clear the bar.
+  D3  a row's source_repos, deduplicated (blank-stripped), must have >=2
+      distinct non-blank entries. Duplicate-only repos ("repo-a","repo-a")
+      do not clear the bar. source_repos must structurally be a JSON array
+      of strings -- a bare string (iterates char-by-char), a dict (iterates
+      its keys), or a list with a non-string member is rejected outright
+      with a named D3 error, not silently accepted as "iterable with >=2
+      distinct members" and not left to crash as an uncaught TypeError.
   D4  a judgment row must carry a non-empty (non-whitespace) procedural
       substitute.
+  --  every row's `invariant` field (docs/L3.md schema) must be a non-empty,
+      non-whitespace string. An "invariant ledger" that never inspects
+      `invariant` grades hollow rows green; this is schema enforcement, not
+      a new D-numbered gate in plan-06.
   D5  a missing, empty, or unparseable --clusters file is fail-loud: exit 1
       unconditionally, even against an empty ledger. `--clusters /dev/null`
       exits 1. (This is a corpus-integrity precondition, independent of any
@@ -83,14 +92,38 @@ def check_row(row, assert_paths_exist, repo_root):
         errors.append(f"kind={kind!r} is neither 'machine' nor 'judgment' (D1)")
         return errors  # nothing else about this row can be graded meaningfully
 
-    # D3 -- >=2 distinct source repos, deduplicated.
-    source_repos = row.get("source_repos") or []
-    distinct = set(source_repos)
-    if len(distinct) < 2:
+    # invariant -- every row (docs/L3.md schema) must state a non-empty
+    # generalized claim. Checked before D3 so a row missing both fields
+    # reports both violations rather than short-circuiting.
+    invariant = row.get("invariant")
+    if not invariant or not str(invariant).strip():
         errors.append(
-            f"source_repos={source_repos!r} has only {len(distinct)} distinct "
-            "repo(s) -- single-repo provenance does not clear the L3 bar (D3)"
+            f"invariant={invariant!r} is empty/blank -- a ledger row must "
+            "state its generalized claim in the 'invariant' field; an "
+            "unenforceable finding with no invariant text is not a ledger "
+            "row (schema, docs/L3.md)"
         )
+
+    # D3 -- >=2 distinct source repos, deduplicated. source_repos must be a
+    # JSON array of strings; anything else fails structurally rather than
+    # degrading into a truthy/iterable check (a string iterates character by
+    # character; a dict iterates its keys) or an uncaught TypeError.
+    source_repos = row.get("source_repos")
+    if source_repos is None:
+        source_repos = []
+    if not isinstance(source_repos, list) or not all(isinstance(r, str) for r in source_repos):
+        errors.append(
+            f"source_repos={source_repos!r} must be a JSON array of repo-name "
+            "strings, not a bare string/dict/other type or a list containing "
+            "a non-string member (D3)"
+        )
+    else:
+        distinct = {r.strip() for r in source_repos if r.strip()}
+        if len(distinct) < 2:
+            errors.append(
+                f"source_repos={source_repos!r} has only {len(distinct)} distinct "
+                "non-blank repo(s) -- single-repo provenance does not clear the L3 bar (D3)"
+            )
 
     if kind == "machine":
         enforcement = row.get("enforcement")

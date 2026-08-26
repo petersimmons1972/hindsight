@@ -51,6 +51,20 @@ def _write_ledger(path, row):
         f.write(json.dumps(row) + "\n")
 
 
+def _with_default_invariant(row):
+    """Inject a placeholder non-empty `invariant` for a PR #63 fixture row that
+    lacks one. The founder-authorized ground-truth fixture (pipeline/tests/
+    fixtures/l3_ground_truth.jsonl) predates the `invariant` field and only
+    grades kind/enforcement/source_repos/procedural_substitute -- it is never
+    edited here (R3). This keeps each ground-truth case isolated to the one
+    dimension it is actually testing instead of also (accidentally or not)
+    exercising the invariant-emptiness check added below.
+    """
+    if str(row.get("invariant") or "").strip():
+        return row
+    return {**row, "invariant": "Test-injected placeholder invariant (not part of the pinned PR #63 fixture row)."}
+
+
 def _run(ledger, clusters, extra_args=None, repo_root=None):
     args = [sys.executable, str(VALIDATE_L3), "--ledger", str(ledger), "--clusters", str(clusters)]
     if repo_root is not None:
@@ -64,7 +78,7 @@ def _run(ledger, clusters, extra_args=None, repo_root=None):
 def test_ground_truth_case(tmp_path, case):
     """Table-driven against the founder-authorized fixture -- red-first per plan-06 section 8."""
     ledger = tmp_path / "ledger.jsonl"
-    _write_ledger(ledger, case["row"])
+    _write_ledger(ledger, _with_default_invariant(case["row"]))
     clusters = tmp_path / "clusters.jsonl"
     _write_clusters(clusters)
     result = _run(ledger, clusters, extra_args=["--assert-paths-exist"], repo_root=REPO_ROOT)
@@ -137,6 +151,93 @@ def test_missing_ledger_fails_loud(tmp_path):
     ledger = tmp_path / "does_not_exist.jsonl"
     result = _run(ledger, clusters)
     assert result.returncode == 1
+
+
+_D3_BASE_ROW = {
+    "cluster_ids": ["fixture-multirepo"],
+    "kind": "judgment",
+    "invariant": "A generalized claim for the D3 bypass regression cases.",
+    "procedural_substitute": "Require an independent reviewer to inspect the rendered artifact before release.",
+}
+
+
+@pytest.mark.parametrize(
+    "source_repos",
+    ["ab", "fleet", {"a": 1, "b": 2}, ["repo-a", 1], 12, True, ["repo-a", ""], ["repo-a", "repo-a "]],
+    ids=[
+        "str-two-chars",
+        "str-multi-chars",
+        "dict-two-keys",
+        "list-with-nonstring-member",
+        "bare-int",
+        "bare-bool",
+        "list-with-blank-string",
+        "list-with-whitespace-duplicate",
+    ],
+)
+def test_d3_rejects_non_list_or_non_string_source_repos(tmp_path, source_repos):
+    """Regression for Grok review r2 Probe C: a string/dict source_repos (or a
+    list containing a blank/whitespace/non-string element) previously cleared
+    the >=2-distinct-repos bar (or crashed with an uncaught TypeError instead
+    of a structured D3 failure). All of these must now be rejected with a
+    named D3 error and no traceback."""
+    row = {**_D3_BASE_ROW, "source_repos": source_repos}
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, row)
+    clusters = tmp_path / "clusters.jsonl"
+    _write_clusters(clusters)
+    result = _run(ledger, clusters)
+    assert result.returncode == 1, (
+        f"source_repos={source_repos!r} unexpectedly validated: {result.stdout + result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "D3" in combined, f"expected a named D3 failure, got: {combined}"
+    assert "Traceback" not in combined, f"D3 must fail structurally, not crash: {combined}"
+
+
+@pytest.mark.parametrize(
+    "invariant_value,present",
+    [(None, False), ("", True), ("   ", True)],
+    ids=["key-absent", "empty-string", "whitespace-only"],
+)
+def test_invariant_field_rejects_empty_or_blank(tmp_path, invariant_value, present):
+    """Regression for Grok review r2 Probe A: a missing, empty, or
+    whitespace-only `invariant` field previously validated clean (exit 0).
+    docs/L3.md publishes `invariant` as a required schema field; an
+    'invariant ledger' that never inspects `invariant` grades hollow rows
+    green."""
+    row = {
+        "cluster_ids": ["fixture-multirepo"],
+        "source_repos": ["repo-a", "repo-b"],
+        "kind": "judgment",
+        "procedural_substitute": "Require an independent reviewer to inspect the rendered artifact before release.",
+    }
+    if present:
+        row["invariant"] = invariant_value
+    ledger = tmp_path / "ledger.jsonl"
+    _write_ledger(ledger, row)
+    clusters = tmp_path / "clusters.jsonl"
+    _write_clusters(clusters)
+    result = _run(ledger, clusters)
+    assert result.returncode == 1, (
+        f"invariant={invariant_value!r} (present={present}) unexpectedly validated: "
+        f"{result.stdout + result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "invariant" in combined.lower(), f"expected an invariant-named failure, got: {combined}"
+
+
+def test_real_ledger_rows_all_have_nonempty_invariant():
+    """Ground truth: the committed seed ledger must itself satisfy the new
+    invariant-emptiness check (not just the synthetic fixture cases)."""
+    real_ledger = REPO_ROOT / "pipeline" / "L3" / "invariants.jsonl"
+    with open(real_ledger) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            assert str(row.get("invariant") or "").strip(), f"row {row.get('id')} has empty invariant"
 
 
 def test_judgment_count_matches_substitute_count():

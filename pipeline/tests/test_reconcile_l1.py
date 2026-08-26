@@ -554,6 +554,80 @@ def test_suffixed_id_does_not_cover_its_unsuffixed_sibling(tmp_path, monkeypatch
     assert report[0]["missing"] == ["FM-12"]
 
 
+def test_hyphen_compound_suffix_does_not_cover_its_collided_prefix(tmp_path, monkeypatch, capsys) -> None:
+    """hindsight#179 negative control.
+
+    fleet-orch's real corpus disambiguates two source headings that both
+    literally read "CI-1" (one in FAILURE-MODES.md, one in
+    CODING-INVARIANTS.md) by appending the old FM number, giving records
+    "CI-1-FM5" and "CI-1-FM7". Neither record's id, nor its source_anchor
+    ("CI-1 (old: FM-7)"), is the standalone entry "CI-1" -- but a raw
+    substring search finds "CI-1" inside both, so a genuinely-missing
+    standalone "CI-1" would be reported as covered. That is a false
+    negative on the shortfall, exactly backwards from what a coverage
+    gate is for.
+    """
+    build_corpus(tmp_path, monkeypatch, {"alpha": (("CI-1",), ("CI-1-FM7",))})
+
+    found, _ = reconcile_l1.extracted("alpha")
+    status = run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    # "CI-1-FM7" is a disambiguating id, not itself a recognized FM-style
+    # token (no hyphen precedes the digit run in "FM7"), so it contributes
+    # nothing to `found` either way -- the fix's job is only to stop it from
+    # satisfying "CI-1".
+    assert "CI-1" not in found
+    assert status == 1
+    assert report[0]["missing"] == ["CI-1"]
+
+
+def test_hyphen_compound_suffix_in_id_field_alone_does_not_cover_prefix(tmp_path, monkeypatch, capsys) -> None:
+    """Same collision, reproduced with the exact real-world `id` shape.
+
+    fleet-orch's actual JSONL prefixes the slug: "fleet-orch-CI-1-FM7". This
+    checks the fix holds with that literal prefix present too, and with no
+    `source_anchor` field to independently supply a clean match -- isolating
+    the bug to the `id`-field substring alone.
+    """
+    l1 = tmp_path / "L1"
+    l1.mkdir()
+    md = tmp_path / "real.md"
+    md.write_text("## CI-1\n", encoding="utf-8")
+    (l1 / "real.jsonl").write_text(
+        json.dumps({"id": "real-CI-1-FM7"}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(reconcile_l1, "L1", l1)
+    monkeypatch.setattr(reconcile_l1, "ENUMERABLE", {"real": ([md], HEADING_RX)})
+
+    found, _ = reconcile_l1.extracted("real")
+    status = run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert "CI-1" not in found
+    assert status == 1
+    assert report[0]["missing"] == ["CI-1"]
+
+
+def test_plain_id_without_compound_suffix_still_covers(tmp_path, monkeypatch, capsys) -> None:
+    """Positive control: an exact, non-collided ID still reports covered.
+
+    Guards against an overcorrection that would make every ID report
+    missing regardless of a real, exact match.
+    """
+    build_corpus(tmp_path, monkeypatch, {"alpha": (("CI-11",), ("CI-11",))})
+
+    found, _ = reconcile_l1.extracted("alpha")
+    status = run_main(monkeypatch, "--json")
+    report = json.loads(capsys.readouterr().out)
+
+    assert "CI-11" in found
+    assert status == 0
+    assert report[0]["missing"] == []
+    assert report[0]["covered"] == report[0]["ground_truth"] == 1
+
+
 def test_unresolved_flag_follows_ground_truth_not_nonempty_extraction(tmp_path, monkeypatch, capsys) -> None:
     """A present JSONL cannot make a missing source look machine-resolved."""
     l1 = tmp_path / "L1"

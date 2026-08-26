@@ -267,7 +267,18 @@ def extracted(slug: str) -> tuple[set[str], int]:
         # a validator that fails ground truth is worse than no validator.
         blob = " ".join(str(d.get(k, "")) for k in
                         ("id", "source_anchor", "instance", "check"))
-        found.update(re.findall(r"(?:OPS|CI|ORC|MDL|FM)-\d+[a-z]?", blob))
+        # The trailing `(?![\w-])` matters: without it this is a substring search,
+        # not an ID match. A record disambiguated as e.g. "CI-1-FM7" (two source
+        # headings both literally named "CI-1" collided, so the corpus appended
+        # the old FM number to tell them apart -- see fleet-orch's CI-1-FM5 and
+        # CI-1-FM7) contains "CI-1" as a literal substring of its id AND of its
+        # source_anchor ("CI-1 (old: FM-7)"), but neither record IS the standalone
+        # entry "CI-1" -- that heading can be entirely missing from the JSONL while
+        # this search still reports it "covered" because a longer, hyphen-suffixed
+        # token happens to start with it (hindsight#179). Disallowing a following
+        # word-char blocks the plain-concatenation case (FM-1 inside FM-10/FM-100);
+        # disallowing a following hyphen blocks this compound-suffix case.
+        found.update(re.findall(r"(?:OPS|CI|ORC|MDL|FM)-\d+[a-z]?(?![\w-])", blob))
         found.update(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", blob))
     return found, n
 

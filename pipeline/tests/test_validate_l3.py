@@ -60,7 +60,10 @@ def _with_default_invariant(row):
     dimension it is actually testing instead of also (accidentally or not)
     exercising the invariant-emptiness check added below.
     """
-    if str(row.get("invariant") or "").strip():
+    if "invariant" in row:
+        # A fixture case that deliberately sets `invariant` (including a
+        # blank one, to test the emptiness check itself) is left alone --
+        # only an absent key gets a placeholder.
         return row
     return {**row, "invariant": "Test-injected placeholder invariant (not part of the pinned PR #63 fixture row)."}
 
@@ -197,15 +200,18 @@ def test_d3_rejects_non_list_or_non_string_source_repos(tmp_path, source_repos):
 
 @pytest.mark.parametrize(
     "invariant_value,present",
-    [(None, False), ("", True), ("   ", True)],
-    ids=["key-absent", "empty-string", "whitespace-only"],
+    [(None, False), ("", True), ("   ", True), (12, True), ({"a": 1}, True)],
+    ids=["key-absent", "empty-string", "whitespace-only", "bare-int", "dict"],
 )
 def test_invariant_field_rejects_empty_or_blank(tmp_path, invariant_value, present):
     """Regression for Grok review r2 Probe A: a missing, empty, or
     whitespace-only `invariant` field previously validated clean (exit 0).
     docs/L3.md publishes `invariant` as a required schema field; an
     'invariant ledger' that never inspects `invariant` grades hollow rows
-    green."""
+    green. Also covers the same type-confusion class D3 was refuted for:
+    a naive `not invariant or not str(invariant).strip()` check would let
+    a non-string (12, a dict) through once stringified/truthy -- invariant
+    must be an actual non-blank string, not anything coercible to one."""
     row = {
         "cluster_ids": ["fixture-multirepo"],
         "source_repos": ["repo-a", "repo-b"],

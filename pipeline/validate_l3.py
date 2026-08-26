@@ -34,7 +34,8 @@ around. See plans/06-l3-invariant-ledger.md D1-D6 for the full contract:
       single row's own embedded provenance -- see docs/L3.md.)
   D6  this script never writes anything; it only reads and reports.
 
-Exit 0 only when every ledger row clears D1-D4. Exit 1 on any violation, or
+Exit 0 only when every ledger row clears D1-D4 and the invariant-field
+schema check above. Exit 1 on any violation, or
 on a missing/empty/unparseable --clusters file.
 """
 import argparse
@@ -96,7 +97,7 @@ def check_row(row, assert_paths_exist, repo_root):
     # generalized claim. Checked before D3 so a row missing both fields
     # reports both violations rather than short-circuiting.
     invariant = row.get("invariant")
-    if not invariant or not str(invariant).strip():
+    if not isinstance(invariant, str) or not invariant.strip():
         errors.append(
             f"invariant={invariant!r} is empty/blank -- a ledger row must "
             "state its generalized claim in the 'invariant' field; an "

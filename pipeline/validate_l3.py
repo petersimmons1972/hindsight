@@ -190,6 +190,13 @@ def validate(ledger_path, clusters_path, assert_paths_exist, repo_root):
         if row is None:
             all_errors.append(f"line {line_no}: not valid JSON: {raw!r}")
             continue
+        if not isinstance(row, dict):
+            # A line can parse as valid JSON without being a JSON object --
+            # a bare list, string, or number. Reject it structurally here,
+            # before any .get() call, rather than let it reach check_row and
+            # crash with an uncaught AttributeError.
+            all_errors.append(f"line {line_no}: row is not a JSON object: {raw!r}")
+            continue
         row_id = row.get("id") or row.get("case") or f"<line {line_no}>"
         row_errors = check_row(row, assert_paths_exist, repo_root)
         if row_errors:

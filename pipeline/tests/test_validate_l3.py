@@ -156,6 +156,30 @@ def test_missing_ledger_fails_loud(tmp_path):
     assert result.returncode == 1
 
 
+@pytest.mark.parametrize(
+    "raw_line",
+    ["[1, 2, 3]", '"hello"', "42", "true"],
+    ids=["json-list", "json-string", "json-number", "json-bool"],
+)
+def test_ledger_line_that_parses_but_is_not_an_object_fails_loud(tmp_path, raw_line):
+    """A ledger line can be valid JSON without being a JSON object -- a bare
+    list, string, number, or bool. load_ledger only null-checks on
+    JSONDecodeError, so a non-dict row previously reached check_row's
+    row.get(...) calls and crashed with an uncaught AttributeError instead
+    of a structured failure -- the same defect class as D2/D3/D4, one level
+    up from check_row."""
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text(raw_line + "\n")
+    clusters = tmp_path / "clusters.jsonl"
+    _write_clusters(clusters)
+    result = _run(ledger, clusters)
+    assert result.returncode == 1, (
+        f"raw_line={raw_line!r} unexpectedly validated: {result.stdout + result.stderr}"
+    )
+    combined = result.stdout + result.stderr
+    assert "Traceback" not in combined, f"must fail structurally, not crash: {combined}"
+
+
 _D3_BASE_ROW = {
     "cluster_ids": ["fixture-multirepo"],
     "kind": "judgment",

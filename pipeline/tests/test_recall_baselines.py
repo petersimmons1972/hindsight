@@ -198,6 +198,170 @@ def test_override_accepts_the_drop_and_records_the_reason(artifact: Path) -> Non
     assert json.loads(artifact.read_text(encoding="utf-8"))["overrides"] == overrides
 
 
+def test_allow_drop_alone_refuses_a_drop_against_a_reconciled_floor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """hindsight#178 negative control: `--allow-drop --reason` alone must not
+    silently erode a reviewed `reconciled_floors` entry.
+
+    Plants TWO families: an ordinary one (raw baseline only, no reconciled
+    floor) and a reconciled one (mirrors the real `dedup-identity-key` shape).
+    Both are staged to drop. `--allow-drop --reason` with no `--reconcile`
+    must still refuse outright and write nothing -- proving the reviewed
+    exception is not erodable as a side effect of accepting an unrelated,
+    ordinary drop in the same invocation.
+    """
+    payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    payload["baselines"]["released"]["ordinary-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+    }
+    payload["baselines"]["released"]["reviewed-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+    }
+    payload["reconciled_floors"]["released"]["reviewed-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+        "cause": "a prior, reviewed reconciliation for this synthetic family",
+    }
+    path = tmp_path / "recall-baselines.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    families = MODULE.load_families()
+    families["ordinary-family"] = ["x1", "x2", "x3", "x4"]
+    families["reviewed-family"] = ["y1", "y2", "y3", "y4"]
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps({"families": [{"key": k, "members": v} for k, v in families.items()]}),
+        encoding="utf-8",
+    )
+    clusters_rows = [
+        json.loads(line)
+        for line in (REPO / "pipeline" / "L2" / "clusters.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+    clusters_rows.append({"cluster_id": "c-ordinary-1", "members": ["x1", "x2"]})
+    clusters_rows.append({"cluster_id": "c-ordinary-2", "members": ["x3", "x4"]})
+    clusters_rows.append({"cluster_id": "c-reviewed-1", "members": ["y1", "y2"]})
+    clusters_rows.append({"cluster_id": "c-reviewed-2", "members": ["y3", "y4"]})
+    clusters = tmp_path / "clusters.jsonl"
+    clusters.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in clusters_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    before = path.read_bytes()
+    exit_code = MODULE.main([
+        "--artifact", str(path), "--fixture", str(fixture), "--clusters", str(clusters),
+        "--backend", "released", "--update", "--allow-drop", "--reason", "unrelated corpus growth",
+    ])
+    assert exit_code == 1
+    assert path.read_bytes() == before, "a refused reconciled drop must not rewrite the artifact"
+    err = capsys.readouterr().err
+    assert "REFUSED" in err
+    assert "released/reviewed-family" in err
+    assert "--reconcile released/reviewed-family" in err
+
+
+def test_reconcile_names_the_reconciled_floor_and_re_pins_it(tmp_path: Path) -> None:
+    """hindsight#178 positive control: naming the family makes `--allow-drop`
+    non-cosmetic against a reviewed `reconciled_floors` entry.
+
+    Same staged drop as above, but this time `--reconcile released/reviewed-family`
+    names exactly the family being re-pinned. The write must succeed, and the
+    `reconciled_floors` entry itself -- not merely `baselines`/`overrides` --
+    must move to the newly measured value, with the reason appended to its
+    audit trail.
+    """
+    payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    payload["baselines"]["released"]["reviewed-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+    }
+    payload["reconciled_floors"]["released"]["reviewed-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+        "cause": "a prior, reviewed reconciliation for this synthetic family",
+    }
+    path = tmp_path / "recall-baselines.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    families = MODULE.load_families()
+    families["reviewed-family"] = ["y1", "y2", "y3", "y4"]
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps({"families": [{"key": k, "members": v} for k, v in families.items()]}),
+        encoding="utf-8",
+    )
+    clusters_rows = [
+        json.loads(line)
+        for line in (REPO / "pipeline" / "L2" / "clusters.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        if line.strip()
+    ]
+    clusters_rows.append({"cluster_id": "c-reviewed-1", "members": ["y1", "y2", "y3"]})
+    clusters_rows.append({"cluster_id": "c-reviewed-2", "members": ["y4"]})
+    clusters = tmp_path / "clusters.jsonl"
+    clusters.write_text(
+        "\n".join(json.dumps(row, sort_keys=True) for row in clusters_rows) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = MODULE.main([
+        "--artifact", str(path), "--fixture", str(fixture), "--clusters", str(clusters),
+        "--backend", "released", "--update", "--allow-drop", "--reason", "corpus reclustered, reviewed",
+        "--reconcile", "released/reviewed-family",
+    ])
+    assert exit_code == 0
+
+    after = json.loads(path.read_text(encoding="utf-8"))
+    entry = after["reconciled_floors"]["released"]["reviewed-family"]
+    assert (entry["together"], entry["members"]) == (3, 4)
+    assert entry["fraction"] == 0.75
+    assert "corpus reclustered, reviewed" in entry["cause"]
+    assert "a prior, reviewed reconciliation" in entry["cause"], "history must be appended, not replaced"
+
+    # A second plain verify now passes against the re-pinned floor.
+    assert MODULE.main([
+        "--artifact", str(path), "--fixture", str(fixture), "--clusters", str(clusters),
+        "--backend", "released",
+    ]) == 0
+
+
+def test_reconcile_rejects_a_family_with_no_existing_reconciled_floor(tmp_path: Path) -> None:
+    """`--reconcile` cannot invent a reconciliation that was never reviewed."""
+    payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    path = tmp_path / "recall-baselines.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    exit_code = MODULE.main([
+        "--artifact", str(path), "--backend", "released", "--update",
+        "--allow-drop", "--reason", "why", "--reconcile", "released/not-a-real-family",
+    ])
+    assert exit_code == 2
+
+
+def test_reconcile_requires_allow_drop() -> None:
+    """`--reconcile` without `--allow-drop` is refused rather than ignored."""
+    assert MODULE.main([
+        "--artifact", str(COMMITTED), "--backend", "released",
+        "--reconcile", "released/dedup-identity-key",
+    ]) == 2
+
+
+def test_find_reconciled_drops_is_the_subset_of_find_drops_with_a_reconciled_floor() -> None:
+    recorded = {
+        "baselines": {"released": {"plain": {"fraction": 1.0}, "reviewed": {"fraction": 1.0}}},
+        "reconciled_floors": {"released": {"reviewed": {"fraction": 1.0}}},
+    }
+    measured = {"released": {"plain": {"fraction": 0.5}, "reviewed": {"fraction": 0.5}}}
+    assert MODULE.find_drops(recorded, measured) == [
+        ("released", "plain", 1.0, 0.5), ("released", "reviewed", 1.0, 0.5),
+    ]
+    assert MODULE.find_reconciled_drops(recorded, measured) == [
+        ("released", "reviewed", 1.0, 0.5),
+    ]
+
+
 def test_a_missing_member_counts_against_the_family() -> None:
     """A member absent from the partition must not be able to raise recall.
 

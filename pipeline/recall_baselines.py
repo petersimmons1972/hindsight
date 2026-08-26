@@ -29,14 +29,20 @@ hindsight#121 stays OPEN tracking the underlying degradation. This module makes
 the degradation visible and non-worsening; it does not fix it.
 
 Modes:
-  (default)              verify the committed artifact against measured recall
-  --update               re-measure and rewrite the artifact (release path)
-  --allow-drop --reason  permit a measured drop below a recorded baseline
+  (default)                          verify the committed artifact against measured recall
+  --update                          re-measure and rewrite the artifact (release path)
+  --allow-drop --reason             permit a measured drop below a recorded RAW baseline
+  --allow-drop --reason --reconcile BACKEND/FAMILY
+                                     also re-pin a *reconciled_floors* entry (hindsight#178):
+                                     --allow-drop alone never touches reconciled_floors, so a
+                                     drop against a reviewed exception stays refused until the
+                                     exact backend/family is named here explicitly.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import importlib.util
 import json
@@ -185,6 +191,26 @@ def find_drops(
     return sorted(drops)
 
 
+def find_reconciled_drops(
+    recorded: dict[str, object], measured: dict[str, dict[str, dict[str, object]]]
+) -> list[tuple[str, str, float, float]]:
+    """The subset of `find_drops` whose effective floor came from `reconciled_floors`.
+
+    These are the drops `--allow-drop` alone must NOT silently accept: each one
+    represents a previously reviewed, reconciled exception. Eroding it requires
+    the operator to name it explicitly via `--reconcile backend/family` (see
+    `main`) so the re-pin is a deliberate, auditable act rather than a side
+    effect of an unrelated `--allow-drop --reason` for some other family.
+    """
+    reconciled_floors = recorded.get("reconciled_floors", {})
+    out = []
+    for backend_name, family, was, now in find_drops(recorded, measured):
+        reconciled_backend = reconciled_floors.get(backend_name, {})
+        if family in reconciled_backend:
+            out.append((backend_name, family, was, now))
+    return out
+
+
 def _merge_baselines(
     recorded: dict[str, object], measured: dict[str, dict[str, dict[str, object]]]
 ) -> dict[str, dict[str, dict[str, object]]]:
@@ -219,6 +245,31 @@ def _render_drops(drops: list[tuple[str, str, float, float]]) -> str:
     return "\n".join(lines)
 
 
+def _render_unreconciled(drops: list[tuple[str, str, float, float]]) -> str:
+    lines = [
+        "recall-baselines: REFUSED: --allow-drop cannot silently erode a reviewed",
+        "reconciled_floors entry (hindsight#178). Each drop below names a",
+        "backend/family whose effective floor came from `reconciled_floors`, not the",
+        "raw `baselines` row -- --allow-drop --reason updates baselines/overrides",
+        "only, and never touches a reconciled exception on its own.",
+        "",
+    ]
+    for backend_name, family, was, now in drops:
+        lines.append(f"  {backend_name}/{family}: {was:.4f} -> {now:.4f}")
+    lines += [
+        "",
+        "Nothing was written. If this drop is a genuine re-measurement of an",
+        "already-reviewed exception (corpus growth re-clustering the same fixture",
+        "family, not a new quality regression), re-pin it explicitly by name:",
+        "  --update --allow-drop --reason \"why\" "
+        + " ".join(f"--reconcile {b}/{f}" for b, f, _, _ in drops),
+        "This is deliberately a second, explicit flag beyond --allow-drop: naming",
+        "the exact backend/family is what keeps this auditable rather than a side",
+        "effect of an unrelated --allow-drop for some other family.",
+    ]
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Record and enforce per-(family, backend) recall baselines."
@@ -237,6 +288,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="permit a measured drop below a recorded baseline")
     parser.add_argument("--reason", default=None,
                         help="required with --allow-drop; recorded in the artifact")
+    parser.add_argument(
+        "--reconcile", action="append", dest="reconcile", default=[],
+        metavar="BACKEND/FAMILY",
+        help=(
+            "repeatable; with --update --allow-drop --reason, explicitly re-pin "
+            "reconciled_floors[BACKEND][FAMILY] to the newly measured value. "
+            "--allow-drop alone never touches a reconciled_floors entry -- a "
+            "drop against one is refused unless named here by exact backend/"
+            "family, so re-pinning a reviewed exception stays a deliberate, "
+            "auditable act rather than a side effect of an unrelated override."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if args.allow_drop and not (args.reason or "").strip():
@@ -247,6 +310,19 @@ def main(argv: list[str] | None = None) -> int:
         print("recall-baselines: error: --allow-drop is only meaningful with --update",
               file=sys.stderr)
         return 2
+    if args.reconcile and not args.allow_drop:
+        print("recall-baselines: error: --reconcile is only meaningful with --allow-drop",
+              file=sys.stderr)
+        return 2
+
+    reconcile_targets: set[tuple[str, str]] = set()
+    for raw in args.reconcile:
+        if "/" not in raw:
+            print(f"recall-baselines: error: --reconcile expects BACKEND/FAMILY, got {raw!r}",
+                  file=sys.stderr)
+            return 2
+        backend_name, family_name = raw.split("/", 1)
+        reconcile_targets.add((backend_name, family_name))
 
     backends = args.backends or [RELEASED, "tfidf", "http"]
     measured = measure(backends, fixture=args.fixture, clusters_path=args.clusters)
@@ -260,9 +336,27 @@ def main(argv: list[str] | None = None) -> int:
               f"run with --update to record the initial baselines", file=sys.stderr)
         return 1
 
+    for backend_name, family_name in reconcile_targets:
+        if family_name not in recorded.get("reconciled_floors", {}).get(backend_name, {}):
+            print(
+                "recall-baselines: error: --reconcile "
+                f"{backend_name}/{family_name} names no existing "
+                "reconciled_floors entry -- there is nothing reviewed to re-pin",
+                file=sys.stderr,
+            )
+            return 2
+
     drops = find_drops(recorded, measured)
     if drops and not args.allow_drop:
         print(_render_drops(drops), file=sys.stderr)
+        return 1
+
+    reconciled_drops = find_reconciled_drops(recorded, measured)
+    unreconciled = [
+        drop for drop in reconciled_drops if (drop[0], drop[1]) not in reconcile_targets
+    ]
+    if unreconciled and args.allow_drop:
+        print(_render_unreconciled(unreconciled), file=sys.stderr)
         return 1
 
     if not args.update:
@@ -301,9 +395,26 @@ def main(argv: list[str] | None = None) -> int:
     }
     # Reconciliation records explain reviewed exceptions to the raw measured
     # baseline. They are durable artifact evidence, not a newly measured row,
-    # so a routine release rewrite must retain them exactly.
+    # so a routine release rewrite must retain them exactly -- EXCEPT for an
+    # entry the operator named explicitly via --reconcile, which is a
+    # deliberate, reasoned re-pin (hindsight#178), not silent erosion.
     if "reconciled_floors" in recorded:
-        payload["reconciled_floors"] = recorded["reconciled_floors"]
+        payload["reconciled_floors"] = copy.deepcopy(recorded["reconciled_floors"])
+        for backend_name, family, was, _now in reconciled_drops:
+            if (backend_name, family) not in reconcile_targets:
+                continue
+            entry = payload["reconciled_floors"][backend_name][family]
+            new_stats = measured[backend_name][family]
+            date = datetime.date.today().isoformat()
+            entry["cause"] = (
+                entry.get("cause", "").rstrip()
+                + f" UPDATE {date} (--reconcile {backend_name}/{family}): re-pinned "
+                f"from {was:.4f} to {float(new_stats['fraction']):.4f} via "
+                f"--allow-drop --reason: {args.reason.strip()}"
+            )
+            entry["together"] = new_stats["together"]
+            entry["members"] = new_stats["members"]
+            entry["fraction"] = new_stats["fraction"]
     tmp = args.artifact.with_suffix(args.artifact.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(args.artifact)

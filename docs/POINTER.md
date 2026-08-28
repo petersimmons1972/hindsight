@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-27 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
+28 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
 
 - **FM-21** [BROAD] Destructive DB/API methods must enforce their own guard (require explicit force flag or confirmation token at the method boundary)
 - **FM-25** [BROAD] Never TRUNCATE a shared-project table; use scoped DELETE or dump/restore only the target project rows
@@ -31,5 +31,6 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-430** [NARROW] A single agent that both implements a fix and authors its own acceptance test converges on a proof it can satisfy, not the property being guarded
 - **FM-444** [NARROW] CLASS: guards assert text exists instead of that behavior happens
 - **FM-533** [NARROW] A git command that changes a checkout (checkout -f, fetch <ref>:refs/heads/<x>, reset) must be issued as a single compound with an explicit 'cd <scratch>' in the SAME command and a post-condition assert on 'git rev-parse --show-toplevel', because the harness resets shell cwd between Bash calls and a scratch-intended command silently lands on the founder's live checkout.
+- **FM-544** [NARROW] Headless codex exec silently skips untrusted hooks
 
 For HIGH-tier entries (real but too numerous to preload), use `bin/query-failure-modes.sh <keyword>` -- do not open docs/HIGH.md directly.

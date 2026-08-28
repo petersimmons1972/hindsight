@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-273 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+280 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -277,3 +277,10 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-538** [NARROW] review-fanout Codex lane killed by the lane agent's own turn budget after cli-dispatch start created the worktree; panel silently shrank to N=2
 - **FM-539** [NARROW] review-fanout Grok lane refused by gate-753 because the lane prompt never sets the grok App token; panel silently N=2
 - **FM-540** [NARROW] review-fanout vendor lane runs cli-dispatch start synchronously; Bash 600000ms ceiling kills a >10 min harness (exit 143), panel silently N=2
+- **FM-542** [NARROW] cli-dispatch start --base forks from the local ref
+- **FM-543** [NARROW] Claude review lanes stall to the 900 s watchdog on read-heavy briefs
+- **FM-545** [NARROW] Lane launchers die with the invoking shell; relaunch collides on existing branch
+- **FM-547** [NARROW] Acceptance gate satisfied by letter, not execution
+- **FM-548** [NARROW] Worktree cleanup ran while lanes of the same job were live and removed two running lanes' worktrees
+- **FM-549** [NARROW] Workflow subagents' background lanes die at agent exit
+- **FM-551** [NARROW] Leaf gate ran only the two touched bats files; a behavior change to start broke an untouched suite (fleet#141 invariant) and reached cross-vendor review as a unanimous BLOCKER

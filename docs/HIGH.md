@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-280 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+284 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -284,3 +284,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-548** [NARROW] Worktree cleanup ran while lanes of the same job were live and removed two running lanes' worktrees
 - **FM-549** [NARROW] Workflow subagents' background lanes die at agent exit
 - **FM-551** [NARROW] Leaf gate ran only the two touched bats files; a behavior change to start broke an untouched suite (fleet#141 invariant) and reached cross-vendor review as a unanimous BLOCKER
+- **FM-553** [NARROW] A vendor cyber-content-filter refusal on a defensive/security task must be routed to a different harness, not accepted as task failure.
+- **FM-554** [NARROW] A reviewer BLOCKER verdict based on a code read, not an executed repro, must not be accepted until the coordinator runs the repro itself.
+- **FM-555** [NARROW] An acceptance gate over a JSONL/corpus artifact must assert row count/id preservation against the base branch, not just schema or content checks on the new file.
+- **FM-558** [NARROW] Coordinator scratch artifacts a future session needs (install-block notes, land scripts, lane briefs, review-row copies) must live under a durable repo path, never under $CLAUDE_JOB_DIR, which is deleted with the job.

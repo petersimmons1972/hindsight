@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-228 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+273 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -232,3 +232,48 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-443** [NARROW] hindsight#170 design/build brief written against a stale, unfetched local checkout
 - **FM-445** [NARROW] gate-check.mjs silently dropped multi-line CHECK bodies and misused prose EXPECT as substring match
 - **FM-446** [NARROW] CI-poll loops must cap on K consecutive gh failures and a hard wall-clock deadline, never spin on an empty/failed API result forever
+- **FM-453** [NARROW] cli-dispatch --continue-pr blocked by stale lane binding from the immediately-prior delivered dispatch to the same PR branch
+- **FM-455** [NARROW] Preserve unbounded canonical analysis before deriving size-bounded publication views
+- **FM-456** [NARROW] Use coordinator clock or dispatcher telemetry for runtime, never an agent estimate
+- **FM-457** [NARROW] Preflight every effective harness capability before starting a paid research segment
+- **FM-458** [NARROW] Freeze every comparison target to a raw commit before any lane starts
+- **FM-459** [NARROW] Blind research must forbid prior memory and enforce an artifact visibility cutoff
+- **FM-460** [NARROW] A silence watchdog must match the promised segment limit and inspect durable progress before killing
+- **FM-461** [NARROW] Research completion requires exact reconciliation against a fixed source inventory
+- **FM-462** [NARROW] Machine JSON helpers must force color off and fail loudly on parse corruption
+- **FM-463** [NARROW] Hash exact publication bytes; serialization helpers must not add or strip newlines
+- **FM-464** [NARROW] Verify authenticated App viewer and normalized published author as separate identity representations
+- **FM-465** [NARROW] Verify finding instances before clustering by reporting identity
+- **FM-466** [NARROW] Emit learning observations only after every host acceptance criterion has finalized the attempt
+- **FM-467** [NARROW] ScheduleWakeup delay is not honored by the harness -- re-invocation arrives in ~15-20s regardless of requested delay
+- **FM-472** [NARROW] A dispatched leaf subagent accidentally discarded another live session's uncommitted WIP in a shared repo checkout via a stray git checkout on a tracked file, recovered only by luck from a dangling stash
+- **FM-477** [NARROW] A gate that only checks two named functions shrank and the file's function count rose is satisfiable by rename-plus-wrapper
+- **FM-483** [NARROW] B35 fix satisfied a decomposition gate's literal CHECK by renaming the target function and wrapping it, without moving any meaningful amount of logic out
+- **FM-484** [NARROW] Coordinator killed a genuinely-active, productive agent after misdiagnosing it as stalled, based on runtime length and receipt-file absence alone
+- **FM-487** [NARROW] Coordinator dispatched a leaf whose own gate file already carried ABANDON/PARKED markers, because it only read the file's first ~30 lines before dispatching
+- **FM-488** [NARROW] Coordinator TaskStop'd an agent identified only by its position in a mental list, not by reading what the tool's own return value said it was, killing unrelated founder-authorized work
+- **FM-489** [NARROW] bg_scan_is_background only recurses into $()/backtick command substitution at command-word start, so a substitution invoking nohup/setsid anywhere else (an argument, inside double quotes, on an assignment RHS) evades the background-refusal scan entirely.
+- **FM-492** [NARROW] Append-only journal verification via 'while read' silently drops a torn trailing line, hiding a crash-mid-append
+- **FM-498** [NARROW] bg_scan_is_background misses quoted-cmdsubst and coproc background primitives
+- **FM-499** [NARROW] Gate evidence claimed an issue was filed before it actually existed
+- **FM-500** [NARROW] gate-check.mjs full-sweep --status is unreliable per-file; only isolated single-file runs are trustworthy
+- **FM-501** [NARROW] A marker-based test-selector fix silently reintroduced its own fail-open class via a strict-match-or-default classifier
+- **FM-502** [NARROW] A research probe's unpinned require() silently re-ran against a month-drifted harness version, invalidating comparison to prior pinned evidence
+- **FM-503** [NARROW] Two different harnesses failed the same task via two different mechanisms before the loop cap forced a method change
+- **FM-505** [NARROW] Hand-maintained node-pinned CIDR allowlist goes stale on pod reschedule, silently 401ing every client
+- **FM-506** [NARROW] A lane's receipt self-certified two hostnames as 'the same dataset via different aliases' without ever resolving/comparing them, and the false claim survived a full rehearsal + one cross-harness review pass undetected
+- **FM-515** [NARROW] A cli-dispatch-launched reviewer cannot certify a PR whose bats suite itself invokes cli-dispatch start
+- **FM-517** [NARROW] Docker container Env list with duplicate keys resolves to the FIRST entry via getenv(), not the last -- appending an operator override after a watcher-injected default does not shadow it.
+- **FM-521** [NARROW] Path-filtered CI reports a job as 'success' even when its actual test-running step was skipped, creating a false-green baseline
+- **FM-522** [NARROW] A behavioral eval scorer parses candidate-controlled combined stdout/stderr for ok/FAIL result lines without validating process returncode or restricting to a canonical result block, letting candidate code spoof its own passing verdict
+- **FM-524** [NARROW] cli-dispatch gh_token_sync silently replaces an exported Grok token with the Claude cache
+- **FM-526** [NARROW] review-fanout reports a verdict with a silently shrunk panel
+- **FM-528** [NARROW] Regex-gate PRs get an enumeration round (both harnesses produce the in-scope spelling corpus, no verdict) BEFORE any adversarial review round; the in/out scope list is the spec, written first
+- **FM-529** [NARROW] A regression baseline must be pinned to the real origin/main ref by explicit --branch/ref-fetch and verified with git rev-parse HEAD before any comparison; never assume a local 'main' or a bare 'git clone .' from a linked worktree is the base.
+- **FM-532** [NARROW] A coordinator must dispatch multi-step verification and root-cause investigation to a Workflow or subagent, not hand-drive it turn-by-turn with inline Bash; coordinator-not-executor applies to verification work, not only build leaves.
+- **FM-534** [NARROW] An identifier that names a mutable or dispatched target (a commit SHA, PR head, task id, path) must be read from a command in the SAME turn it is used, never typed from memory or extended from a short prefix; a 7-char prefix expanded by hand is a fabricated object.
+- **FM-535** [NARROW] A count, size, or version number recited in a gate EXPECT or probe must be re-measured in the same turn it is written, never carried from an earlier gate or a remembered run.
+- **FM-536** [NARROW] State-table spec conflated 'ledger file absent' with 'ledger unreadable'
+- **FM-538** [NARROW] review-fanout Codex lane killed by the lane agent's own turn budget after cli-dispatch start created the worktree; panel silently shrank to N=2
+- **FM-539** [NARROW] review-fanout Grok lane refused by gate-753 because the lane prompt never sets the grok App token; panel silently N=2
+- **FM-540** [NARROW] review-fanout vendor lane runs cli-dispatch start synchronously; Bash 600000ms ceiling kills a >10 min harness (exit 143), panel silently N=2

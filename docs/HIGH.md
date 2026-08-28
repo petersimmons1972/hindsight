@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-284 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+285 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -288,3 +288,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-554** [NARROW] A reviewer BLOCKER verdict based on a code read, not an executed repro, must not be accepted until the coordinator runs the repro itself.
 - **FM-555** [NARROW] An acceptance gate over a JSONL/corpus artifact must assert row count/id preservation against the base branch, not just schema or content checks on the new file.
 - **FM-558** [NARROW] Coordinator scratch artifacts a future session needs (install-block notes, land scripts, lane briefs, review-row copies) must live under a durable repo path, never under $CLAUDE_JOB_DIR, which is deleted with the job.
+- **FM-559** [NARROW] Corpus consolidation keeps pre-ruling pin rows beside post-ruling rows

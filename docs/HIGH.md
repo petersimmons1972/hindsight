@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-287 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+292 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -291,3 +291,8 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-559** [NARROW] Corpus consolidation keeps pre-ruling pin rows beside post-ruling rows
 - **FM-560** [NARROW] Workflow subagents inherit a lane-worktree cwd and every cli-dispatch start is refused nested-start-refused/lane-cwd
 - **FM-563** [NARROW] Coordinator inline fix for a reviewer MINOR introduced a worse bug that the suite could not see
+- **FM-564** [NARROW] Coordinator drifts into executor work under load despite an existing memory rule against it
+- **FM-565** [NARROW] Subagent poll-loop non-convergence
+- **FM-568** [NARROW] Draft PRs got cross-vendor reviewed, violating a PERMANENT standing rule
+- **FM-569** [NARROW] cli-dispatch lane-binding TOCTOU under concurrent load
+- **FM-570** [NARROW] CI bats shards intermittently fail with empty-repo-clone/missing-fixture setup races, independent of PR content

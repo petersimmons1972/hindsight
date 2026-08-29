@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-286 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+287 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -290,3 +290,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-558** [NARROW] Coordinator scratch artifacts a future session needs (install-block notes, land scripts, lane briefs, review-row copies) must live under a durable repo path, never under $CLAUDE_JOB_DIR, which is deleted with the job.
 - **FM-559** [NARROW] Corpus consolidation keeps pre-ruling pin rows beside post-ruling rows
 - **FM-560** [NARROW] Workflow subagents inherit a lane-worktree cwd and every cli-dispatch start is refused nested-start-refused/lane-cwd
+- **FM-563** [NARROW] Coordinator inline fix for a reviewer MINOR introduced a worse bug that the suite could not see

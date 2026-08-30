@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-292 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+301 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -296,3 +296,12 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-568** [NARROW] Draft PRs got cross-vendor reviewed, violating a PERMANENT standing rule
 - **FM-569** [NARROW] cli-dispatch lane-binding TOCTOU under concurrent load
 - **FM-570** [NARROW] CI bats shards intermittently fail with empty-repo-clone/missing-fixture setup races, independent of PR content
+- **FM-576** [NARROW] A collision/duplicate check must follow the nearest match's own outbound links one hop out, not stop at the nearest match.
+- **FM-577** [NARROW] Never drop, merge, or reclassify a founder-authored source document on a subagent's summary of it; read the document first.
+- **FM-578** [NARROW] A caller-controlled textual escape-hatch marker in a security guard (e.g. an env-var-looking prefix in the command text) is forgeable regardless of position rules -- position-narrowing patches (statement-start, brace-group, comment-strip) only shrink the bypass, they never close the class.
+- **FM-579** [NARROW] A depth/ancestry check using shell variables a descendant subshell can read cannot authenticate 'this exact call frame, not one nested below it' -- a subshell is a copy of shell state, not an isolated principal, so anything it can observe it can replay.
+- **FM-583** [NARROW] Sequential quote-pair regex silently mispairs after one unbalanced quote
+- **FM-585** [NARROW] Dispatched subagents get a shimmed codex that corrupts non-coding prompts
+- **FM-587** [NARROW] Command guards must treat shell reserved-word statement positions, not just command starts
+- **FM-588** [NARROW] A check suite needs a total-count gate, not only negative assertions
+- **FM-589** [NARROW] A relocated function body must relay every parent-scope mutation it performs, not just the one noticed

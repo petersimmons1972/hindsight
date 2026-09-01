@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-301 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+322 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -305,3 +305,24 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-587** [NARROW] Command guards must treat shell reserved-word statement positions, not just command starts
 - **FM-588** [NARROW] A check suite needs a total-count gate, not only negative assertions
 - **FM-589** [NARROW] A relocated function body must relay every parent-scope mutation it performs, not just the one noticed
+- **FM-593** [NARROW] Assert input provenance in a derived build script: a pass from a check that inspects only formatting says nothing about which files were read
+- **FM-595** [NARROW] Count validators shown capable of failing, not validators that exist: a denylist tuned for zero false positives detects only its own list
+- **FM-596** [NARROW] Never regex-edit structured config, and never verify a config edit only at the site edited -- assert the whole document's shape
+- **FM-597** [NARROW] A regression test must be falsified against the ORIGINAL code, not against a hand-made fixture of the defect
+- **FM-598** [NARROW] A stable count of test collection errors is not benign: tests that never run are indistinguishable from tests that pass
+- **FM-600** [NARROW] Read the host's role and network posture BEFORE touching shared infra, and treat 'you may use box X' as authorising use, not installation
+- **FM-601** [NARROW] Before running any command on a fleet GPU host, read that host's GPUHost CRD (aifleet/controller/deploy/hosts/<host>.yaml) and the owning repo's OPERATIONS.md -- the operating rule for a shared host lives in the repo that declares the host, not in agent memory files, and no workflow currently routes an agent there before it SSHes in.
+- **FM-602** [NARROW] When a fix converts a silent-pass into a check, verify the new check's absence path too -- a fixture that skips on a missing git-tracked artifact reintroduces the very defect the fix removed, one level down.
+- **FM-603** [NARROW] A usage signal that matches ~100% of the population cannot discriminate and must never justify deletion or archival
+- **FM-606** [NARROW] A catalog query tool that searches a curated subset while presenting as the catalog interface returns false NONEs, and the index that recommends it names no scope
+- **FM-607** [NARROW] A file-scanning gate must assert it scanned a non-zero count of each file kind it claims to cover; a PASS from a scanner whose matcher selected nothing is indistinguishable from a genuinely clean result.
+- **FM-608** [NARROW] Verify a setting took effect on a surface that reflects actual runtime behaviour, never on a surface that merely echoes the configured value back.
+- **FM-610** [NARROW] A CLI that silently ignores an unrecognized flag turns an invented --dry-run into a live write; never assume a preview flag exists - confirm it in the tool's own usage output before relying on it to withhold a mutation.
+- **FM-611** [NARROW] A mutation harness must disable bytecode caching (PYTHONDONTWRITEBYTECODE=1) or clear __pycache__ per check, because CPython invalidates .pyc on (mtime_seconds, size) and a length-preserving mutation applied within the same second re-runs the UNMUTATED module while cmp -s confirms the edit landed
+- **FM-612** [NARROW] A mutation harness must assert a green-before baseline AND attribute the kill to the specific test node the mutation claims coverage of, because a kill gate of 'exit 1 plus an AssertionError appears anywhere in the run' credits any mutation whenever an unrelated assert is already failing
+- **FM-613** [NARROW] A validator authored in the same context as the spec it checks inherits that spec error and cannot catch it; only a differently-dispatched reviewer varies the premise
+- **FM-616** [NARROW] A remediation lane, to satisfy a mis-scoped acceptance probe, adds logic to the wrong guard; a green suite cannot see the resulting bypass, only cross-vendor review can
+- **FM-619** [NARROW] Moving the working directory outside a repo does not blind an LLM judge that runs with filesystem access; only a filesystem mask (bwrap/tmpfs) does, and the blinding must be PROVEN by a probe that shows the answer file is unreadable
+- **FM-620** [NARROW] A fixture authored to defeat a LEXICAL detector does not thereby instantiate the SEMANTIC property that detector delegated to, so reusing it as the rigged-failure artifact for the semantic check tests a property the fixture never contained
+- **FM-621** [NARROW] An acceptance gate must not decide a check by grepping the source it grades, because the graded agent can read the gate file
+- **FM-622** [NARROW] A probe that sets a shell option around a source must assert the option is actually in effect at call time, because sourcing can silently reset it

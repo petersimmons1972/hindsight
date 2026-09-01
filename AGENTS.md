@@ -75,13 +75,14 @@ Runs on `homelab-arc` (self-hosted). Private repo — see the fleet convention t
 private repos use our own ARC runners.
 
 <!-- BEGIN UNIVERSAL AGENT POLICY: generated -->
-<!-- source: /home/psimmons/projects/AGENTS.md sha256:fe71e52198b29ad15785550a971af6f00c542327667de53b0e9fb360852761dc -->
+<!-- source: /home/psimmons/projects/AGENTS.md sha256:d6caab992b72a9a8b16d7fba57645d439b8baecff43a3a4ab0d84421d3676248 -->
 # Shared AGENTS for repos under `/home/psimmons/projects`
 
 Defaults for all repos here unless a child `AGENTS.md` tightens or overrides them.
 Child AGENTS files carry **deltas only**. The universal core (`agent-policy/templates/AGENTS.universal.md`)
 sets the model-agnostic floor; this file is the project/Fleet delta on top of it.
 
+<!-- id: who-youre-working-for -->
 ## Who you're working for
 
 I'm **Peter**, the founder. You're a **staff engineer on this fleet**, not a tourist. Prefer the
@@ -89,14 +90,11 @@ I'm **Peter**, the founder. You're a **staff engineer on this fleet**, not a tou
 routine work yourself; stop only for multi-path / high blast radius / founder-only choices. Private
 repos are the default workplace; public/outbound is gated. Don't optimize for looking busy.
 
-### Why the fleet exists
+Actively benchmarking, scoring, or routing across soldiers (harness + model combinations)? Read
+`~/projects/fleet/FLEET-MEASUREMENT.md` first — it's not background context for ordinary coding
+sessions, only for that kind of work.
 
-The fleet treats **soldiers** (harness + model combinations) as interchangeable capacity. A
-coordinator assigns a soldier to a **workflow**; a **Field Marshal** runs a **campaign** engaging
-multiple workflows. The fleet exists to **measure** which soldier fits a job at **minimum cost** —
-routing is economic, not brand preference. The harness is an instrument first; research object
-second — when those conflict, the instrument wins.
-
+<!-- id: dispatch-channel -->
 ## Dispatch channel — cli-dispatch (Hermes is separate)
 - `cli-dispatch` is the only channel for dispatching Codex and Grok on Leviathan. Do NOT enqueue
   Codex/Grok/Claude on the fleet-dispatch queue or drive them with the `~/bin/fd` queue reader.
@@ -104,27 +102,32 @@ second — when those conflict, the instrument wins.
   `agent/hermes/*` issues + labels. Contract: `claude-codex/HERMES.md`.
 - Concurrency: hand-rolled same-repo dispatches get their own worktree + unique branch; serialize
   if worktrees look unsafe.
-- **Review fan-outs need the same worktree isolation** (fleet#274): a mutating lens (suite
-  integrity, mutation testing) always conflicts with a concurrent reader of the same checkout.
-  Give it its own worktree; never share a path. Every lens reports the `git status`/HEAD it ran
-  against.
+- **Review fan-outs need the same worktree isolation** (fleet#274, the rule's origin commit
+  `9c0d518`): IF a lens runs concurrent state-mutating tests (suite integrity, mutation testing)
+  THEN give it its own worktree — it always conflicts with a concurrent reader of the same
+  checkout otherwise. Every lens reports the `git status`/HEAD it ran against.
 - With the founder present interactively, treat queue/issue state as read-only unless directed.
 
+<!-- id: coordination-and-completion -->
 ## Coordination and completion
 - Read the issue body before changing code; if ambiguous, stop and post a specific blocker question.
 - File or update a GitHub issue for every bug or failure mode found, even if fixed same branch.
 - No direct `main` push. Push branch + open a **draft PR before marking done**; verify with `gh pr
   list`. `Closes #N` required for issue-bound work.
 - **Independent adversarial review is a required pre-merge QA gate.** Reviewer must be a
-  **different soldier** (harness and/or model vendor); prefer `cli-dispatch`, but any soldier
-  with a real artifact counts — a claim of review is not the review.
-- **Never write lane findings into a shared `REPORT.md`** in a PR touching code (fleet OPS-55).
-  Findings go in the **PR body**, or a **per-lane file that cannot collide** (`REPORT-<lane>.md`).
+  **different harness**, dispatched as its own separate context — see the universal core's
+  `independent-review` section for the full definition (same-harness/different-model does not
+  count); prefer `cli-dispatch`. A claim of review is not the review — an artifact is required.
+- **IF multiple lanes touch the same PR/code THEN write findings to lane-scoped files, not a
+  shared `REPORT.md`** — findings go in the **PR body**, or a **per-lane file that cannot
+  collide** (`REPORT-<lane>.md`). Concurrent writes to a shared `REPORT.md` are exactly what the
+  fleet OPS-55 CI guard (`.github/scripts/ci-report-md-guard.sh`, PR #364) exists to catch; see
+  fleet#373 for the incident class.
 - Branch names: `agent/codex/issue-<N>-<slug>`.
-- **Never background a `cli-dispatch` lane with `nohup … &`** — the tool tracks the wrapper, which
-  exits fast, so "done" fires before real work starts. Foreground the dispatch; let the tool's own
-  background mode track the real PID. Measured 2026-07-31, six aifleet lanes.
+- `cli-dispatch` must run foregrounded, or via the tool's own background mode — never
+  manually backgrounded with `nohup … &` (enforced by hook; FM-347/300/53/36).
 
+<!-- id: pr-playbooks -->
 ## PR playbooks (progressive disclosure — all harnesses)
 
 Procedures live in **`~/projects/fleet/agent-playbooks/`** (portable markdown; Claude / Codex /
@@ -137,11 +140,14 @@ follow it.
 | babysit / drain / lifecycle monitor (full); fix CI / watch (watch mode) | `~/projects/fleet/agent-playbooks/babysit-pr.md` |
 | merge-on-green; certify and merge only (no babysit loop) | `~/projects/fleet/agent-playbooks/merge-on-green.md` |
 
-**Always-on invariants (detailed in the playbooks) — founder rulings A-D:**
+**Founder rulings A-D (detailed in the playbooks; not all equally firm — see labels):**
 - (A) Draft first on file; **Codex marks ready** when the work is ready for independent
-  review. **Never review/validate/pev a draft** — only ready (`isDraft=false`) PRs. Merge still
-  needs green CI + independent review at the exact head (merge-on-green).
-- (B) Reviewer is a different soldier (harness and/or model) than the author.
+  review. IF a PR `isDraft=true` THEN skip review — it isn't ready. IF `isDraft=false` THEN
+  review applies. Merge still needs green CI + independent review at the exact head
+  (merge-on-green).
+- (B) Reviewer is a different **harness**, dispatched as its own separate context, than the
+  author — same-harness/different-model does not count. See the universal core's
+  `independent-review` section for the full definition.
 - (C) Queue labels like `needs-claude-verify` mean "awaiting independent verify," not "Claude must
   review" — route any eligible soldier.
 - (D) On babysit/monitor/watch intent, open `babysit-pr.md` first: full = drain/lifecycle/merge;
@@ -153,6 +159,7 @@ follow it.
 
 Index: `~/projects/fleet/agent-playbooks/README.md`.
 
+<!-- id: token-efficient-local-tools -->
 ## Token-efficient local tools
 - A wrapper earns its place when it **answers a question**, not when it relays CLI output.
 - `~/bin/fd` (queue reader) differs from the file-finder `fd`; call it by full path — Hermes-lane
@@ -162,6 +169,7 @@ Index: `~/projects/fleet/agent-playbooks/README.md`.
 - Before reading a large file/log end-to-end, `rg -n <term>` first and `Read` only the relevant
   range — lightest useful form into context.
 
+<!-- id: github-auth -->
 ## GitHub auth — one App token per harness (founder ruling 2026-08-15)
 
 **Applies to every harness: Claude, Codex, Grok.** The founder minted three GitHub App
@@ -206,9 +214,10 @@ some administrative issue where OAuth has more permissions than the App tokens."
   Before treating any capability as OAuth-only, **exercise it on the App token first.**
 
 **Verify identity by the rate-limit ceiling, not by hope.** `gh api rate_limit` →
-`limit: ~7500` means App; **`limit: 5000` means you are on the founder's OAuth and must
-stop.** Check the *limit*, not the *remaining* — sessions have read past a printed 5000
-twice in one session while watching `remaining` fall to zero.
+`limit: ~7500` means App. **IF the limit is ~5000 THEN you're on the founder's OAuth, not
+your App token — stop and re-mint before proceeding.** Check the *limit*, not the *remaining*
+— sessions have read past a printed 5000 twice in one session while watching `remaining` fall
+to zero. FM-292 is this rule's 6th documented occurrence.
 
 **Why this is a standing rule and not advice.** This exact failure is documented **six
 times** (2026-07-29; 07-30 x3; 08-10; 08-15), a 100% miss rate for background sessions.
@@ -218,15 +227,15 @@ starved lens agents made a merge gate certify on an empty evidence panel. One de
 cascades into unsound merges.
 
 **Known mechanism failures — fix these, do not restate the rule:**
-- Long-lived non-interactive processes inherit `GH_TOKEN` at spawn and never re-sync; the
-  refresh hook rides on `PROMPT_COMMAND`, which is interactive-only.
-- `cron` has no `BASH_ENV`, so it inherits no token and falls through to OAuth. Scripts must
-  acquire their own token in a preamble and exit non-zero if they cannot.
-- `cli-dispatch:5961` (on `origin/main`; `:5931` in an older checkout — cite origin/main)
-  *advises* `env -u GH_TOKEN` on App-token 401 — the violation encoded in tooling (fleet#546).
+- Fact: long-lived non-interactive processes inherit `GH_TOKEN` at spawn and never re-sync;
+  the refresh hook rides on `PROMPT_COMMAND`, which is interactive-only. (FM-292 states this
+  mechanism as its root cause.)
+- IF a script runs under `cron` (no `BASH_ENV`, so it inherits no token and falls through to
+  OAuth) THEN it must acquire its own token in a preamble and exit non-zero if it can't. (FM-292)
 - Refresh timers exist per harness (`gh-app-cred-refresh{,-codex,-grok}.timer`). If yours is
   missing or stale, that is a defect to fix, not a reason to use OAuth.
 
+<!-- id: safety-default -->
 ## Safety default (every mode, including autonomous execution)
 - Ask first before any destructive operation (wildcard deletes, destructive DB/volume resets, K8s
   deletes, queue purges, force-pushes, infra teardown) — except teardown/restart already covered by
@@ -236,23 +245,20 @@ cascades into unsound merges.
 - **Manifest First:** no runtime-only container/pod changes; update the manifest and verify the
   change survives recreation.
 
+<!-- id: teardown -->
 ## Teardown is part of the work (founder standing rule 2026-08-07)
 
 Only the session that created a resource knows it is finished, so that session tears it down at
 adjudication time (merged/closed/abandoned) or before `/clear`/handoff — not "end of day."
-**Yours only:** `git worktree remove` for worktrees you added; delete merged/abandoned local
-branches you created; `rm -rf` session scratch under `/tmp`; stop/remove only containers/volumes
-this session started (never `docker system prune`). **Not yours:** other sessions' worktrees,
-production containers, shared volumes, unmerged branches you did not create — list as candidates,
-don't delete unasked.
+**IF a resource is this session's own THEN clean it up:** `git worktree remove` for worktrees
+you added; delete merged/abandoned local branches you created; `rm -rf` session scratch under
+`/tmp`; stop/remove only containers/volumes this session started. Unscoped `docker`/`volume`/
+`container`/`image prune` stays banned even here — enforced by hook, no exceptions.
+**IF a resource is not yours** (other sessions' worktrees, production containers, shared
+volumes, unmerged branches you did not create) **THEN list it as a candidate — don't delete
+without being asked** (see the universal core's Authority section for what "asked" means).
 
-## Advisory protocol (approach-selection checkpoint)
-- Claude sessions: invoke the `advisory-protocol` skill before selecting an approach whenever
-  options carry meaningfully different long-term consequences.
-- Dispatched harnesses get the condensed floor via `CLI_DISPATCH_ADVISORY_FLOOR` and surface
-  escalations as a marked `ADVISORY:` block rather than pausing.
-- Source `~/projects/fleet/advisory/`; re-run `advisory/install.sh` after editing.
-
+<!-- id: coding-standards -->
 ## Coding standards (all harnesses, all models)
 Private `fleet-standards` repo, cloned at `~/projects/fleet/`.
 - Before writing code follow `CODING-STANDARDS.md` — Definition of Done, TDD default, security
@@ -264,6 +270,7 @@ Private `fleet-standards` repo, cloned at `~/projects/fleet/`.
 - Dispatch briefs apply `DISPATCH-BRIEF-CHECKLIST.md`; prompting quirks live in
   `MODEL-PROMPTING-*.md`.
 
+<!-- id: failure-mode-memory -->
 ## Failure-mode memory
 - Durable "why" → `CODING-INVARIANTS.md` (never expires — append a date on recurrence).
 - Tool quirks that WILL expire → dated, disposable `fleet-ops-log/`.

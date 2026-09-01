@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-322 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+323 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -326,3 +326,4 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-620** [NARROW] A fixture authored to defeat a LEXICAL detector does not thereby instantiate the SEMANTIC property that detector delegated to, so reusing it as the rigged-failure artifact for the semantic check tests a property the fixture never contained
 - **FM-621** [NARROW] An acceptance gate must not decide a check by grepping the source it grades, because the graded agent can read the gate file
 - **FM-622** [NARROW] A probe that sets a shell option around a source must assert the option is actually in effect at call time, because sourcing can silently reset it
+- **FM-624** [NARROW] An acceptance gate scoped to the diff cannot see a break outside the diff: a gate's blast radius must match the change's, not the patch's

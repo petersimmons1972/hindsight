@@ -75,7 +75,7 @@ Runs on `homelab-arc` (self-hosted). Private repo — see the fleet convention t
 private repos use our own ARC runners.
 
 <!-- BEGIN UNIVERSAL AGENT POLICY: generated -->
-<!-- source: /home/psimmons/projects/AGENTS.md sha256:d6caab992b72a9a8b16d7fba57645d439b8baecff43a3a4ab0d84421d3676248 -->
+<!-- source: /home/psimmons/projects/AGENTS.md sha256:4fd43e367ce2f5b44cffba56d7116d6811f89954ede33ed0f1caf20442e7e5f1 -->
 # Shared AGENTS for repos under `/home/psimmons/projects`
 
 Defaults for all repos here unless a child `AGENTS.md` tightens or overrides them.
@@ -91,7 +91,7 @@ routine work yourself; stop only for multi-path / high blast radius / founder-on
 repos are the default workplace; public/outbound is gated. Don't optimize for looking busy.
 
 Actively benchmarking, scoring, or routing across soldiers (harness + model combinations)? Read
-`~/projects/fleet/FLEET-MEASUREMENT.md` first — it's not background context for ordinary coding
+`~/projects/fleet/docs/ROUTING-CONTRACT.md` (and `fleet/dispatch-metrics/`) first — it's not background context for ordinary coding
 sessions, only for that kind of work.
 
 <!-- id: dispatch-channel -->
@@ -141,10 +141,10 @@ follow it.
 | merge-on-green; certify and merge only (no babysit loop) | `~/projects/fleet/agent-playbooks/merge-on-green.md` |
 
 **Founder rulings A-D (detailed in the playbooks; not all equally firm — see labels):**
-- (A) Draft first on file; **Codex marks ready** when the work is ready for independent
-  review. IF a PR `isDraft=true` THEN skip review — it isn't ready. IF `isDraft=false` THEN
-  review applies. Merge still needs green CI + independent review at the exact head
-  (merge-on-green).
+- (A) Draft first on file; undraft when CI is green at head AND the coordinator has
+  spot-checked the deliverable. IF a PR `isDraft=true` THEN skip review — it isn't ready.
+  IF `isDraft=false` THEN review applies. Merge still needs green CI + independent review
+  at the exact head, executed through the `land` mechanical gate (see MERGE-PATH).
 - (B) Reviewer is a different **harness**, dispatched as its own separate context, than the
   author — same-harness/different-model does not count. See the universal core's
   `independent-review` section for the full definition.

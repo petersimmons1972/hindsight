@@ -118,7 +118,7 @@ def test_vector_id_binding_mutation_reports_partition(replay_case, capsys) -> No
     # catalog entry, parsing them from the pipeline's own replay report. Do not
     # restate the count in prose here -- the updater rewrites digits, not
     # comments, so any number written above this line drifts silently and lies.
-    assert len(payload["embeddings"]) == 975
+    assert len(payload["embeddings"]) == 979
     case["snapshot"].write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
 
     assert _run(case) == 1
@@ -159,6 +159,6 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     # entry, parsing them from the pipeline's own replay report. Do not restate the
     # CURRENT counts in prose here: the updater rewrites digits, not comments, so a
     # live count written above this line drifts silently and lies.
-    assert captured.out == "replay-l2: PASS: 975 entries, 347 clusters\n"
+    assert captured.out == "replay-l2: PASS: 979 entries, 348 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

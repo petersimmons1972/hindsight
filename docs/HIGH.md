@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-343 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+345 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -347,3 +347,5 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-657** [NARROW] A branch pushed to origin is not a receipt: on Codex COMMAND FAILURE, treat pushed artifacts as unverified and dispatch a hard verifier before opening a PR.
 - **FM-658** [NARROW] A corpus-tracking floor pinned in a shared config file (BATS_EXECUTED_FLOOR) serializes every parallel test-adding PR into a merge conflict
 - **FM-662** [NARROW] A branch pushed to origin after a Codex COMMAND FAILURE/timeout is not a receipt; treat it as unverified until a separate hard verifier confirms the suite passes at that head
+- **FM-663** [NARROW] Any timestamp the coordinator writes to a shared artifact must come from an executor's date output in the same step, never from estimated elapsed activity
+- **FM-665** [NARROW] A script checking gh pr view --json mergeable must treat UNKNOWN as not-yet-computed and retry with a bound before failing, since only CONFLICTING is a hard stop

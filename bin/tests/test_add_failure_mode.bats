@@ -748,6 +748,68 @@ PY
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
 }
 
+@test "two concurrent canonical adds serialize instead of corrupting each other (hindsight#187)" {
+  # hindsight#187: two add-failure-mode.sh filings from one session were
+  # reverted because nothing serialized ID allocation, the catalog/L1/L2
+  # writes, and the undo trap across concurrent invocations. The loser's
+  # post-write entry_count check (pipeline/replay_l2.py) saw a stale count
+  # and the EXIT trap restored the undo journal, silently discarding a
+  # filing that had actually landed. Use the real (unstubbed) ID guard here
+  # -- the ordering-only fixture above pins --next-id to a constant and
+  # cannot exercise the race at all.
+  make_real_reconcile_repo
+  cp "$ROOT/guard/failure_mode_catalog_guard.py" "$STAGE/guard/failure_mode_catalog_guard.py"
+
+  out1="$WORK/concurrent-out-1.txt"
+  out2="$WORK/concurrent-out-2.txt"
+  (
+    env CATALOG="$STAGE/catalog/failure-modes.md" \
+      bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory \
+        --ladder-rung prose-rule "concurrent writer one" --recurrence-of none \
+      >"$out1" 2>&1
+    echo $? >"$WORK/concurrent-status-1"
+  ) &
+  pid1=$!
+  (
+    env CATALOG="$STAGE/catalog/failure-modes.md" \
+      bash "$STAGE/bin/add-failure-mode.sh" -c A -t HIGH --disposition advisory \
+        --ladder-rung prose-rule "concurrent writer two" --recurrence-of none \
+      >"$out2" 2>&1
+    echo $? >"$WORK/concurrent-status-2"
+  ) &
+  pid2=$!
+  wait "$pid1"
+  wait "$pid2"
+
+  status1="$(cat "$WORK/concurrent-status-1")"
+  status2="$(cat "$WORK/concurrent-status-2")"
+  [ "$status1" -eq 0 ] || { cat "$out1" >&2; false; }
+  [ "$status2" -eq 0 ] || { cat "$out2" >&2; false; }
+
+  ! grep -qi "undo journal" "$out1" "$out2"
+  ! grep -qi "operation failed" "$out1" "$out2"
+
+  # Don't hardcode the guard's zero-padding width (FM-002 vs FM-02): assert
+  # on the numeric sequence instead. Both new rows must land, as consecutive
+  # numeric IDs immediately following the FM-001 seed, with no duplicates.
+  mapfile -t nums < <(grep -oE '^\| FM-[0-9]+ \|' "$STAGE/catalog/failure-modes.md" \
+    | grep -oE '[0-9]+' | sort -n -u)
+  [ "${#nums[@]}" -eq 3 ]
+  [ "${nums[0]}" -eq 1 ]
+  [ "${nums[1]}" -eq 2 ]
+  [ "${nums[2]}" -eq 3 ]
+
+  mapfile -t ledger_nums < <(grep -oE 'FM-[0-9]+' "$STAGE/catalog/id-ledger.txt" \
+    | grep -oE '[0-9]+' | sed 's/^0*//' | sort -n -u)
+  [ "${#ledger_nums[@]}" -eq 3 ]
+  [ "${ledger_nums[0]}" -eq 1 ]
+  [ "${ledger_nums[1]}" -eq 2 ]
+  [ "${ledger_nums[2]}" -eq 3 ]
+
+  run python3 "$STAGE/pipeline/replay_l2.py"
+  [ "$status" -eq 0 ]
+}
+
 @test "a sibling shortfall stays reported but does not block a canonical add" {
   make_real_reconcile_repo
 

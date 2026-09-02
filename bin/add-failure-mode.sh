@@ -60,6 +60,28 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Serialize the whole run (ID selection, journal capture, writes, replay, and
+# the EXIT-trap undo) across concurrent invocations. Two filings racing on the
+# same catalog/L1/L2 files corrupt each other: the loser's post-write
+# entry_count check (pipeline/replay_l2.py) sees a stale count and reverts a
+# winner's write via the undo journal. See hindsight#187.
+#
+# The lock file lives under XDG_RUNTIME_DIR (falling back to /tmp) rather than
+# inside the repo so a scratch-catalog test run (CATALOG=/tmp/... against a
+# throwaway copy of this repo) still serializes against a concurrent run
+# against the SAME real repo checkout, and vice versa is unaffected: lock
+# scope is per-UID, not per-catalog, which is the correct (conservative)
+# scope since ID allocation and undo both touch repo-wide state, not just
+# CATALOG.
+ADD_FM_LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hindsight-add-failure-mode.${UID}.lock"
+if ! command -v flock >/dev/null 2>&1; then
+    echo "add-failure-mode: flock(1) is required (util-linux) but not found in PATH" >&2
+    exit 1
+fi
+exec {ADD_FM_LOCK_FD}>"$ADD_FM_LOCK_FILE"
+flock -x "$ADD_FM_LOCK_FD"
+
 CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
 
 usage() {

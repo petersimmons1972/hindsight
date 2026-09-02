@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-34 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
+37 CRITICAL failure modes (irreversible/destructive blast radius if repeated). Safe to load at session start.
 
 - **FM-21** [BROAD] Destructive DB/API methods must enforce their own guard (require explicit force flag or confirmation token at the method boundary)
 - **FM-25** [BROAD] Never TRUNCATE a shared-project table; use scoped DELETE or dump/restore only the target project rows
@@ -38,5 +38,8 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-623** [NARROW] A rewrite's accepted-gap set counts only what the new implementation fails to ADD; merging one requires replaying the OLD implementation's own test corpus to find what it silently REMOVED
 - **FM-633** [NARROW] review-post verdicts go silently unposted when a gh --json call returns ANSI-colored JSON under CLICOLOR_FORCE, breaking jq and dying at exit 5
 - **FM-638** [NARROW] an id-less noreply commit-author email in a shared checkout's git config blocks every PR built there at the land merge gate, for weeks, with nothing upstream ever refusing it
+- **FM-670** [NARROW] Secret-scoping extraction must be redaction-first, never read-then-redact; a rule against emitting values does not constrain ingesting them.
+- **FM-697** [NARROW] A bypass/kill-switch/feature-flag that short-circuits a safety control also short-circuits that control's own test suite; tests must reach the bypass through an override, and the suite must include a case proving the gate CAN fire with the bypass absent
+- **FM-698** [NARROW] An instruction to push to a branch is an instruction to bypass whenever the acting identity holds bypass privilege and the branch is protected; before authorizing a direct push, establish protection status and bypass capability, or route through a PR so checks execute
 
 For HIGH-tier entries (real but too numerous to preload), use `bin/query-failure-modes.sh <keyword>` -- do not open docs/HIGH.md directly.

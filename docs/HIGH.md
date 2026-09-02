@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-346 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+371 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -350,3 +350,28 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-663** [NARROW] Any timestamp the coordinator writes to a shared artifact must come from an executor's date output in the same step, never from estimated elapsed activity
 - **FM-665** [NARROW] A script checking gh pr view --json mergeable must treat UNKNOWN as not-yet-computed and retry with a bound before failing, since only CONFLICTING is a hard stop
 - **FM-668** [NARROW] A serial merge-authorizing executor must refuse mid-chain SendMessage additions to its queue as unauthenticated authority, not treat them as trusted extensions of its original brief
+- **FM-669** [NARROW] A coordinator's own report of an action it took is not evidence the action occurred; artifact-backed self-verification is required before asserting completion.
+- **FM-671** [NARROW] Usage telemetry that includes your own monitoring is not evidence of use; before treating a credential or resource as live, subtract self-generated traffic.
+- **FM-672** [NARROW] When retiring a credential, enumerate the CAPABILITY (who can perform the action, by any means) not just the CONSUMERS (who uses this specific credential).
+- **FM-673** [NARROW] Audit .github/workflows/ on adoption of any fork, and prefer disabling Actions at the repo setting over deleting workflow files, because a deletion is re-merged on every upstream sync.
+- **FM-674** [NARROW] A true general claim deployed to avoid a specific unknown is still a fabrication of understanding; name the unknown instead.
+- **FM-675** [NARROW] When a measurement system is fed by one execution primitive, any work that structurally cannot use that primitive becomes invisible -- check whether your telemetry's coverage is a property of the work or of the tooling.
+- **FM-676** [NARROW] Supersedes FM-675: A coordinator session with the Bash tool denied made 58 cross-harness dispatches and wrote zero rows to either routing ledger
+- **FM-677** [NARROW] A hand-maintained, hunk-adjacent exit-row table duplicated across three files serializes every independent PR that adds one
+- **FM-678** [NARROW] Recommending a blunt, repo-wide/account-wide control on a premise that was never checked
+- **FM-679** [NARROW] Fixtures must obey the guards they test, not just the interface they mimic
+- **FM-680** [NARROW] Relay order is part of the evidence chain: never post stale-head FAIL evidence after a current-head PASS verdict
+- **FM-681** [NARROW] Two independent PRs defined conflicting contracts for the same environment variable, invisible to either PR's own CI
+- **FM-682** [NARROW] A cleanly auto-merged pair of PRs broke an invariant with no textual conflict; assert named sets, not prefix counts
+- **FM-684** [NARROW] Founder mid-turn messages are delivered to whichever subagent is running, not the coordinator
+- **FM-686** [NARROW] Relayed founder ruling reached a build lane as bare prose with no provenance, so the lane treated it as fabricated and reverted it
+- **FM-689** [NARROW] Brief for a SKIPPED-gap lane was written against a since-superseded founder ruling, causing the lane to STOP
+- **FM-690** [NARROW] A PR opened on another PR's inherited commit tree carried unresolvable git author identities into cli-dispatch land
+- **FM-692** [NARROW] A relay helper script hardcoded --verdict pass instead of deriving it from the artifact, risking false PASS posts on FAIL files
+- **FM-694** [NARROW] gh mergeable=UNKNOWN after a base move was treated as a terminal failure instead of a transient recompute
+- **FM-696** [NARROW] An easily-counted proxy (call-site parameter absent) is not the property of interest (expensive default used) unless the fallback mechanism converting one into the other is verified
+- **FM-699** [NARROW] A dispatch lane holding an outbound/publication verb must not exercise it unless the brief names posting as an explicitly authorized parameter.
+- **FM-700** [NARROW] A workflow that mandates filing a PR as a draft must also name the transition that undrafts it, or full compliance produces a permanently unreviewable PR
+- **FM-702** [NARROW] A multi-vendor review gate must constrain reviewer DISTINCTNESS, not merely reviewer trust, or the gate silently collapses to N=1 while every document still describes it as N=2
+- **FM-703** [NARROW] A completion poll must key on a TERMINAL status value, never on the presence of a status field or the absence of in-progress work, because absence carries no error code
+- **FM-706** [NARROW] A closing disposition must be gated on evidence the defect stopped, not on evidence someone proposed to stop it

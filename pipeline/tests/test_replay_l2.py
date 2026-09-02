@@ -42,7 +42,7 @@ def test_committed_snapshot_replays_through_real_default_loader(capsys) -> None:
     # clusters 281 -> 283. So both are parsed, never computed. Do not restate the
     # CURRENT counts in prose here: the updater rewrites digits, not comments, so
     # any live count written above this line drifts silently and lies.
-    assert REPLAY.main([]) == 0 and "PASS: 979 entries, 348 clusters" in capsys.readouterr().out
+    assert REPLAY.main([]) == 0 and "PASS: 980 entries, 348 clusters" in capsys.readouterr().out
 def _record(record_id: str) -> dict[str, object]:
     return {
         "id": record_id, "source_path": f"repo/{record_id}", "source_anchor": "line 1",

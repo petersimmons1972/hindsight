@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-323 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+339 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -327,3 +327,19 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-621** [NARROW] An acceptance gate must not decide a check by grepping the source it grades, because the graded agent can read the gate file
 - **FM-622** [NARROW] A probe that sets a shell option around a source must assert the option is actually in effect at call time, because sourcing can silently reset it
 - **FM-624** [NARROW] An acceptance gate scoped to the diff cannot see a break outside the diff: a gate's blast radius must match the change's, not the patch's
+- **FM-625** [NARROW] cli-dispatch start refused with terminal state worktree-exists (exit 3): a task-id collision is coordinator-mechanical, not a model defect -- pick a fresh --task id or abort the stale lane; never count it as a rework attempt
+- **FM-626** [NARROW] cli-dispatch land refused with terminal state verdict-malformed (exit 9): a reviewer posted a verdict comment the structured-verdict parser cannot read -- fix the reviewer's output contract (tool-mechanical), do not hand-edit the comment or re-decide the verdict
+- **FM-627** [NARROW] cli-dispatch land refused with terminal state ci-not-green (exit 8) on an UNCHANGED head SHA: a stale or missing check-run is coordinator-mechanical -- re-run the workflow for that SHA, never bypass the gate or force-push a no-op to refresh it
+- **FM-628** [NARROW] Harness PreToolUse hook refused the command (state hook-blocked, not a cli-dispatch exit): prefixing a gh call with a GH_TOKEN/GITHUB_TOKEN variable assignment, or printing the token variable, is blocked before anything runs -- use the ambient App token and the literal-only presence check ${GH_TOKEN:+set}; the block is a coordinator-mechanical refusal, never evidence about the model or the PR
+- **FM-629** [NARROW] Treat explicit in-scope founder authorization as durable through a safety-tool rejection; do not ask again before using a materially safer authorized route
+- **FM-632** [NARROW] flock without writer preference lets readers starve the journal writer indefinitely
+- **FM-634** [NARROW] grok review lane hits a 401 at the fleet gate because the GH token cache is not derived from the acting harness
+- **FM-635** [NARROW] a dispatched subagent falsely reports it will continue work in the background, then genuinely stops, leaving unpushed commits in a live worktree
+- **FM-636** [NARROW] cli-dispatch leak-check false positive marks a lane agent-failed, and land --task then refuses exit 39 with no recovery path
+- **FM-639** [NARROW] an environment variable exported ambiently by the interactive harness shell (not by .bashrc/.bash_env) silently changes cli-dispatch land's trusted-reviewer behavior and makes it refuse
+- **FM-640** [NARROW] a workflow's read-only ground-truth agents run checkout-mutating git commands directly against the shared checkout instead of an isolated worktree
+- **FM-642** [NARROW] fail --synthesize-fence
+- **FM-643** [NARROW] land counts the PR opener in the authoring set; a PR opened via the claude App can only be certified by a grok or codex reviewer, and Codex-built work must be opened under the codex App
+- **FM-647** [NARROW] A Fable builder ends its turn claiming to wait on the full suite while it has no live children; verify by process/journal evidence, never by the agent's own claim
+- **FM-649** [NARROW] land treats a superseded FAILURE check-run (pre-rerun, same name as a newer SUCCESS) as failing while GitHub reports the PR CLEAN
+- **FM-652** [NARROW] A single-reviewer light review path can land a safety-invariant diff a full cross-vendor panel would have caught; require the full panel for safety-invariant diffs

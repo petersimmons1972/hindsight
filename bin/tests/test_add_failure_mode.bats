@@ -786,6 +786,10 @@ PY
   [ "$status1" -eq 0 ] || { cat "$out1" >&2; false; }
   [ "$status2" -eq 0 ] || { cat "$out2" >&2; false; }
 
+  # Narrow on purpose: this asserts neither writer REPORTED a rollback (the
+  # hindsight#187 symptom -- the loser's entry_count check reverting a landed
+  # write). It is not an assertion that no journal was emitted: a normal
+  # successful add always emits an UNDO: command, by design.
   ! grep -qi "undo journal" "$out1" "$out2"
   ! grep -qi "operation failed" "$out1" "$out2"
 
@@ -808,6 +812,40 @@ PY
 
   run python3 "$STAGE/pipeline/replay_l2.py"
   [ "$status" -eq 0 ]
+}
+
+@test "a symlink planted at the lock path is refused, not followed (hindsight#188)" {
+  # The first lock implementation put the lock at a predictable path under a
+  # world-writable directory and opened it with `>`, so any local user could
+  # pre-plant a symlink there and have this script truncate the target. Cover
+  # BOTH the current in-repo lock path and the old ${XDG_RUNTIME_DIR} path, so
+  # this test cannot pass merely because the lock moved.
+  make_staged_repo
+  git -C "$STAGE" init -q
+
+  victim_repo="$WORK/victim-repo-lock.txt"
+  victim_runtime="$WORK/victim-runtime-lock.txt"
+  printf '%s\n' 'must-survive' >"$victim_repo"
+  printf '%s\n' 'must-survive' >"$victim_runtime"
+
+  ln -s "$victim_repo" "$STAGE/.git/add-failure-mode.lock"
+  fake_runtime="$WORK/fake-runtime"
+  mkdir -p "$fake_runtime"
+  chmod 700 "$fake_runtime"
+  ln -s "$victim_runtime" "$fake_runtime/hindsight-add-failure-mode.${UID}.lock"
+
+  run env XDG_RUNTIME_DIR="$fake_runtime" CATALOG="$STAGE/catalog/failure-modes.md" \
+    bash "$STAGE/bin/add-failure-mode.sh" --help
+
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"refusing unsafe lock path"* ]]
+  [[ "$output" == *"is a symlink"* ]]
+
+  # Both symlinks still point where they did, and neither target was touched.
+  [ -L "$STAGE/.git/add-failure-mode.lock" ]
+  [ -L "$fake_runtime/hindsight-add-failure-mode.${UID}.lock" ]
+  [ "$(cat "$victim_repo")" = "must-survive" ]
+  [ "$(cat "$victim_runtime")" = "must-survive" ]
 }
 
 @test "a sibling shortfall stays reported but does not block a canonical add" {

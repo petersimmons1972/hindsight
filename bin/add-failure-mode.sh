@@ -58,7 +58,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through an install symlink (see Install: above). Without this,
+# invoking ~/bin/add-failure-mode.sh puts REPO_ROOT at $HOME, which both breaks
+# the default CATALOG and -- since the lock now lives in the repo's git common
+# dir -- would silently stop serializing against a direct invocation.
+ADD_FM_SCRIPT_PATH="${BASH_SOURCE[0]}"
+if ADD_FM_RESOLVED="$(readlink -f "$ADD_FM_SCRIPT_PATH" 2>/dev/null)" \
+   && [[ -n "$ADD_FM_RESOLVED" ]]; then
+    ADD_FM_SCRIPT_PATH="$ADD_FM_RESOLVED"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$ADD_FM_SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Serialize the whole run (ID selection, journal capture, writes, replay, and
@@ -67,19 +76,70 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # entry_count check (pipeline/replay_l2.py) sees a stale count and reverts a
 # winner's write via the undo journal. See hindsight#187.
 #
-# The lock file lives under XDG_RUNTIME_DIR (falling back to /tmp) rather than
-# inside the repo so a scratch-catalog test run (CATALOG=/tmp/... against a
-# throwaway copy of this repo) still serializes against a concurrent run
-# against the SAME real repo checkout, and vice versa is unaffected: lock
-# scope is per-UID, not per-catalog, which is the correct (conservative)
-# scope since ID allocation and undo both touch repo-wide state, not just
-# CATALOG.
-ADD_FM_LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hindsight-add-failure-mode.${UID}.lock"
+# The lock lives in the repository's git COMMON dir (shared by every linked
+# worktree of the same repo), not in a world-writable directory: a predictable
+# path under /tmp let any local user pre-plant a symlink there and have this
+# script's lock open clobber the target (hindsight#188 review). Lock scope is
+# therefore per-repo-checkout, which is the right scope -- ID allocation, the
+# undo journal and replay all touch repo-wide state, so a CATALOG=... scratch
+# run against THIS checkout still serializes against a default run against it,
+# while an unrelated checkout (which shares no files) is correctly independent.
+# Outside a git repo (staged test fixtures) fall back to a directory we create
+# and own ourselves, mode 0700, whose ownership and mode are verified below.
 if ! command -v flock >/dev/null 2>&1; then
     echo "add-failure-mode: flock(1) is required (util-linux) but not found in PATH" >&2
     exit 1
 fi
-exec {ADD_FM_LOCK_FD}>"$ADD_FM_LOCK_FILE"
+
+add_fm_lock_refuse() {
+    echo "add-failure-mode: refusing unsafe lock path: $1" >&2
+    exit 1
+}
+
+ADD_FM_LOCK_DIR=""
+if ADD_FM_GIT_COMMON="$(cd "$REPO_ROOT" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)" \
+   && [[ -n "$ADD_FM_GIT_COMMON" ]] \
+   && ADD_FM_LOCK_DIR="$(cd "$REPO_ROOT" && cd "$ADD_FM_GIT_COMMON" && pwd -P)" \
+   && [[ -n "$ADD_FM_LOCK_DIR" ]]; then
+    :
+else
+    # Not a git checkout (or git refused it): use an owner-only directory of
+    # our own making. The enclosing dir may be world-writable (/tmp); this one
+    # is not, and a symlink or foreign-owned entry planted at the path is
+    # refused rather than followed.
+    ADD_FM_LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hindsight-add-failure-mode.${UID}.d"
+    if [[ -L "$ADD_FM_LOCK_DIR" ]]; then
+        add_fm_lock_refuse "$ADD_FM_LOCK_DIR is a symlink"
+    fi
+    mkdir -p -m 700 "$ADD_FM_LOCK_DIR"
+    chmod 700 "$ADD_FM_LOCK_DIR"
+fi
+
+if [[ -L "$ADD_FM_LOCK_DIR" ]]; then
+    add_fm_lock_refuse "$ADD_FM_LOCK_DIR is a symlink"
+fi
+[[ -d "$ADD_FM_LOCK_DIR" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_DIR is not a directory"
+[[ -O "$ADD_FM_LOCK_DIR" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_DIR is not owned by uid ${UID}"
+# World-writable is the hijackable case. Group-write is left alone on purpose:
+# real checkouts under a umask 002 estate ship .git at 0775, and refusing that
+# would make the tool unusable where it is actually installed.
+ADD_FM_LOCK_DIR_MODE="$(stat -c '%a' "$ADD_FM_LOCK_DIR")"
+if (( 8#$ADD_FM_LOCK_DIR_MODE & 2 )); then
+    add_fm_lock_refuse "$ADD_FM_LOCK_DIR is world-writable (mode $ADD_FM_LOCK_DIR_MODE)"
+fi
+
+ADD_FM_LOCK_FILE="$ADD_FM_LOCK_DIR/add-failure-mode.lock"
+if [[ -L "$ADD_FM_LOCK_FILE" ]]; then
+    add_fm_lock_refuse "$ADD_FM_LOCK_FILE is a symlink"
+fi
+if [[ -e "$ADD_FM_LOCK_FILE" ]]; then
+    [[ -f "$ADD_FM_LOCK_FILE" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_FILE is not a regular file"
+    [[ -O "$ADD_FM_LOCK_FILE" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_FILE is not owned by uid ${UID}"
+fi
+# Append, never truncate: the lock's contents are irrelevant, and > would
+# destroy whatever the path turned out to be.
+exec {ADD_FM_LOCK_FD}>>"$ADD_FM_LOCK_FILE"
+chmod 600 "$ADD_FM_LOCK_FILE" 2>/dev/null || true
 flock -x "$ADD_FM_LOCK_FD"
 
 CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"

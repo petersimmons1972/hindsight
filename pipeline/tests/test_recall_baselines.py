@@ -81,7 +81,7 @@ def test_reconciled_released_dedup_floor_is_the_measured_two_thirds() -> None:
     assert (floor["together"], floor["members"], floor["fraction"]) == (2, 3, 0.6666666666666666)
     assert "corpus growth" in floor["cause"]
     assert "#118" in floor["cause"]
-    assert payload["provenance"]["corpus_size"] == 824
+    assert payload["provenance"]["corpus_size"] == 825
 
     measured = MODULE.measure(["released"])["released"][RECONCILED_FAMILY]
     assert measured == {key: floor[key] for key in ("together", "members", "fraction")}

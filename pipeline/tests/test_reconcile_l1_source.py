@@ -294,9 +294,10 @@ def test_dropping_a_real_catalog_row_from_l1_fails_the_scoped_ci_gate(
     (repo / "pipeline" / "reconcile_l1.py").write_bytes(RECONCILE.read_bytes())
     (repo / "catalog" / "failure-modes.md").write_text(catalog_text, encoding="utf-8")
 
-    kept = [line for line in CANON_L1.read_text(encoding="utf-8").splitlines()
-            if dropped not in line]
-    removed = len(CANON_L1.read_text(encoding="utf-8").splitlines()) - len(kept)
+    dropped_l1_id = f"hc-{dropped}"
+    all_lines = CANON_L1.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in all_lines if json.loads(line)["id"] != dropped_l1_id]
+    removed = len(all_lines) - len(kept)
     assert removed == 1, (
         f"expected exactly one {dropped} record in the shipped extract, removed "
         f"{removed}"
@@ -435,8 +436,8 @@ def test_catalog_id_whitespace_is_normalized_in_ground_truth(tmp_path: Path) -> 
     report = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stdout
-    assert report[0]["ground_truth"] == 449
-    assert report[0]["covered"] == 449
+    assert report[0]["ground_truth"] == 458
+    assert report[0]["covered"] == 458
 
 
 def test_extra_canonical_l1_id_makes_the_gate_short(tmp_path: Path) -> None:
@@ -497,7 +498,7 @@ def test_every_semantic_field_diverges_on_every_canonical_row(
     tmp_path: Path,
     field: str,
 ) -> None:
-    """Corrupt one field on all 449 rows; every row must be named divergent."""
+    """Corrupt one field on all 458 rows; every row must be named divergent."""
     projects = tmp_path / field
     repo = projects / "hindsight"
     (repo / "pipeline" / "L1").mkdir(parents=True)
@@ -527,7 +528,7 @@ def test_every_semantic_field_diverges_on_every_canonical_row(
 
     assert result.returncode == 1, result.stdout
     assert set(report[0]["divergent"]) == expected_ids
-    assert len(expected_ids) == 449
+    assert len(expected_ids) == 458
 
 
 def test_catalog_robot_marker_wins_for_the_nine_previously_corrupted_rows() -> None:

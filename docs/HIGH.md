@@ -2,7 +2,7 @@
 
 Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not edit by hand -- edit criticality.jsonl and re-run the script.
 
-228 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
+232 HIGH-tier failure modes (correctness/trust failures, non-destructive, or mechanizable-but-not-yet-mechanized). This file is intentionally NOT referenced from MEMORY.md and should never be Read/cat'd whole -- reach it only through `bin/query-failure-modes.sh <keyword>`, which greps this file and caps output at 10 matching lines.
 
 - **FM-06** [BROAD] `rg -n '/home/[a-z]' .` must return zero hits
 - **FM-12** [BROAD] `git remote -v` + branch check before every cross-repo edit
@@ -232,3 +232,7 @@ Curated from `catalog/criticality.jsonl` by `bin/synthesize-pointer.py`. Do not 
 - **FM-443** [NARROW] hindsight#170 design/build brief written against a stale, unfetched local checkout
 - **FM-445** [NARROW] gate-check.mjs silently dropped multi-line CHECK bodies and misused prose EXPECT as substring match
 - **FM-446** [NARROW] CI-poll loops must cap on K consecutive gh failures and a hard wall-clock deadline, never spin on an empty/failed API result forever
+- **FM-450** [NARROW] A RED that is byte-identical to GREEN is not a RED
+- **FM-453** [NARROW] gh run cancel does not kill an in-flight step; it only stops queued jobs from being scheduled
+- **FM-457** [NARROW] gh run rerun of a cancelled pull_request-event run replays the ORIGINAL event payload, so a PR-body edit made after cancellation is invisible to the rerun
+- **FM-458** [NARROW] gh run rerun of a cancelled pull_request-event run replays the ORIGINAL event payload, so a PR-body edit made after cancellation is invisible to the rerun

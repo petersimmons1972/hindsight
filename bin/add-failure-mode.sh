@@ -120,26 +120,76 @@ add_fm_lock_refuse() {
 
 CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
 
-# One unconditional rule, so two concurrent runs on the same catalog always
-# derive the same string: resolve the file itself, else its containing
-# directory plus the basename (the catalog may not exist yet).
-ADD_FM_LOCK_ID=""
-if ADD_FM_LOCK_ID="$(realpath -e -- "$CATALOG" 2>/dev/null)" && [[ -n "$ADD_FM_LOCK_ID" ]]; then
-    :
-elif ADD_FM_LOCK_PARENT="$(realpath -e -- "$(dirname -- "$CATALOG")" 2>/dev/null)" \
-     && [[ -n "$ADD_FM_LOCK_PARENT" ]]; then
-    ADD_FM_LOCK_ID="$ADD_FM_LOCK_PARENT/$(basename -- "$CATALOG")"
+# The lock must cover every writable target this run can touch, and identity is
+# taken at DIRECTORY granularity because the write set is directory-owned:
+# LEDGER is `$(dirname "$CATALOG")/id-ledger.txt` and CRITICALITY defaults to
+# `$(dirname "$CATALOG")/criticality.jsonl`, so two differently-NAMED catalogs
+# in one directory share a ledger and must serialize.
+#
+# The caller-overridable write set is exactly CATALOG (plus the ledger and the
+# default criticality beside it) and CRITICALITY. The other two documented
+# overrides are read-only: CORPUS is only passed as `--corpus` to the pre-write
+# lookup (:515-516) and CLUSTERS is only read to validate a c-NNN recurrence
+# (:541-543). Neither is written, so neither takes a lock.
+#
+# CRITICALITY is independently overridable, so a scratch CATALOG can legally
+# point at the canonical criticality.jsonl. Identity therefore spans BOTH
+# directories, and because the overlap between two runs can be partial
+# ({A} vs {A,B}), a single combined hash would not serialize them. Take one
+# lock per distinct directory, acquired in sorted key order. A total order
+# shared by every process makes deadlock impossible.
+add_fm_dir_identity() {
+    # One unconditional rule, so two concurrent runs on the same target always
+    # derive the same string: resolve the file, then take its directory; if the
+    # file does not exist yet, resolve the directory directly.
+    local target="$1" resolved parent
+    if resolved="$(realpath -e -- "$target" 2>/dev/null)" && [[ -n "$resolved" ]]; then
+        dirname -- "$resolved"
+        return 0
+    fi
+    if parent="$(realpath -e -- "$(dirname -- "$target")" 2>/dev/null)" && [[ -n "$parent" ]]; then
+        printf '%s\n' "$parent"
+        return 0
+    fi
+    return 1
+}
+
+ADD_FM_LOCK_IDS=()
+if ADD_FM_CATALOG_DIR="$(add_fm_dir_identity "$CATALOG")"; then
+    ADD_FM_LOCK_IDS+=("$ADD_FM_CATALOG_DIR")
 else
     # Last resort only: neither the catalog nor its parent can be resolved, so
     # there is no per-catalog identity to key on. Announce it -- silently
     # collapsing every caller onto one identity is precisely the regression
     # this change removes.
-    ADD_FM_LOCK_ID="uid-${UID}"
+    ADD_FM_LOCK_IDS+=("uid-${UID}")
     echo "add-failure-mode: warning: cannot resolve a realpath for catalog '$CATALOG';" \
          "falling back to a per-uid lock, which serializes unrelated catalogs" >&2
 fi
-ADD_FM_LOCK_KEY="$(printf '%s' "$ADD_FM_LOCK_ID" | sha256sum)"
-ADD_FM_LOCK_KEY="${ADD_FM_LOCK_KEY%% *}"
+# Only an EXPLICIT override can put criticality outside the catalog's directory;
+# the default already lives there and is covered by the catalog lock.
+if [[ -n "${CRITICALITY:-}" ]]; then
+    if ADD_FM_CRIT_DIR="$(add_fm_dir_identity "$CRITICALITY")"; then
+        ADD_FM_LOCK_IDS+=("$ADD_FM_CRIT_DIR")
+    else
+        ADD_FM_LOCK_IDS+=("uid-${UID}")
+        echo "add-failure-mode: warning: cannot resolve a realpath for criticality" \
+             "'$CRITICALITY'; falling back to a per-uid lock" >&2
+    fi
+fi
+
+# Hash each identity, then sort and de-duplicate the KEYS. Sorting on the one
+# key that is actually used to name the lock file keeps the acquisition order
+# consistent across processes no matter how the identities were spelled.
+ADD_FM_LOCK_KEYS=()
+while IFS= read -r add_fm_key; do
+    [[ -n "$add_fm_key" ]] && ADD_FM_LOCK_KEYS+=("$add_fm_key")
+done < <(
+    for add_fm_id in "${ADD_FM_LOCK_IDS[@]}"; do
+        add_fm_h="$(printf '%s' "$add_fm_id" | sha256sum)"
+        printf '%s\n' "${add_fm_h%% *}"
+    done | sort -u
+)
 
 ADD_FM_LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hindsight-add-failure-mode.${UID}.d"
 if [[ -L "$ADD_FM_LOCK_DIR" ]]; then
@@ -161,19 +211,26 @@ if (( 8#$ADD_FM_LOCK_DIR_MODE & 2 )); then
     add_fm_lock_refuse "$ADD_FM_LOCK_DIR is world-writable (mode $ADD_FM_LOCK_DIR_MODE)"
 fi
 
-ADD_FM_LOCK_FILE="$ADD_FM_LOCK_DIR/catalog-$ADD_FM_LOCK_KEY.lock"
-if [[ -L "$ADD_FM_LOCK_FILE" ]]; then
-    add_fm_lock_refuse "$ADD_FM_LOCK_FILE is a symlink"
-fi
-if [[ -e "$ADD_FM_LOCK_FILE" ]]; then
-    [[ -f "$ADD_FM_LOCK_FILE" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_FILE is not a regular file"
-    [[ -O "$ADD_FM_LOCK_FILE" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_FILE is not owned by uid ${UID}"
-fi
-# Append, never truncate: the lock's contents are irrelevant, and > would
-# destroy whatever the path turned out to be.
-exec {ADD_FM_LOCK_FD}>>"$ADD_FM_LOCK_FILE"
-chmod 600 "$ADD_FM_LOCK_FILE" 2>/dev/null || true
-flock -x "$ADD_FM_LOCK_FD"
+# Acquire every lock, in sorted key order, running the full safety check on
+# EACH path -- not once on the first. Every descriptor stays open for the life
+# of the process, which is what holds the locks through replay and any undo.
+ADD_FM_LOCK_FDS=()
+for ADD_FM_LOCK_KEY in "${ADD_FM_LOCK_KEYS[@]}"; do
+    ADD_FM_LOCK_FILE="$ADD_FM_LOCK_DIR/catalog-$ADD_FM_LOCK_KEY.lock"
+    if [[ -L "$ADD_FM_LOCK_FILE" ]]; then
+        add_fm_lock_refuse "$ADD_FM_LOCK_FILE is a symlink"
+    fi
+    if [[ -e "$ADD_FM_LOCK_FILE" ]]; then
+        [[ -f "$ADD_FM_LOCK_FILE" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_FILE is not a regular file"
+        [[ -O "$ADD_FM_LOCK_FILE" ]] || add_fm_lock_refuse "$ADD_FM_LOCK_FILE is not owned by uid ${UID}"
+    fi
+    # Append, never truncate: the lock's contents are irrelevant, and > would
+    # destroy whatever the path turned out to be.
+    exec {ADD_FM_LOCK_FD}>>"$ADD_FM_LOCK_FILE"
+    chmod 600 "$ADD_FM_LOCK_FILE" 2>/dev/null || true
+    flock -x "$ADD_FM_LOCK_FD"
+    ADD_FM_LOCK_FDS+=("$ADD_FM_LOCK_FD")
+done
 
 usage() {
     grep '^#' "$0" | sed 's/^# \?//'

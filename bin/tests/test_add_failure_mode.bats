@@ -818,15 +818,31 @@ PY
 # so a silent change to the derivation shows up as a failing row rather than as
 # two processes quietly agreeing on the wrong thing.
 expected_lock_path() {
-  local runtime="$1" catalog="$2" id key
-  if id="$(realpath -e -- "$catalog" 2>/dev/null)" && [ -n "$id" ]; then
-    :
+  local runtime="$1" target="$2" id key resolved
+  # Directory granularity: the ledger and the default criticality live beside
+  # the catalog, so the DIRECTORY is the unit of mutual exclusion.
+  if resolved="$(realpath -e -- "$target" 2>/dev/null)" && [ -n "$resolved" ]; then
+    id="$(dirname -- "$resolved")"
   else
-    id="$(realpath -e -- "$(dirname -- "$catalog")")/$(basename -- "$catalog")"
+    id="$(realpath -e -- "$(dirname -- "$target")")"
   fi
   key="$(printf '%s' "$id" | sha256sum)"
   printf '%s/hindsight-add-failure-mode.%s.d/catalog-%s.lock' \
     "$runtime" "$UID" "${key%% *}"
+}
+
+# Every lock path the script selects for a given configuration, sorted.
+selected_locks() {
+  local runtime="$1" catalog="$2" criticality="${3:-}"
+  if [ -n "$criticality" ]; then
+    env XDG_RUNTIME_DIR="$runtime" CATALOG="$catalog" CRITICALITY="$criticality" \
+      bash -x "$ROOT/bin/add-failure-mode.sh" --help 2>&1 \
+      | grep -oE "$runtime/[^ ']*\.lock" | sort -u
+  else
+    env XDG_RUNTIME_DIR="$runtime" CATALOG="$catalog" \
+      bash -x "$ROOT/bin/add-failure-mode.sh" --help 2>&1 \
+      | grep -oE "$runtime/[^ ']*\.lock" | sort -u
+  fi
 }
 
 @test "a symlink planted at the lock path is refused, not followed (hindsight#188)" {
@@ -947,6 +963,59 @@ expected_lock_path() {
 
   [ "$status_same" -eq 124 ]
   [ "$status_other" -ne 124 ]
+}
+
+@test "a scratch catalog pointed at the canonical CRITICALITY takes the canonical lock too (hindsight#188)" {
+  # Codex r2 blocker: CRITICALITY is independently overridable, so a scratch
+  # CATALOG may legally write the canonical catalog/criticality.jsonl. Keying
+  # the lock on the catalog alone gave those two runs different locks while
+  # they appended to the same file -- the #187 data-loss class, recreated.
+  # The overlap is partial ({A} vs {A,B}), so identity spans BOTH directories
+  # and one lock is taken per directory.
+  runtime="$WORK/crit-runtime"
+  mkdir -p -m 700 "$runtime"
+
+  mkdir -p "$WORK/crit-canon/catalog" "$WORK/crit-scratch/catalog"
+  touch "$WORK/crit-canon/catalog/failure-modes.md" \
+        "$WORK/crit-canon/catalog/criticality.jsonl" \
+        "$WORK/crit-scratch/catalog/failure-modes.md"
+
+  canon_catalog="$WORK/crit-canon/catalog/failure-modes.md"
+  canon_crit="$WORK/crit-canon/catalog/criticality.jsonl"
+  scratch_catalog="$WORK/crit-scratch/catalog/failure-modes.md"
+
+  canon_locks="$(selected_locks "$runtime" "$canon_catalog")"
+  scratch_locks="$(selected_locks "$runtime" "$scratch_catalog" "$canon_crit")"
+
+  # The canonical run takes exactly one lock; the scratch run takes two.
+  [ "$(printf '%s\n' "$canon_locks" | wc -l)" -eq 1 ]
+  [ "$(printf '%s\n' "$scratch_locks" | wc -l)" -eq 2 ]
+
+  # And the canonical lock is among the scratch run's, so they serialize.
+  printf '%s\n' "$scratch_locks" | grep -qxF "$canon_locks"
+
+  # A scratch run using its OWN criticality shares nothing with the canonical run.
+  plain_scratch="$(selected_locks "$runtime" "$scratch_catalog")"
+  [ "$(printf '%s\n' "$plain_scratch" | wc -l)" -eq 1 ]
+  ! printf '%s\n' "$plain_scratch" | grep -qxF "$canon_locks"
+}
+
+@test "two differently-named catalogs in one directory take the same lock (shared id-ledger.txt, hindsight#188)" {
+  # LEDGER is always "$(dirname "$CATALOG")/id-ledger.txt", so two catalogs
+  # sharing a directory share a ledger and MUST serialize. This is why lock
+  # identity is the catalog's directory rather than the catalog file.
+  runtime="$WORK/ledger-runtime"
+  mkdir -p -m 700 "$runtime"
+
+  mkdir -p "$WORK/ledger-dir"
+  touch "$WORK/ledger-dir/failure-modes.md" "$WORK/ledger-dir/other-modes.md"
+
+  a="$(selected_locks "$runtime" "$WORK/ledger-dir/failure-modes.md")"
+  b="$(selected_locks "$runtime" "$WORK/ledger-dir/other-modes.md")"
+
+  [ -n "$a" ]
+  [ "$(printf '%s\n' "$a" | wc -l)" -eq 1 ]
+  [ "$a" = "$b" ]
 }
 
 @test "three non-git sandbox copies select three distinct locks, not one per-UID lock (hindsight#188)" {

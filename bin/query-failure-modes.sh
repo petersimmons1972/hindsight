@@ -55,10 +55,30 @@ subset_size() {
 
 # The population those rows were drawn from: distinct fm_id in criticality.jsonl
 # (a later line for the same id is a re-triage of the same FM, not a second one).
+#
+# Parsed as JSON, never grepped for `"fm_id"` substrings. A corrupted file keeps
+# those substrings intact, so a regex count answers confidently for a population
+# nothing could actually read — and synthesize-pointer.py, which json.loads every
+# line, would refuse the same file outright. A count that survives corruption is
+# not a measurement of the population; it is a measurement of the corruption.
+# Anything that does not parse is reported as unreadable.
 corpus_size() {
     [[ -f "$CRITICALITY" ]] || { printf 'unknown\n'; return 0; }
-    grep -oE '"fm_id"[[:space:]]*:[[:space:]]*"[^"]+"' "$CRITICALITY" \
-        | sort -u | grep -c '^' || true
+    python3 - "$CRITICALITY" <<'PY' 2>/dev/null || printf 'unknown\n'
+import json
+import sys
+
+ids = set()
+with open(sys.argv[1], encoding="utf-8") as fh:
+    for line in fh:
+        if not line.strip():
+            continue
+        row = json.loads(line)          # any bad line -> nonzero exit -> "unknown"
+        fm_id = row.get("fm_id")
+        if fm_id is not None:
+            ids.add(fm_id)
+print(len(ids))
+PY
 }
 
 # A scope line is only worth printing if it is TRUE. The fraction is claimed
@@ -73,8 +93,8 @@ SUBSET_ROWS="$(subset_size)"
 CORPUS_ROWS="$(corpus_size)"
 if [[ "$CORPUS_ROWS" == "unknown" ]]; then
     SCOPE_NOTE="scope: searched ${SUBSET_ROWS} rows in docs/POINTER.md + docs/HIGH.md. \
-The canonical population (${CRITICALITY}) could not be read, so this run claims NO coverage \
-fraction: treat its coverage of the catalog as UNKNOWN."
+The canonical population (${CRITICALITY}) could not be read as JSON, so this run claims NO \
+coverage fraction: treat its coverage of the catalog as UNKNOWN."
 elif (( CORPUS_ROWS < SUBSET_ROWS )); then
     SCOPE_NOTE="scope: searched ${SUBSET_ROWS} rows in docs/POINTER.md + docs/HIGH.md, but \
 ${CRITICALITY} reports only ${CORPUS_ROWS} canonical failure modes — fewer than the pointer files \

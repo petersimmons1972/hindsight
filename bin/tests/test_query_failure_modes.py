@@ -68,9 +68,16 @@ def test_unreadable_population_claims_no_fraction_rather_than_a_false_one(
     env = _fixture(tmp_path)
     empty = tmp_path / "empty.jsonl"
     empty.write_text("")
+    # Corrupted, but the `"fm_id"` substrings a regex would count survive intact:
+    # a count that survives corruption measures the corruption, not the population.
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text(
+        '{BROKEN {"fm_id": "FM-01"}\n{"fm_id": "FM-02"}\n{"fm_id": "FM-03"}\n'
+    )
     for criticality, expected in (
         (str(empty), "reports only 0 canonical failure modes"),
-        (str(tmp_path / "absent.jsonl"), "could not be read"),
+        (str(tmp_path / "absent.jsonl"), "could not be read as JSON"),
+        (str(malformed), "could not be read as JSON"),
     ):
         result = subprocess.run(
             ["bash", str(SCRIPT), "truncate"],

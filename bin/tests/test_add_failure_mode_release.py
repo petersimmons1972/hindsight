@@ -383,6 +383,29 @@ def test_successful_canonical_add_grows_the_catalog_it_just_released(sandbox) ->
     assert _replay(repo).returncode == 0
 
 
+def test_ordinary_canonical_add_is_not_blocked_by_an_unrelated_recall_floor(sandbox) -> None:
+    """hindsight#178: a plain add must not trip a stale `reconciled_floors` pin.
+
+    This is the exact repro from #178: a throwaway, single-row canonical add
+    with content wholly unrelated to the `dedup-identity-key` fixture family
+    (`fleet-orch-ORC-1a/1b/1c`). At the time #178 was filed, ordinary corpus
+    growth alone re-clustered that family below the (stale) reconciled floor,
+    and `recall_baselines.py --update --backend released` — invoked internally
+    by the canonical add loop — refused every add repo-wide, regardless of
+    what the new row said. This positive control locks in that an ordinary,
+    content-unrelated add succeeds end to end.
+    """
+    repo = sandbox("honest")
+    added = _add(repo, "throwaway repro description unrelated to dedup-identity-key")
+    assert added.returncode == 0, _report(
+        "an ordinary canonical add unrelated to any reconciled recall family "
+        "must not be blocked by recall_baselines.py's reconciled_floors ratchet "
+        "(hindsight#178)", added,
+    )
+    assert "REFUSED" not in added.stdout
+    assert _replay(repo).returncode == 0
+
+
 @pytest.mark.parametrize("target", ["FM-404", "FM-89", "FM-218"])
 def test_correction_tombstones_original_and_appends_superseding_row(
     sandbox,

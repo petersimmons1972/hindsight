@@ -60,8 +60,9 @@ set -euo pipefail
 
 # Resolve through an install symlink (see Install: above). Without this,
 # invoking ~/bin/add-failure-mode.sh puts REPO_ROOT at $HOME, which both breaks
-# the default CATALOG and -- since the lock now lives in the repo's git common
-# dir -- would silently stop serializing against a direct invocation.
+# the default CATALOG and -- since the lock identity is derived from the
+# default CATALOG -- would silently stop serializing against a direct
+# invocation.
 ADD_FM_SCRIPT_PATH="${BASH_SOURCE[0]}"
 if ADD_FM_RESOLVED="$(readlink -f "$ADD_FM_SCRIPT_PATH" 2>/dev/null)" \
    && [[ -n "$ADD_FM_RESOLVED" ]]; then
@@ -76,18 +77,39 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # entry_count check (pipeline/replay_l2.py) sees a stale count and reverts a
 # winner's write via the undo journal. See hindsight#187.
 #
-# The lock lives in the repository's git COMMON dir (shared by every linked
-# worktree of the same repo), not in a world-writable directory: a predictable
-# path under /tmp let any local user pre-plant a symlink there and have this
-# script's lock open clobber the target (hindsight#188 review). Lock scope is
-# therefore per-repo-checkout, which is the right scope -- ID allocation, the
-# undo journal and replay all touch repo-wide state, so a CATALOG=... scratch
-# run against THIS checkout still serializes against a default run against it,
-# while an unrelated checkout (which shares no files) is correctly independent.
-# Outside a git repo (staged test fixtures) fall back to a directory we create
-# and own ourselves, mode 0700, whose ownership and mode are verified below.
+# LOCK IDENTITY is the realpath of the CATALOG FILE being filed to -- not the
+# repo, not the invoking UID. Git is not consulted at all: a git-derived
+# identity was the original defect, not the fix. Under `-n 3 --dist=load` the
+# release shard stages non-git sandbox copies (`.git` is excluded by
+# COPY_IGNORE), so every one of them failed `git rev-parse` and collapsed onto
+# a single per-UID lock -- unrelated sandboxes sharing no catalog, ledger,
+# journal, L1, L2 or pointer file serialized against each other and drove the
+# shard past its 60-minute bound (hindsight#188 review r1, F3).
+#
+# Catalog-realpath identity is not a compromise, it is the exact scope. The
+# repo-wide artifacts (pipeline/L1, pipeline/L2, docs/POINTER.md) are written
+# only under RUN_FULL_LOOP, which is set exactly when CATALOG resolves to
+# $REPO_ROOT/catalog/failure-modes.md. So two runs that touch the same
+# repo-wide state necessarily resolve to the same canonical catalog and take
+# the same lock; two runs with different catalogs touch only the catalog,
+# ledger and criticality file beside each -- disjoint sets -- and correctly do
+# not block each other. Symlinked and relative CATALOG values resolve to one
+# comparable identity because the path goes through realpath.
+#
+# The lock FILE stays in an owner-only 0700 directory of our own making, named
+# by the sha256 of that identity, rather than beside the catalog. Two reasons:
+# a predictable path in a world-writable dir let a local user pre-plant a
+# symlink for our open to clobber (hindsight#188 review r0), and --supersedes
+# RENAME_EXCHANGEs the whole catalog/ directory (bin/atomic-exchange.py), which
+# would swap a lock living there out from under our held descriptor mid-run and
+# silently drop mutual exclusion. Ownership, mode, symlink and append-only
+# checks below are unchanged from r1 and still apply.
 if ! command -v flock >/dev/null 2>&1; then
     echo "add-failure-mode: flock(1) is required (util-linux) but not found in PATH" >&2
+    exit 1
+fi
+if ! command -v sha256sum >/dev/null 2>&1; then
+    echo "add-failure-mode: sha256sum(1) is required (coreutils) but not found in PATH" >&2
     exit 1
 fi
 
@@ -96,24 +118,35 @@ add_fm_lock_refuse() {
     exit 1
 }
 
-ADD_FM_LOCK_DIR=""
-if ADD_FM_GIT_COMMON="$(cd "$REPO_ROOT" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)" \
-   && [[ -n "$ADD_FM_GIT_COMMON" ]] \
-   && ADD_FM_LOCK_DIR="$(cd "$REPO_ROOT" && cd "$ADD_FM_GIT_COMMON" && pwd -P)" \
-   && [[ -n "$ADD_FM_LOCK_DIR" ]]; then
+CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
+
+# One unconditional rule, so two concurrent runs on the same catalog always
+# derive the same string: resolve the file itself, else its containing
+# directory plus the basename (the catalog may not exist yet).
+ADD_FM_LOCK_ID=""
+if ADD_FM_LOCK_ID="$(realpath -e -- "$CATALOG" 2>/dev/null)" && [[ -n "$ADD_FM_LOCK_ID" ]]; then
     :
+elif ADD_FM_LOCK_PARENT="$(realpath -e -- "$(dirname -- "$CATALOG")" 2>/dev/null)" \
+     && [[ -n "$ADD_FM_LOCK_PARENT" ]]; then
+    ADD_FM_LOCK_ID="$ADD_FM_LOCK_PARENT/$(basename -- "$CATALOG")"
 else
-    # Not a git checkout (or git refused it): use an owner-only directory of
-    # our own making. The enclosing dir may be world-writable (/tmp); this one
-    # is not, and a symlink or foreign-owned entry planted at the path is
-    # refused rather than followed.
-    ADD_FM_LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hindsight-add-failure-mode.${UID}.d"
-    if [[ -L "$ADD_FM_LOCK_DIR" ]]; then
-        add_fm_lock_refuse "$ADD_FM_LOCK_DIR is a symlink"
-    fi
-    mkdir -p -m 700 "$ADD_FM_LOCK_DIR"
-    chmod 700 "$ADD_FM_LOCK_DIR"
+    # Last resort only: neither the catalog nor its parent can be resolved, so
+    # there is no per-catalog identity to key on. Announce it -- silently
+    # collapsing every caller onto one identity is precisely the regression
+    # this change removes.
+    ADD_FM_LOCK_ID="uid-${UID}"
+    echo "add-failure-mode: warning: cannot resolve a realpath for catalog '$CATALOG';" \
+         "falling back to a per-uid lock, which serializes unrelated catalogs" >&2
 fi
+ADD_FM_LOCK_KEY="$(printf '%s' "$ADD_FM_LOCK_ID" | sha256sum)"
+ADD_FM_LOCK_KEY="${ADD_FM_LOCK_KEY%% *}"
+
+ADD_FM_LOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/hindsight-add-failure-mode.${UID}.d"
+if [[ -L "$ADD_FM_LOCK_DIR" ]]; then
+    add_fm_lock_refuse "$ADD_FM_LOCK_DIR is a symlink"
+fi
+mkdir -p -m 700 "$ADD_FM_LOCK_DIR"
+chmod 700 "$ADD_FM_LOCK_DIR"
 
 if [[ -L "$ADD_FM_LOCK_DIR" ]]; then
     add_fm_lock_refuse "$ADD_FM_LOCK_DIR is a symlink"
@@ -128,7 +161,7 @@ if (( 8#$ADD_FM_LOCK_DIR_MODE & 2 )); then
     add_fm_lock_refuse "$ADD_FM_LOCK_DIR is world-writable (mode $ADD_FM_LOCK_DIR_MODE)"
 fi
 
-ADD_FM_LOCK_FILE="$ADD_FM_LOCK_DIR/add-failure-mode.lock"
+ADD_FM_LOCK_FILE="$ADD_FM_LOCK_DIR/catalog-$ADD_FM_LOCK_KEY.lock"
 if [[ -L "$ADD_FM_LOCK_FILE" ]]; then
     add_fm_lock_refuse "$ADD_FM_LOCK_FILE is a symlink"
 fi
@@ -141,8 +174,6 @@ fi
 exec {ADD_FM_LOCK_FD}>>"$ADD_FM_LOCK_FILE"
 chmod 600 "$ADD_FM_LOCK_FILE" 2>/dev/null || true
 flock -x "$ADD_FM_LOCK_FD"
-
-CATALOG="${CATALOG:-$REPO_ROOT/catalog/failure-modes.md}"
 
 usage() {
     grep '^#' "$0" | sed 's/^# \?//'

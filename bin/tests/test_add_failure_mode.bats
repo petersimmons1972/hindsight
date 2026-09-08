@@ -814,38 +814,165 @@ PY
   [ "$status" -eq 0 ]
 }
 
+# Mirror of the lock-identity rule in bin/add-failure-mode.sh. Kept in the test
+# so a silent change to the derivation shows up as a failing row rather than as
+# two processes quietly agreeing on the wrong thing.
+expected_lock_path() {
+  local runtime="$1" catalog="$2" id key
+  if id="$(realpath -e -- "$catalog" 2>/dev/null)" && [ -n "$id" ]; then
+    :
+  else
+    id="$(realpath -e -- "$(dirname -- "$catalog")")/$(basename -- "$catalog")"
+  fi
+  key="$(printf '%s' "$id" | sha256sum)"
+  printf '%s/hindsight-add-failure-mode.%s.d/catalog-%s.lock' \
+    "$runtime" "$UID" "${key%% *}"
+}
+
 @test "a symlink planted at the lock path is refused, not followed (hindsight#188)" {
   # The first lock implementation put the lock at a predictable path under a
   # world-writable directory and opened it with `>`, so any local user could
-  # pre-plant a symlink there and have this script truncate the target. Cover
-  # BOTH the current in-repo lock path and the old ${XDG_RUNTIME_DIR} path, so
-  # this test cannot pass merely because the lock moved.
+  # pre-plant a symlink there and have this script truncate the target.
+  #
+  # STAGE is deliberately NOT git-initialised: the lock path no longer depends
+  # on git at all, and the earlier version of this row `git init`-ed the stage
+  # and therefore only ever exercised the git-common-dir branch it was written
+  # to cover (hindsight#188 review r1, low finding).
   make_staged_repo
-  git -C "$STAGE" init -q
 
-  victim_repo="$WORK/victim-repo-lock.txt"
-  victim_runtime="$WORK/victim-runtime-lock.txt"
-  printf '%s\n' 'must-survive' >"$victim_repo"
-  printf '%s\n' 'must-survive' >"$victim_runtime"
+  victim="$WORK/victim-lock-target.txt"
+  printf '%s\n' 'must-survive' >"$victim"
 
-  ln -s "$victim_repo" "$STAGE/.git/add-failure-mode.lock"
   fake_runtime="$WORK/fake-runtime"
   mkdir -p "$fake_runtime"
   chmod 700 "$fake_runtime"
-  ln -s "$victim_runtime" "$fake_runtime/hindsight-add-failure-mode.${UID}.lock"
 
-  run env XDG_RUNTIME_DIR="$fake_runtime" CATALOG="$STAGE/catalog/failure-modes.md" \
+  catalog="$STAGE/catalog/failure-modes.md"
+  lock_path="$(expected_lock_path "$fake_runtime" "$catalog")"
+  mkdir -p -m 700 "$(dirname "$lock_path")"
+  ln -s "$victim" "$lock_path"
+
+  run env XDG_RUNTIME_DIR="$fake_runtime" CATALOG="$catalog" \
     bash "$STAGE/bin/add-failure-mode.sh" --help
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"refusing unsafe lock path"* ]]
   [[ "$output" == *"is a symlink"* ]]
 
-  # Both symlinks still point where they did, and neither target was touched.
-  [ -L "$STAGE/.git/add-failure-mode.lock" ]
-  [ -L "$fake_runtime/hindsight-add-failure-mode.${UID}.lock" ]
-  [ "$(cat "$victim_repo")" = "must-survive" ]
-  [ "$(cat "$victim_runtime")" = "must-survive" ]
+  # The symlink still points where it did, and its target was not touched.
+  [ -L "$lock_path" ]
+  [ "$(cat "$victim")" = "must-survive" ]
+}
+
+@test "lock identity is the catalog realpath: symlinked and relative paths collapse, different catalogs do not (hindsight#188)" {
+  # The derivation must be stable across spellings of the same catalog (two
+  # concurrent runs have to agree on one string) and distinct across different
+  # catalogs (unrelated sandboxes must not contend). No git anywhere here:
+  # git is no longer consulted, which is the point.
+  runtime="$WORK/id-runtime"
+  mkdir -p -m 700 "$runtime"
+
+  mkdir -p "$WORK/id-a/catalog" "$WORK/id-b/catalog"
+  touch "$WORK/id-a/catalog/failure-modes.md" "$WORK/id-b/catalog/failure-modes.md"
+  ln -s "$WORK/id-a/catalog/failure-modes.md" "$WORK/id-a/aliased.md"
+  [ ! -d "$WORK/id-a/.git" ]
+
+  probe_lock() {
+    env XDG_RUNTIME_DIR="$runtime" CATALOG="$1" \
+      bash -x "$ROOT/bin/add-failure-mode.sh" --help 2>&1 \
+      | grep -oE "$runtime/[^ ']*\.lock" | head -1
+  }
+
+  direct="$(probe_lock "$WORK/id-a/catalog/failure-modes.md")"
+  via_symlink="$(probe_lock "$WORK/id-a/aliased.md")"
+  via_relative="$(probe_lock "$WORK/id-a/catalog/../catalog/failure-modes.md")"
+  other="$(probe_lock "$WORK/id-b/catalog/failure-modes.md")"
+
+  [ -n "$direct" ]
+  [ "$direct" = "$via_symlink" ]
+  [ "$direct" = "$via_relative" ]
+  [ "$direct" != "$other" ]
+
+  # And it matches the rule this test file states independently.
+  [ "$direct" = "$(expected_lock_path "$runtime" "$WORK/id-a/catalog/failure-modes.md")" ]
+}
+
+@test "concurrent adds to DIFFERENT catalogs do not block each other (hindsight#188 release-shard regression)" {
+  # Regression guard for the r1 blocker: when the lock fell back to a single
+  # per-UID path for every non-git sandbox, the release shard's three xdist
+  # workers -- each in its own `.git`-stripped tmp copy, sharing no catalog,
+  # ledger, journal, L1, L2 or pointer file -- serialized against one another
+  # and ran past the 60-minute job bound.
+  #
+  # Deterministic by construction rather than timed: one process HOLDS the lock
+  # for catalog A, then A is probed (must block until the timeout) and B is
+  # probed (must return promptly). Probe A dies if the flock is removed; probe
+  # B dies if the identity collapses to one lock again.
+  runtime="$WORK/pair-runtime"
+  mkdir -p -m 700 "$runtime"
+
+  mkdir -p "$WORK/pair-a/catalog" "$WORK/pair-b/catalog"
+  touch "$WORK/pair-a/catalog/failure-modes.md" "$WORK/pair-b/catalog/failure-modes.md"
+
+  cat_a="$WORK/pair-a/catalog/failure-modes.md"
+  cat_b="$WORK/pair-b/catalog/failure-modes.md"
+  lock_a="$(expected_lock_path "$runtime" "$cat_a")"
+  mkdir -p -m 700 "$(dirname "$lock_a")"
+  : >"$lock_a"
+
+  # Hold A's lock for the duration of both probes.
+  flock -x "$lock_a" sleep 30 &
+  holder=$!
+  # Wait until the holder actually owns it, so the probes are never racing the
+  # holder's own startup.
+  for _ in $(seq 1 100); do
+    flock -n -x "$lock_a" true || break
+    sleep 0.1
+  done
+  run flock -n -x "$lock_a" true
+  [ "$status" -ne 0 ]
+
+  # Same catalog as the holder: must block until timeout (124).
+  run env XDG_RUNTIME_DIR="$runtime" CATALOG="$cat_a" \
+    timeout 5 bash "$ROOT/bin/add-failure-mode.sh" --help
+  status_same="$status"
+
+  # Different catalog: must NOT be blocked by the holder.
+  run env XDG_RUNTIME_DIR="$runtime" CATALOG="$cat_b" \
+    timeout 5 bash "$ROOT/bin/add-failure-mode.sh" --help
+  status_other="$status"
+
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  [ "$status_same" -eq 124 ]
+  [ "$status_other" -ne 124 ]
+}
+
+@test "three non-git sandbox copies select three distinct locks, not one per-UID lock (hindsight#188)" {
+  # The release shard copies the repo with `.git` excluded (COPY_IGNORE) into a
+  # pytest tmp dir per test and runs `-n 3 --dist=load`. At the previous head
+  # every such copy failed `git rev-parse` and selected the identical per-UID
+  # lock file. This asserts the mechanism itself: three independent non-git
+  # copies must now resolve to three different lock identities.
+  runtime="$WORK/shard-runtime"
+  mkdir -p -m 700 "$runtime"
+
+  paths="$WORK/shard-lock-paths.txt"
+  : >"$paths"
+  for i in 1 2 3; do
+    copy="$WORK/shard-copy-$i"
+    mkdir -p "$copy/bin" "$copy/catalog"
+    cp "$ROOT/bin/add-failure-mode.sh" "$copy/bin/add-failure-mode.sh"
+    touch "$copy/catalog/failure-modes.md"
+    [ ! -e "$copy/.git" ]
+    env XDG_RUNTIME_DIR="$runtime" CATALOG="$copy/catalog/failure-modes.md" \
+      bash -x "$copy/bin/add-failure-mode.sh" --help 2>&1 \
+      | grep -oE "$runtime/[^ ']*\.lock" | head -1 >>"$paths"
+  done
+
+  [ "$(wc -l <"$paths")" -eq 3 ]
+  [ "$(sort -u "$paths" | wc -l)" -eq 3 ]
 }
 
 @test "a sibling shortfall stays reported but does not block a canonical add" {

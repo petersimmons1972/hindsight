@@ -527,6 +527,15 @@ AUTO_MARKER="Judgment"
 # Table row: | FM-NNN | Bug class | Concrete instance | Check that catches it | Auto? |
 TABLE_DESC="${DESC:-${TITLE}} [recurrence_of: ${RECURRENCE_OF}]"
 [[ -n "$ISSUE" ]] && TABLE_DESC="${TABLE_DESC} (GitHub #${ISSUE})"
+# A correction is a two-sided claim and the guard checks BOTH sides: the target
+# gains "SUPERSEDED by FM-NNN" below, and the superseding row must carry the
+# reciprocal "Supersedes FM-NNN". Writing only the tombstone staged an exchange
+# that the guard run against that same staging always rejected, so --supersedes
+# could never publish (hindsight#192). Same "X — <instance>" shape as the
+# tombstone the correction writes onto the target row.
+if [[ -n "$SUPERSEDES" ]]; then
+    TABLE_DESC="Supersedes ${SUPERSEDES} — ${TABLE_DESC}"
+fi
 TABLE_ROW="| ${FM_ID} | ${BUG_CLASS} | ${TABLE_DESC} | ${TITLE} | ${AUTO_MARKER} |"
 
 # ── Undo journal before write ─────────────────────────────────────────────────

@@ -297,7 +297,10 @@ def main(argv: list[str] | None = None) -> int:
             "--allow-drop alone never touches a reconciled_floors entry -- a "
             "drop against one is refused unless named here by exact backend/"
             "family, so re-pinning a reviewed exception stays a deliberate, "
-            "auditable act rather than a side effect of an unrelated override."
+            "auditable act rather than a side effect of an unrelated override. "
+            "The named BACKEND/FAMILY must also have been measured by this run "
+            "-- naming a target outside the --backend selection (or on an "
+            "unavailable backend) is refused, never silently ignored."
         ),
     )
     args = parser.parse_args(argv)
@@ -345,6 +348,47 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+
+    # Existing in the artifact is not enough: the target must also have been
+    # MEASURED by this invocation. A target whose backend was never selected
+    # (or was selected but unavailable, like an unreachable `http`) has no new
+    # measurement to re-pin to, so it would fall out of `find_reconciled_drops`
+    # and be silently skipped while the command printed RECORDED and exited 0 --
+    # a cosmetic success that is exactly the class `--reconcile` exists to
+    # close. An explicit operator instruction that cannot be carried out must
+    # fail loudly and write nothing, naming both the target and what was in
+    # fact measured.
+    unmeasured = sorted(
+        (backend_name, family_name)
+        for backend_name, family_name in reconcile_targets
+        if family_name not in measured.get(backend_name, {})
+    )
+    if unmeasured:
+        measured_rows = sorted(
+            f"{backend_name}/{family}"
+            for backend_name, families in measured.items()
+            for family in families
+        )
+        for backend_name, family_name in unmeasured:
+            print(
+                "recall-baselines: error: --reconcile "
+                f"{backend_name}/{family_name} was never measured by this run, so "
+                "there is no measured recall to re-pin it to -- refusing rather "
+                "than reporting success without touching it",
+                file=sys.stderr,
+            )
+        print(
+            "recall-baselines: measured this run: "
+            + (", ".join(measured_rows) if measured_rows else "(nothing)"),
+            file=sys.stderr,
+        )
+        print(
+            "recall-baselines: re-run with a --backend selection that measures "
+            + ", ".join(sorted({backend for backend, _ in unmeasured}))
+            + " (and confirm that backend is available).",
+            file=sys.stderr,
+        )
+        return 2
 
     drops = find_drops(recorded, measured)
     if drops and not args.allow_drop:

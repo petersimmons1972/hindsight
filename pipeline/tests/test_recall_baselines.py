@@ -340,6 +340,64 @@ def test_reconcile_rejects_a_family_with_no_existing_reconciled_floor(tmp_path: 
     assert exit_code == 2
 
 
+def test_reconcile_target_never_measured_this_run_fails_loudly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An explicit `--reconcile` target this run never measured must FAIL, not
+    exit 0 printing RECORDED (hindsight#178, round-2 review finding).
+
+    `tfidf/reviewed-family` is a real recorded `reconciled_floors` entry, so the
+    existence check above passes it. But `--backend released` means the `tfidf`
+    backend was never measured in this invocation: there is no measured recall
+    to re-pin the named floor to, so before this check the target was silently
+    left untouched while the command reported success and rewrote the artifact
+    -- the same cosmetic-success class `--reconcile` exists to close. An
+    unselected or unavailable backend must never be able to swallow an explicit
+    operator instruction.
+    """
+    payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    payload["baselines"]["tfidf"]["reviewed-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+    }
+    payload.setdefault("reconciled_floors", {}).setdefault("tfidf", {})["reviewed-family"] = {
+        "together": 4, "members": 4, "fraction": 1.0,
+        "cause": "a prior, reviewed reconciliation on a backend this run will not measure",
+    }
+    path = tmp_path / "recall-baselines.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    before = path.read_bytes()
+    exit_code = MODULE.main([
+        "--artifact", str(path), "--backend", "released", "--update",
+        "--allow-drop", "--reason", "corpus reclustered, reviewed",
+        "--reconcile", "tfidf/reviewed-family",
+    ])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2, "an unmeasured explicit --reconcile target must exit nonzero"
+    assert path.read_bytes() == before, "nothing may be written when a named target was not measured"
+    assert "RECORDED" not in captured.out, "the run must not report a successful record"
+    # The message must name the rejected target AND the set actually measured,
+    # so the operator can see why their instruction could not be carried out.
+    assert "tfidf/reviewed-family" in captured.err
+    assert "released/dedup-identity-key" in captured.err
+
+
+def test_reconcile_target_that_was_measured_is_still_accepted(tmp_path: Path) -> None:
+    """Negative control for the check above: it must reject only the UNMEASURED
+    case, not every `--reconcile`. The committed `released/dedup-identity-key`
+    floor is measured under `--backend released`, so it stays accepted.
+    """
+    payload = json.loads(COMMITTED.read_text(encoding="utf-8"))
+    path = tmp_path / "recall-baselines.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    assert MODULE.main([
+        "--artifact", str(path), "--backend", "released", "--update",
+        "--allow-drop", "--reason", "why", "--reconcile", "released/dedup-identity-key",
+    ]) == 0
+
+
 def test_reconcile_requires_allow_drop() -> None:
     """`--reconcile` without `--allow-drop` is refused rather than ignored."""
     assert MODULE.main([

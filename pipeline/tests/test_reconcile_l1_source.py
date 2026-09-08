@@ -435,8 +435,8 @@ def test_catalog_id_whitespace_is_normalized_in_ground_truth(tmp_path: Path) -> 
     report = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stdout
-    assert report[0]["ground_truth"] == 449
-    assert report[0]["covered"] == 449
+    assert report[0]["ground_truth"] == 457
+    assert report[0]["covered"] == 457
 
 
 def test_extra_canonical_l1_id_makes_the_gate_short(tmp_path: Path) -> None:
@@ -497,7 +497,7 @@ def test_every_semantic_field_diverges_on_every_canonical_row(
     tmp_path: Path,
     field: str,
 ) -> None:
-    """Corrupt one field on all 449 rows; every row must be named divergent."""
+    """Corrupt one field on all 457 rows; every row must be named divergent."""
     projects = tmp_path / field
     repo = projects / "hindsight"
     (repo / "pipeline" / "L1").mkdir(parents=True)
@@ -527,7 +527,7 @@ def test_every_semantic_field_diverges_on_every_canonical_row(
 
     assert result.returncode == 1, result.stdout
     assert set(report[0]["divergent"]) == expected_ids
-    assert len(expected_ids) == 449
+    assert len(expected_ids) == 457
 
 
 def test_catalog_robot_marker_wins_for_the_nine_previously_corrupted_rows() -> None:

@@ -56,6 +56,34 @@ def test_hit_reports_the_searched_subset_and_the_population(tmp_path: Path) -> N
     assert "searched 3 of 5 canonical failure modes" in result.stderr
 
 
+def test_unreadable_population_claims_no_fraction_rather_than_a_false_one(
+    tmp_path: Path,
+) -> None:
+    """A subset larger than its own population is an impossible sentence.
+
+    An empty (or stale) criticality.jsonl beside populated pointer files used to
+    print "searched 258 of 0". Printing a scope line is the whole point of this
+    script; printing a false one is worse than printing none.
+    """
+    env = _fixture(tmp_path)
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("")
+    for criticality, expected in (
+        (str(empty), "reports only 0 canonical failure modes"),
+        (str(tmp_path / "absent.jsonl"), "could not be read"),
+    ):
+        result = subprocess.run(
+            ["bash", str(SCRIPT), "truncate"],
+            env={"PATH": "/usr/bin:/bin", **env, "CRITICALITY": criticality},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert "of 0 canonical failure modes" not in result.stderr
+        assert expected in result.stderr
+        assert "UNKNOWN" in result.stderr
+
+
 def test_miss_is_labelled_not_in_subset_and_denies_all_clear(tmp_path: Path) -> None:
     result = _run(tmp_path, "nosuchkeywordanywhere")
     assert "not-in-subset" in result.stderr

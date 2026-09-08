@@ -61,8 +61,29 @@ corpus_size() {
         | sort -u | grep -c '^' || true
 }
 
-SCOPE_NOTE="scope: searched $(subset_size) of $(corpus_size) canonical failure modes \
+# A scope line is only worth printing if it is TRUE. The fraction is claimed
+# ONLY when the two numbers can both be read and are consistent with each other:
+# the subset cannot be larger than the population it was rendered from, so
+# `258 of 0` (an empty or stale criticality.jsonl beside populated pointer files)
+# is not a small inaccuracy, it is a mathematically impossible sentence. In that
+# case, and when the population file cannot be read at all, the run says the
+# coverage is UNKNOWN rather than printing a number it cannot stand behind — the
+# same reason this script prints a scope line at all.
+SUBSET_ROWS="$(subset_size)"
+CORPUS_ROWS="$(corpus_size)"
+if [[ "$CORPUS_ROWS" == "unknown" ]]; then
+    SCOPE_NOTE="scope: searched ${SUBSET_ROWS} rows in docs/POINTER.md + docs/HIGH.md. \
+The canonical population (${CRITICALITY}) could not be read, so this run claims NO coverage \
+fraction: treat its coverage of the catalog as UNKNOWN."
+elif (( CORPUS_ROWS < SUBSET_ROWS )); then
+    SCOPE_NOTE="scope: searched ${SUBSET_ROWS} rows in docs/POINTER.md + docs/HIGH.md, but \
+${CRITICALITY} reports only ${CORPUS_ROWS} canonical failure modes — fewer than the pointer files \
+contain. The pointer files and the population they are rendered from DISAGREE, so this run claims \
+NO coverage fraction: treat its coverage as UNKNOWN and re-run bin/synthesize-pointer.py."
+else
+    SCOPE_NOTE="scope: searched ${SUBSET_ROWS} of ${CORPUS_ROWS} canonical failure modes \
 (docs/POINTER.md + docs/HIGH.md, the CRITICAL+HIGH subset of catalog/criticality.jsonl)."
+fi
 
 if [[ $# -eq 0 ]]; then
     echo "usage: query-failure-modes.sh <keyword...>" >&2

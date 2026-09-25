@@ -81,8 +81,8 @@ private repos use our own ARC runners.
 Defaults for all repos here unless a child `AGENTS.md` tightens or overrides them.
 Child AGENTS files carry **deltas only**. The universal core (built from `agent-policy/canon` and
 installed at `~/.local/share/agent-policy/universal.md`) sets the model-agnostic floor; this file
-is the project/Fleet delta on top of it. The `dispatch-channel`, `github-auth` and `teardown`
-sections live in the generated block at the end of this file (source: canon rule files in
+is the project/Fleet delta on top of it. The `dispatch-channel`, `github-auth`, `teardown` and
+`standing-authorizations` sections live in the generated block at the end of this file (source: canon rule files in
 `agent-policy/canon/project/projects-agents/`; edit those, never the block).
 
 <!-- id: who-youre-working-for -->
@@ -108,12 +108,7 @@ sessions, only for that kind of work.
 - **A dispatch brief that will produce findings must state whether follow-up issues are
   authorized. Default is NO** — a lane reports findings in its receipt and does not file.
 - No direct `main` push. Push branch + open a PR before marking done; verify with `gh pr list`.
-  `Closes #N` required for issue-bound work. A **draft is not reviewable** — reviewing a PR while
-  `isDraft=true` is forbidden (permanent no-draft-review rule, 2026-08-12) — so private-estate work
-  must be **`isDraft=false` before review is requested or the work is marked done**.
-  **Public/outbound PRs stay draft-only** — deliberate founder policy, and it holds. Otherwise leave
-  a PR draft only when the work is deliberately unfinished: say so in the body and name what
-  unblocks it.
+  `Closes #N` required for issue-bound work.
 - **Independent adversarial review is a required pre-merge QA gate.** Reviewer must be a
   **different harness**, dispatched as its own separate context — see the universal core's
   `independent-review` section for the full definition (same-harness/different-model does not
@@ -141,10 +136,6 @@ follow it.
 | merge-on-green; certify and merge only (no babysit loop) | `~/projects/fleet/agent-playbooks/merge-on-green.md` |
 
 **Founder rulings A-D (detailed in the playbooks; not all equally firm — see labels):**
-- (A) Draft first on file; undraft when CI is green at head AND the coordinator has
-  spot-checked the deliverable. IF a PR `isDraft=true` THEN skip review — it isn't ready.
-  IF `isDraft=false` THEN review applies. Merge still needs green CI + independent review
-  at the exact head, executed through the `land` mechanical gate (see MERGE-PATH).
 - (B) Reviewer is a different **harness**, dispatched as its own separate context, than the
   author — same-harness/different-model does not count. See the universal core's
   `independent-review` section for the full definition.
@@ -258,43 +249,26 @@ some administrative issue where OAuth has more permissions than the App tokens."
 - **OAuth's only legitimate uses**, and only when the founder asks: an action he wants under
   his own name, and administrative actions the App genuinely cannot perform — verified by
   exercising them, not assumed.
-- **Discussions are App-token ONLY (founder ruling 2026-08-16).** Not "may use"; *only*.
-  There is no OAuth path for Discussions any more — do not reach for one, and do not treat a
-  Discussions 403 as grounds to switch identity. If your harness's App token cannot post,
-  that is a defect to report, not a reason to change credentials.
-- **MEASURED FALSE 2026-08-15 — Discussions are NOT an OAuth exception.** All three
-  installations (claude 145671767, codex 145562434, grok 153265225) carry
-  `discussions: write` **and** `administration: write`; an App-token GraphQL read of
-  `fleet` discussion #478 returned the discussion normally. Use your own App token for
-  Discussions, reads and writes alike.
-- **Branch-protection / ruleset 403s are a PLAN limit, not an OAuth capability.** Measured
-  2026-08-15: `GET /repos/petersimmons1972/fleet/branches/main/protection` returns
-  `403 "Upgrade to GitHub Pro or make this repository public"` for the **App and founder
-  OAuth identically**. Switching identity fixes nothing. Do not cite it as a reason to
-  reach for OAuth.
-- These two claims were the main respectable-looking justification for reaching past a
-  harness's own App token, and the credential failure they enabled has recurred six times.
-  Before treating any capability as OAuth-only, **exercise it on the App token first.**
+- **Discussions are App-token ONLY.** There is no OAuth path for Discussions; do not reach for
+  one, and do not treat a Discussions 403 as grounds to switch identity. If your harness's App
+  token cannot post, that is a defect to report, not a reason to change credentials.
+- **Branch-protection and ruleset 403s are a plan limit, not an OAuth capability.** The App
+  and the founder's OAuth get the same 403 there, so switching identity fixes nothing. Before
+  treating any capability as OAuth-only, **exercise it on the App token first.**
 
 **Verify identity by the rate-limit ceiling, not by hope.** `gh api rate_limit` →
 `limit: ~7500` means App. **IF the limit is ~5000 THEN you're on the founder's OAuth, not
 your App token — stop and re-mint before proceeding.** Check the *limit*, not the *remaining*
 — sessions have read past a printed 5000 twice in one session while watching `remaining` fall
-to zero. FM-292 is this rule's 6th documented occurrence.
+to zero.
 
-**Why this is a standing rule and not advice.** This exact failure is documented **six
-times** (2026-07-29; 07-30 x3; 08-10; 08-15), a 100% miss rate for background sessions.
-On 2026-08-15 the founder's personal OAuth quota was driven to 0/5000 and re-drained to 0
-within minutes of reset, **while the Claude App pool sat at 7395/7500 unused**. Downstream,
-starved lens agents made a merge gate certify on an empty evidence panel. One dead token
-cascades into unsound merges.
+A dead or borrowed token has repeatedly caused unsound merges.
 
 **Known mechanism failures — fix these, do not restate the rule:**
 - Fact: long-lived non-interactive processes inherit `GH_TOKEN` at spawn and never re-sync;
-  the refresh hook rides on `PROMPT_COMMAND`, which is interactive-only. (FM-292 states this
-  mechanism as its root cause.)
+  the refresh hook rides on `PROMPT_COMMAND`, which is interactive-only.
 - IF a script runs under `cron` (no `BASH_ENV`, so it inherits no token and falls through to
-  OAuth) THEN it must acquire its own token in a preamble and exit non-zero if it can't. (FM-292)
+  OAuth) THEN it must acquire its own token in a preamble and exit non-zero if it can't.
 - Refresh timers exist per harness (`gh-app-cred-refresh{,-codex,-grok}.timer`). If yours is
   missing or stale, that is a defect to fix, not a reason to use OAuth.
 
@@ -309,5 +283,35 @@ you added; delete merged/abandoned local branches you created; `rm -rf` session 
 **IF a resource is not yours** (other sessions' worktrees, production containers, shared
 volumes, unmerged branches you did not create) **THEN list it as a candidate — don't delete
 without being asked** — GOV-000006 defines "asked".
+
+<!-- id: standing-authorizations -->
+## Standing authorizations and rulings
+Standing authorization (founder, 2026-09-22): in fleet and agent-policy, an
+agent may land any change that has one head-bound PASS from a vendor other than
+the author. This includes changes to the review rules themselves (their canon
+rules, fleet `MERGE-PATH.md` and `REVIEW-RULES.md`) and the regenerated policy
+files that follow from them. No panel is required.
+
+Founder rulings (2026-09-24), adversarial fix loop:
+- A disputed or new blocking finding stands unless the refuter shows executed
+  evidence that it does not reproduce at the head, is present at the
+  merge-base, is unreachable, or is outside the diff.
+- The reviewer vendor stays the same for every round of one loop.
+- The loop's final cross-vendor, head-bound PASS counts as the merge-gate
+  review.
+
+None of these rulings authorizes pushing, posting, or merging.
+
+Standing authorization (founder, 2026-09-24): for the adversarial-fix-loop
+prototype run, agents may push commits (never force-push or rewrite history) to
+the branch of petersimmons1972/writers#122. It covers no merge, deploy, or
+other publication.
+
+Standing authorization (founder, 2026-09-24): for tuning adversarial-fix-loop
+model tiers on petersimmons1972/aifleet#659, agents may open copy PRs of its
+head and close them unmerged, push commits (never force) to those copy branches
+and to the aifleet#659 branch, and post one head-bound merge-gate verdict on
+aifleet#659 through `cli-dispatch review-post`. No verdicts go on the copy PRs.
+It covers no merge, deploy, or other publication.
 <!-- END PROJECT AGENT POLICY -->
 <!-- END UNIVERSAL AGENT POLICY -->

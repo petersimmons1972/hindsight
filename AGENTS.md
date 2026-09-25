@@ -20,6 +20,8 @@ the real content now lives; the two are complementary, not duplicates.
   **Never regenerate the ledger from the catalog**: a regenerated baseline cannot
   detect a row that is already missing, which is the whole point of having one.
   Restore it from git instead.
+- **Never hand-assign an ID.** IDs come only from `bin/add-failure-mode.sh`, which stays
+  unused while Hindsight is disabled.
 - **An `enforcement` value of `null` is a correct answer.** Do not invent a test
   or hook path to fill a field. A fabricated mechanism is worse than an honest
   gap, because it reads as covered.

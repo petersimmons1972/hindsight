@@ -135,7 +135,7 @@ follow it.
 | babysit / drain / lifecycle monitor (full); fix CI / watch (watch mode) | `~/projects/fleet/agent-playbooks/babysit-pr.md` |
 | merge-on-green; certify and merge only (no babysit loop) | `~/projects/fleet/agent-playbooks/merge-on-green.md` |
 
-**Founder rulings A-D (detailed in the playbooks; not all equally firm — see labels):**
+**Founder rulings B-D (detailed in the playbooks; not all equally firm):**
 - (B) Reviewer is a different **harness**, dispatched as its own separate context, than the
   author — same-harness/different-model does not count. See the universal core's
   `independent-review` section for the full definition.

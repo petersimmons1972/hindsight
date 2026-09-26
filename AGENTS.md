@@ -139,10 +139,14 @@ When your work on a PR or task ends, read `~/projects/agent-policy/playbooks/tea
 
 <!-- id: standing-authorizations -->
 ## Standing authorizations
-Standing authorization (founder, 2026-09-22): in fleet and agent-policy, an
-agent may land any change that has one head-bound PASS from a vendor other than
-the author. This includes changes to the review rules themselves (their canon
-rules, fleet `MERGE-PATH.md` and `REVIEW-RULES.md`) and the regenerated policy
-files that follow from them. No panel is required.
+Standing authorization (founder, 2026-09-22; amended 2026-09-25): in fleet, an
+agent may merge a pull request only via `cli-dispatch land`, never with
+`--force-no-review`, and only when every required CI check concluded SUCCESS at
+the PR head (with no required checks configured: at least one check ran and
+every check that ran concluded SUCCESS) and a merge-gating review from a vendor
+other than the author posted PASS for that head. This includes changes to fleet
+`MERGE-PATH.md` and `REVIEW-RULES.md` and the regenerated policy files that
+follow from them. No panel is required. It covers no merge into
+petersimmons1972/agent-policy: the founder merges canon changes.
 <!-- END PROJECT AGENT POLICY -->
 <!-- END UNIVERSAL AGENT POLICY -->

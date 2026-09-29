@@ -38,9 +38,9 @@ left in a mixed state. Recovery copies are retained and named if either apply
 or compensation reports an error.
 
 Canonical ingest requires the sibling repositories used by extraction and
-reconciliation (`fleet`, `fleet-dispatch`, and `claude-codex`) beside the
+reconciliation (`fleet` and `claude-codex`) beside the
 `hindsight` checkout. The command resolves catalog aliases before deciding
-whether this is a canonical run and checks every required sibling source before
+whether this is a canonical run and checks every required sibling and local source before
 creating an undo journal or writing. A standalone checkout therefore fails
 loudly with the missing paths and leaves the catalog and ledger untouched.
 
@@ -62,7 +62,8 @@ hook exits nonzero and requires these exact files to be reviewed and staged:
 
 ```bash
 git add pipeline/L1/homelab-canon.jsonl \
-  pipeline/L1/fleet-dispatch-schema.jsonl \
+  pipeline/L1/dispatch-schema.jsonl \
+  pipeline/L2/embedding-snapshot.json \
   pipeline/L2/clusters.jsonl
 ```
 

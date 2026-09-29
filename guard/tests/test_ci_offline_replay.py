@@ -34,7 +34,7 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "f28992a8b9cbe17ecce355b60968040ddf9ec3478af47f23f5e5e24b5c77c78a"
+INTENDED_WORKFLOW_SHA256 = "16c5195a23d673fb1becacc4e43c3bdbac7993cd47575b799b5a0db860e09d96"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.

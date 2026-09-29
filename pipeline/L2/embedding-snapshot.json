@@ -846459,7 +846459,7 @@
   },
   "provenance": {
     "cluster_sha256": "46bf6281e0d8e6897b7d95fcd4db8424655835695c3b278f3704533aac92814e",
-    "l1_sha256": "0d8ca7e5ef03365858bda4793262a54cffcfab3820a7a6632021ce3205d8f2c1"
+    "l1_sha256": "adda5edf9b47203acaf599aa7fc28f00a12d589342a7e9ccfb29e3c526421e60"
   },
   "schema": "hindsight.embedding-snapshot/v3",
   "similarity_text_sha256": {

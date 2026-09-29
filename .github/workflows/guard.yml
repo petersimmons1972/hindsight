@@ -115,10 +115,10 @@ jobs:
         # pipeline/L1/homelab-canon.jsonl now fails CI outright, and the run
         # prints the four sources it did not check.
         #
-        # STILL NOT CHECKED ANYWHERE IN CI: fleet-main, fleet-orch,
-        # claude-codex-integration, fleet-dispatch-schema. Closing that needs the
-        # sibling repos checked out on the runner; it is not in this workflow's
-        # reach, and a green tick here must not be read as covering them.
+        # CI does not reconcile fleet-main, fleet-orch,
+        # claude-codex-integration, or dispatch-schema. The sibling sources need
+        # their repositories checked out on the runner. The local schema is
+        # checked by the pre-commit hook and scoped reconciliation tests.
         run: python3 pipeline/reconcile_l1.py --source homelab-canon
       - name: Validate L1 schema
         if: matrix.shard == 'tools'

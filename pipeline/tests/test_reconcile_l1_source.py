@@ -37,7 +37,7 @@ ALL_SLUGS = [
     "fleet-orch",
     "homelab-canon",
     "claude-codex-integration",
-    "fleet-dispatch-schema",
+    "dispatch-schema",
 ]
 # The one source deliberately made SHORT in the hermetic fixture.
 FIXTURE_MISSING_ID = "OPS-99"
@@ -99,10 +99,10 @@ def fixture_repo(tmp_path: Path) -> Path:
     (repo / "pipeline" / "L1" / "claude-codex-integration.jsonl").write_text(
         _record("FM-001"), encoding="utf-8")
 
-    (projects / "fleet-dispatch" / "migrations").mkdir(parents=True)
-    (projects / "fleet-dispatch" / "migrations" / "0017_failure_class.sql").write_text(
+    (repo / "pipeline" / "sources").mkdir(parents=True)
+    (repo / "pipeline" / "sources" / "dispatch-failure-class.sql").write_text(
         "CHECK (failure_class IN ('fixture_failure'))\n", encoding="utf-8")
-    (repo / "pipeline" / "L1" / "fleet-dispatch-schema.jsonl").write_text(
+    (repo / "pipeline" / "L1" / "dispatch-schema.jsonl").write_text(
         json.dumps({"id": "fixture_failure", "instance": "schema class",
                     "source_path": "migration"}) + "\n", encoding="utf-8")
 
@@ -586,3 +586,32 @@ def test_the_shipped_scoped_ci_gate_is_green_on_the_committed_tree() -> None:
         "drifted; the scoped CI step is red on the committed tree."
     )
     assert "COMPLETE" in result.stdout
+
+
+def test_local_schema_source_missing_fails_loudly(fixture_repo: Path) -> None:
+    """A missing vendored source cannot turn a scoped run into empty success."""
+    (fixture_repo / "pipeline" / "sources" / "dispatch-failure-class.sql").unlink()
+    result = _run(fixture_repo / "pipeline" / "reconcile_l1.py",
+                  "--source", "dispatch-schema")
+    assert result.returncode == 1
+    assert "UNRESOLVED" in result.stdout
+
+
+def test_local_schema_extract_does_not_claim_active_db_enforcement(tmp_path: Path) -> None:
+    """The retained enum is historical data, not a live constraint."""
+    import shutil
+    source = tmp_path / "hindsight"
+    (source / "pipeline" / "sources").mkdir(parents=True)
+    (source / "pipeline" / "L1").mkdir(parents=True)
+    (source / "catalog").mkdir()
+    shutil.copy2(REPO / "pipeline" / "extract_mechanical.py", source / "pipeline")
+    shutil.copy2(RECONCILE, source / "pipeline")
+    shutil.copy2(REPO / "pipeline" / "sources" / "dispatch-failure-class.sql",
+                 source / "pipeline" / "sources")
+    (source / "catalog" / "failure-modes.md").write_text("", encoding="utf-8")
+    result = _run(source / "pipeline" / "extract_mechanical.py")
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(line) for line in
+               (source / "pipeline" / "L1" / "dispatch-schema.jsonl").read_text().splitlines()]
+    assert len(records) == 10
+    assert all(record["enforcement"] is None for record in records)

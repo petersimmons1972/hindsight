@@ -4,7 +4,7 @@
 Why this exists
 ---------------
 The first L1 extraction pass reported success on every source, and was lossy:
-fleet-main returned 78 of 102 entries, fleet-dispatch 2 of 10. Nothing failed;
+fleet-main returned 78 of 102 entries, the queue schema 2 of 10. Nothing failed;
 each agent reported a count that looked plausible on its own.
 
 That is the registry's own headline failure mode -- a proxy (the agent's
@@ -20,7 +20,7 @@ Exit 0 only when the gate is COMPLETE, or when its PARTIAL result is explicitly
 waived. Without `--gate`, every selected source is gated.
 
 `--source` narrows the run to named sources. It exists because the corpus is a
-union of five independently-owned sources, and a gate that reconciles ALL of
+union of five sources, and a gate that reconciles ALL of
 them is the wrong coupling for a caller that wrote ONE of them: an unrelated
 sibling repo's backlog made `bin/add-failure-mode.sh` unable to add anything at
 all (issue #73). Narrowing is never silent -- a scoped run prints exactly which
@@ -65,7 +65,7 @@ ENUMERABLE = {
                       re.compile(r"^\|\s*(FM-\d{2,3})\s*\|")),
     "claude-codex-integration": ([P / "claude-codex/docs/integration-failure-modes.md"],
                                  re.compile(r"^#{2,4} +(FM-\d{2,3})")),
-    "fleet-dispatch-schema": ([P / "fleet-dispatch/migrations/0017_failure_class.sql"],
+    "dispatch-schema": ([REPO / "pipeline/sources/dispatch-failure-class.sql"],
                               re.compile(r"'([a-z_]{4,})'")),
 }
 
@@ -263,7 +263,7 @@ def extracted(slug: str) -> tuple[set[str], int]:
         n += 1
         d = json.loads(line)
         # Search the WHOLE record, not just `id`. An earlier version searched only
-        # the id field for snake_case and reported a false 0% on fleet-dispatch --
+        # the id field for snake_case and reported a false 0% on the queue schema --
         # a validator that fails ground truth is worse than no validator.
         blob = " ".join(str(d.get(k, "")) for k in
                         ("id", "source_anchor", "instance", "check"))

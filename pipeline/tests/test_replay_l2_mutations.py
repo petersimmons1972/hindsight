@@ -159,6 +159,6 @@ def test_default_committed_replay_succeeds_with_network_poisoned(
     # entry, parsing them from the pipeline's own replay report. Do not restate the
     # CURRENT counts in prose here: the updater rewrites digits, not comments, so a
     # live count written above this line drifts silently and lies.
-    assert captured.out == "replay-l2: PASS: 825 entries, 301 clusters\n"
+    assert captured.out == "replay-l2: PASS: 825 entries, 302 clusters\n"
     assert network_attempts == []
     _assert_originals(before)

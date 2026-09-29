@@ -2,8 +2,7 @@
 """Deterministic L1 extraction for machine-enumerable sources.
 
 The first pass sent a model at these and lost data: the catalog agent produced
-nothing at all, and fleet-dispatch returned 2 of 10 enum classes. Both sources
-are fully structured -- a markdown table and a SQL CHECK constraint -- so their
+nothing at all. The catalog is a structured markdown table, so its
 content is recoverable by parsing. A model adds nothing here except the
 opportunity to silently drop rows.
 
@@ -74,31 +73,7 @@ for row in parse_catalog_rows(cat.read_text(encoding="utf-8")):
     })
 emit("homelab-canon", records, preserve_prefix="hc-FM-")
 
-# ---- 2. fleet-dispatch failure_class enum (SQL CHECK constraint) --------------
-sql = P / "fleet-dispatch/migrations/0017_failure_class.sql"
-text = sql.read_text(encoding="utf-8")
-values = re.findall(r"'([a-z][a-z_]{3,})'", text)
-seen, ordered = set(), []
-for v in values:
-    if v not in seen:
-        seen.add(v)
-        ordered.append(v)
-records = [{
-    "id": f"fd-{v}",
-    "source_path": "fleet-dispatch/migrations/0017_failure_class.sql",
-    "source_anchor": f"failure_class enum value '{v}'",
-    "class_hint": "dispatch failure class",
-    "instance": f"Dispatch runs terminate with failure_class='{v}'; the schema "
-                f"enumerates this as a distinct, DB-enforced failure category.",
-    "check": "CHECK constraint on failure_class restricts values to this enum",
-    "enforcement": {"file": "fleet-dispatch/migrations/0017_failure_class.sql",
-                    "kind": "schema"},
-    "auto": "machine",
-    "first_seen": None,
-} for v in ordered]
-emit("fleet-dispatch-schema", records)
-
-# ---- 3. fleet-main / fleet-orch backlog (hindsight#106) -----------------------
+# ---- 2. fleet-main / fleet-orch backlog (hindsight#106) -----------------------
 #
 # fleet-main and fleet-orch have no generator at all -- their .jsonl files were
 # hand-authored by a model pass in 2026-08 and never reconciled again (issue

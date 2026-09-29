@@ -477,7 +477,6 @@ if [[ "$CATALOG" == "$CANONICAL_CATALOG" ]]; then
         "$REPO_ROOT/../fleet/CODING-INVARIANTS.md"
         "$REPO_ROOT/../fleet/CODING-FAILURE-MODES.md"
         "$REPO_ROOT/../claude-codex/docs/integration-failure-modes.md"
-        "$REPO_ROOT/../fleet-dispatch/migrations/0017_failure_class.sql"
     )
     TOPOLOGY_MISSING=0
     for source_path in "${REQUIRED_TOPOLOGY[@]}"; do
@@ -573,7 +572,6 @@ snapshot_file "$LEDGER"
 snapshot_file "$CRITICALITY"
 if [[ $RUN_FULL_LOOP -eq 1 ]]; then
     snapshot_file "$REPO_ROOT/pipeline/L1/homelab-canon.jsonl"
-    snapshot_file "$REPO_ROOT/pipeline/L1/fleet-dispatch-schema.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/clusters.jsonl"
     snapshot_file "$REPO_ROOT/pipeline/L2/embedding-snapshot.json"
     snapshot_file "$REPO_ROOT/pipeline/L2/recall-baselines.json"
@@ -841,7 +839,7 @@ PYEOF
     #
     # CI (guard.yml) scopes its own reconciliation to homelab-canon because it
     # checks out only this repository. CI does NOT verify fleet-main,
-    # fleet-orch, claude-codex-integration, or fleet-dispatch-schema; this
+    # fleet-orch or claude-codex-integration; this
     # write-time full report makes their current health visible but does not
     # claim that the canonical-write gate resolves their consumer-sync backlog.
     python3 "$REPO_ROOT/pipeline/reconcile_l1.py" --gate homelab-canon

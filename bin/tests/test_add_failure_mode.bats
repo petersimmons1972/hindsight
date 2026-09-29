@@ -293,7 +293,7 @@ make_staged_repo() {
   mkdir -p "$STAGE/bin" "$STAGE/.githooks" "$STAGE/guard" \
     "$STAGE/catalog" "$STAGE/pipeline/L1" "$STAGE/pipeline/L2" \
     "$STAGE/pipeline/tests/fixtures" \
-    "$WORK/fleet/orchestration" "$WORK/fleet-dispatch/migrations" \
+    "$WORK/fleet/orchestration" \
     "$WORK/claude-codex/docs"
   cp "$TOOL" "$STAGE/bin/add-failure-mode.sh"
   cp "$ROOT/bin/verify-hook-worktree.sh" "$STAGE/bin/verify-hook-worktree.sh"
@@ -326,16 +326,12 @@ make_staged_repo() {
     >"$STAGE/pipeline/L1/seed.jsonl"
   printf '%s\n' '{"id":"FM-001","instance":"old canonical row","source_path":"catalog","source_anchor":"catalog:1","check":null,"enforcement":null,"auto":"judgment","first_seen":null}' \
     >"$STAGE/pipeline/L1/homelab-canon.jsonl"
-  printf '%s\n' '{"id":"fixture_failure","instance":"old schema row","source_path":"migration","source_anchor":"migration:1","check":null,"enforcement":null,"auto":"machine","first_seen":null}' \
-    >"$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl"
   printf '%s\n' '{"schema":"hindsight.recall-baselines/v1","baselines":{},"overrides":[]}' \
     >"$STAGE/pipeline/L2/recall-baselines.json"
   printf '%s\n' '## OPS-1' >"$WORK/fleet/FAILURE-MODES.md"
   printf '%s\n' '## OPS-2' >"$WORK/fleet/orchestration/FAILURE-MODES.md"
   printf '%s\n' '## CI-1' >"$WORK/fleet/CODING-INVARIANTS.md"
   printf '%s\n' '## FM-1' >"$WORK/fleet/CODING-FAILURE-MODES.md"
-  printf '%s\n' "CHECK (failure_class IN ('fixture_failure'))" \
-    >"$WORK/fleet-dispatch/migrations/0017_failure_class.sql"
   printf '%s\n' '## FM-001' >"$WORK/claude-codex/docs/integration-failure-modes.md"
 
   cat >"$STAGE/guard/failure_mode_catalog_guard.py" <<'PY'
@@ -352,8 +348,6 @@ if "FM-002" not in catalog.read_text():
     raise SystemExit("catalog row missing before extract")
 (root / "pipeline/L1/homelab-canon.jsonl").write_text(
     '{"id":"FM-002","instance":"new canonical row","source_path":"catalog","source_anchor":"catalog:2","check":null,"enforcement":null,"auto":"judgment","first_seen":null}\n')
-(root / "pipeline/L1/fleet-dispatch-schema.jsonl").write_text(
-    '{"id":"fixture_failure","instance":"new schema row","source_path":"migration","source_anchor":"migration:1","check":null,"enforcement":null,"auto":"machine","first_seen":null}\n')
 with open(os.environ["TRACE"], "a") as handle:
     handle.write("extract\n")
 PY
@@ -399,7 +393,6 @@ PY
   catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
   l1_canon_before="$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")"
-  l1_schema_before="$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")"
   l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
   recall_baselines_before="$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")"
 
@@ -433,7 +426,6 @@ PY
   [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
   [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
   [ "$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")" = "$l1_canon_before" ]
-  [ "$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")" = "$l1_schema_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/recall-baselines.json")" = "$recall_baselines_before" ]
 }
@@ -555,7 +547,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
 
 @test "missing sibling topology fails before journal or write" {
   make_staged_repo
-  rm "$WORK/fleet-dispatch/migrations/0017_failure_class.sql"
+  rm "$WORK/fleet/CODING-INVARIANTS.md"
   catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
 
@@ -563,7 +555,7 @@ assert row['scored_by'] == 'add-failure-mode.sh (write-time)', row
     bash "$STAGE/bin/add-failure-mode.sh" -c A --disposition advisory --ladder-rung prose-rule "missing topology" --recurrence-of c-001
 
   [ "$status" -ne 0 ]
-  [[ "$output" == *"fleet-dispatch/migrations/0017_failure_class.sql"* ]]
+  [[ "$output" == *"fleet/CODING-INVARIANTS.md"* ]]
   [[ "$output" != *"UNDO:"* ]]
   [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
   [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
@@ -675,11 +667,6 @@ if os.environ.get("LOSSY") == "1":
                         "source_path": "catalog", "source_anchor": "catalog:1",
                         "check": None, "enforcement": None, "auto": "judgment",
                         "first_seen": None}) + "\n" for i in ids))
-(root / "pipeline/L1/fleet-dispatch-schema.jsonl").write_text(
-    json.dumps({"id": "fixture_failure", "instance": "schema class",
-                "source_path": "migration", "source_anchor": "migration:1",
-                "check": None, "enforcement": None, "auto": "machine",
-                "first_seen": None}) + "\n")
 PY
 }
 
@@ -710,7 +697,6 @@ PY
   catalog_before="$(file_digest "$STAGE/catalog/failure-modes.md")"
   ledger_before="$(file_digest "$STAGE/catalog/id-ledger.txt")"
   l1_canon_before="$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")"
-  l1_schema_before="$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")"
   l2_before="$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")"
 
   run env CATALOG="$STAGE/catalog/failure-modes.md" \
@@ -724,10 +710,9 @@ PY
   # a resolved-source count, and the standing scope-limit footer. The stub
   # printed one line and none of this.  `fleet-orch` is intentionally SHORT,
   # but the add gate is only the canonical catalog the loop just regenerated.
-  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for; 0 canonical row(s) text-divergent (5/5 sources resolved)"* ]]
+  [[ "$output" == *"SHORT: 1 enumerable entries unaccounted for; 0 canonical row(s) text-divergent (4/4 sources resolved)"* ]]
   [[ "$output" == *"SCOPE LIMIT"* ]]
   [[ "$output" == *"homelab-canon"* ]]
-  [[ "$output" == *"fleet-dispatch-schema"* ]]
   # The full health report must keep the sibling backlog visible; only the
   # exit-status gate is narrowed for this one canonical write (hindsight#101).
   [[ "$output" == *"fleet-main"* ]]
@@ -744,7 +729,6 @@ PY
   [ "$(file_digest "$STAGE/catalog/failure-modes.md")" = "$catalog_before" ]
   [ "$(file_digest "$STAGE/catalog/id-ledger.txt")" = "$ledger_before" ]
   [ "$(file_digest "$STAGE/pipeline/L1/homelab-canon.jsonl")" = "$l1_canon_before" ]
-  [ "$(file_digest "$STAGE/pipeline/L1/fleet-dispatch-schema.jsonl")" = "$l1_schema_before" ]
   [ "$(file_digest "$STAGE/pipeline/L2/clusters.jsonl")" = "$l2_before" ]
 }
 
@@ -824,8 +808,7 @@ PY
   [[ "$output" == *"NOT CHECKED by this run"* ]]
 
   git -C "$STAGE" add pipeline/L1/homelab-canon.jsonl \
-    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
-    pipeline/L2/clusters.jsonl
+    pipeline/L2/embedding-snapshot.json pipeline/L2/clusters.jsonl
   run bash -c 'cd "$1" && bash "$2"' _ "$STAGE" "$STAGE/.githooks/pre-commit"
   [ "$status" -eq 0 ]
 }
@@ -869,14 +852,12 @@ PY
 
   [ "$status" -ne 0 ]
   [[ "$output" == *"pipeline/L1/homelab-canon.jsonl"* ]]
-  [[ "$output" == *"pipeline/L1/fleet-dispatch-schema.jsonl"* ]]
   [[ "$output" == *"pipeline/L2/embedding-snapshot.json"* ]]
   [[ "$output" == *"pipeline/L2/clusters.jsonl"* ]]
   [[ "$output" == *"stage"* ]]
 
   git -C "$STAGE" add pipeline/L1/homelab-canon.jsonl \
-    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
-    pipeline/L2/clusters.jsonl
+    pipeline/L2/embedding-snapshot.json pipeline/L2/clusters.jsonl
   : >"$trace"
   run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \
     _ "$STAGE" "$STAGE/.githooks/pre-commit"
@@ -936,8 +917,7 @@ PY
     _ "$clean_worktree"
   [ "$status" -eq 0 ]
   git -C "$clean_worktree" add pipeline/L1/homelab-canon.jsonl \
-    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
-    pipeline/L2/clusters.jsonl
+    pipeline/L2/embedding-snapshot.json pipeline/L2/clusters.jsonl
 
   # A dirty main checkout must not make a correctly staged linked worktree
   # abort.  The old hook sees this catalog and generated-artifact drift instead.
@@ -969,8 +949,7 @@ PY
   [ "$status" -eq 0 ]
   git -C "$linked_worktree" add catalog/failure-modes.md catalog/id-ledger.txt \
     catalog/criticality.jsonl pipeline/L1/homelab-canon.jsonl \
-    pipeline/L1/fleet-dispatch-schema.jsonl pipeline/L2/embedding-snapshot.json \
-    pipeline/L2/clusters.jsonl
+    pipeline/L2/embedding-snapshot.json pipeline/L2/clusters.jsonl
   : >"$trace"
 
   run env TRACE="$trace" bash -c 'cd "$1" && bash "$2"' \

@@ -102,21 +102,21 @@ jobs:
         run: python3 bin/verify_bats_report.py .bats-report/report.tap bin/tests
       - name: Reconcile L1 corpus (declared reduced check)
         if: matrix.shard == 'tools'
-        # CI checks out only this repo, so four of the five sources are not on
+        # CI checks out only this repo, so three of the four sources are not on
         # disk here. The old form ran all five and waived the resulting PARTIAL,
         # which made this step green BECAUSE it could not see what it checks:
         # --allow-partial waives PARTIAL only, so a real shortfall (SHORT) in the
         # one source CI can actually read would fail -- but a shortfall in the
-        # other four is invisible here permanently, waiver or not (issue #73).
+        # other three is invisible here permanently, waiver or not (issue #73).
         #
         # So this step now names its scope instead of waiving its blindness: it
         # reconciles homelab-canon, the source that IS checked out, with no
         # waiver in play. A drift between catalog/failure-modes.md and
         # pipeline/L1/homelab-canon.jsonl now fails CI outright, and the run
-        # prints the four sources it did not check.
+        # prints the three sources it did not check.
         #
         # STILL NOT CHECKED ANYWHERE IN CI: fleet-main, fleet-orch,
-        # claude-codex-integration, fleet-dispatch-schema. Closing that needs the
+        # claude-codex-integration. Closing that needs the
         # sibling repos checked out on the runner; it is not in this workflow's
         # reach, and a green tick here must not be read as covering them.
         run: python3 pipeline/reconcile_l1.py --source homelab-canon
@@ -126,9 +126,9 @@ jobs:
       - name: Verify enforcement
         if: matrix.shard == 'tools'
         # This runner checks out only this one repo: ~/projects does not
-        # exist here at all, so of the 13 mapped source-roots.conf entries
+        # exist here at all, so of the 12 mapped source-roots.conf entries
         # only SELF (homelab-canon, this checkout's own root) resolves --
-        # confirmed empirically, ROOTS: 1/13. And SELF's own L1 entries are
+        # confirmed empirically, ROOTS: 1/12. And SELF's own L1 entries are
         # ALL enforcement:null (see conf/source-roots.conf's homelab-canon
         # comment), so even that one resolved root verifies zero real
         # paths. A root that resolves but checks nothing must not satisfy
@@ -145,7 +145,7 @@ jobs:
         # can't be deleted to make debt disappear; (2) the catalog/schema
         # gates in the steps above this one.
         #
-        # Real phantom-discovery against all 13 mapped roots -- including
+        # Real phantom-discovery against all 12 mapped roots -- including
         # the known-phantoms.conf debt-ledger gate -- only ever runs where
         # ~/projects is actually populated (a dev workstation). Chosen
         # option: explicit SKIP over (a) a scheduled/pre-commit job on a

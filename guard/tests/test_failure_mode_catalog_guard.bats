@@ -29,7 +29,6 @@ teardown() {
   : >"$repo/catalog/id-ledger.txt"
   : >"$repo/catalog/criticality.jsonl"
   : >"$repo/pipeline/L1/homelab-canon.jsonl"
-  : >"$repo/pipeline/L1/fleet-dispatch-schema.jsonl"
   : >"$repo/pipeline/L2/embedding-snapshot.json"
   : >"$repo/pipeline/L2/clusters.jsonl"
 

@@ -37,7 +37,6 @@ ALL_SLUGS = [
     "fleet-orch",
     "homelab-canon",
     "claude-codex-integration",
-    "fleet-dispatch-schema",
 ]
 # The one source deliberately made SHORT in the hermetic fixture.
 FIXTURE_MISSING_ID = "OPS-99"
@@ -59,7 +58,7 @@ def _record(local_id: str) -> str:
 
 @pytest.fixture()
 def fixture_repo(tmp_path: Path) -> Path:
-    """A self-contained corpus: four sources complete, `fleet-orch` short by one.
+    """A self-contained corpus: three sources complete, `fleet-orch` short by one.
 
     Mirrors the real layout -- the reconciler derives its repo root from its own
     file and its sibling roots from that root's parent -- so the copied script is
@@ -99,13 +98,6 @@ def fixture_repo(tmp_path: Path) -> Path:
     (repo / "pipeline" / "L1" / "claude-codex-integration.jsonl").write_text(
         _record("FM-001"), encoding="utf-8")
 
-    (projects / "fleet-dispatch" / "migrations").mkdir(parents=True)
-    (projects / "fleet-dispatch" / "migrations" / "0017_failure_class.sql").write_text(
-        "CHECK (failure_class IN ('fixture_failure'))\n", encoding="utf-8")
-    (repo / "pipeline" / "L1" / "fleet-dispatch-schema.jsonl").write_text(
-        json.dumps({"id": "fixture_failure", "instance": "schema class",
-                    "source_path": "migration"}) + "\n", encoding="utf-8")
-
     return repo
 
 
@@ -115,6 +107,7 @@ def fixture_repo(tmp_path: Path) -> Path:
     pytest.param(["--source"], id="flag-with-no-value"),
     pytest.param(["--source", ""], id="empty-string"),
     pytest.param(["--source", "fleet"], id="prefix-of-a-real-slug"),
+    pytest.param(["--source", "fleet-dispatch-schema"], id="retired-source"),
     pytest.param(["--source", "homelab-canon;id"], id="shell-metacharacter-payload"),
     pytest.param(["--source", "no-such"], id="unknown-slug"),
     pytest.param(["--source", "homelab-canon", "--source", "no-such"],
@@ -193,7 +186,7 @@ def test_naming_every_source_is_equivalent_to_the_unscoped_run(fixture_repo: Pat
     assert "SHORT" in result.stdout
     assert FIXTURE_MISSING_ID in result.stdout
     assert SCOPE_MARKER not in result.stdout, (
-        "naming all five sources narrows nothing; a SCOPE notice here would be "
+        "naming every source narrows nothing; a SCOPE notice here would be "
         "a false warning"
     )
 

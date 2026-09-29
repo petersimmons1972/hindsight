@@ -33,7 +33,6 @@ GROUND_TRUTH_FLOORS = {
     "fleet-orch": 30,
     "homelab-canon": 162,
     "claude-codex-integration": 23,
-    "fleet-dispatch-schema": 10,
 }
 
 # The SELF source lives inside this checkout, so it resolves on every host --

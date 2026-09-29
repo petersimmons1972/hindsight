@@ -4,7 +4,7 @@
 Why this exists
 ---------------
 The first L1 extraction pass reported success on every source, and was lossy:
-fleet-main returned 78 of 102 entries, fleet-dispatch 2 of 10. Nothing failed;
+fleet-main returned 78 of 102 entries. Nothing failed;
 each agent reported a count that looked plausible on its own.
 
 That is the registry's own headline failure mode -- a proxy (the agent's
@@ -44,7 +44,7 @@ from typing import NamedTuple
 # This repo, derived from THIS FILE -- never from a hardcoded home directory.
 # It was `P / "hindsight/..."`, so on any host that is not the author's
 # workstation the tool could not find its own catalog or its own corpus. On CI
-# that meant all five sources failed to resolve, and the `else 100.0` fail-open
+# that meant all configured sources failed to resolve, and the `else 100.0` fail-open
 # turned "nothing was compared" into COMPLETE, exit 0.
 REPO = Path(__file__).resolve().parents[1]
 L1 = REPO / "pipeline/L1"
@@ -65,8 +65,6 @@ ENUMERABLE = {
                       re.compile(r"^\|\s*(FM-\d{2,3})\s*\|")),
     "claude-codex-integration": ([P / "claude-codex/docs/integration-failure-modes.md"],
                                  re.compile(r"^#{2,4} +(FM-\d{2,3})")),
-    "fleet-dispatch-schema": ([P / "fleet-dispatch/migrations/0017_failure_class.sql"],
-                              re.compile(r"'([a-z_]{4,})'")),
 }
 
 
@@ -263,7 +261,7 @@ def extracted(slug: str) -> tuple[set[str], int]:
         n += 1
         d = json.loads(line)
         # Search the WHOLE record, not just `id`. An earlier version searched only
-        # the id field for snake_case and reported a false 0% on fleet-dispatch --
+        # the id field and missed source IDs appearing elsewhere in a record --
         # a validator that fails ground truth is worse than no validator.
         blob = " ".join(str(d.get(k, "")) for k in
                         ("id", "source_anchor", "instance", "check"))

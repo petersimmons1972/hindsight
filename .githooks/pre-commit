@@ -51,20 +51,19 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     && { ! git -C "$REPO_ROOT" diff --quiet -- catalog/failure-modes.md catalog/id-ledger.txt \
          || ! git -C "$REPO_ROOT" diff --cached --quiet -- catalog/failure-modes.md catalog/id-ledger.txt; }; then
     python3 "$REPO_ROOT/pipeline/extract_mechanical.py"
-    # Reconcile ONLY the two L1 sources the regeneration above actually writes --
-    # the same two named in GENERATED below. The unscoped run also reads four
+    # Reconcile ONLY the L1 source the regeneration above actually writes --
+    # the same source named in GENERATED below. The unscoped run also reads three
     # sibling repos this commit never touched, so a backlog in any of them made
     # EVERY commit that changed the catalog impossible (issue #73). A scoped run
     # prints the sources it skipped, so the narrowing is never silent.
     #
     # CI (guard.yml) reconciles homelab-canon only -- the one source its runner
-    # checks out. fleet-dispatch-schema is scoped here for this hook's own
-    # regenerated-artifact check, but CI does NOT verify it, and CI does NOT
-    # verify fleet-main, fleet-orch, or claude-codex-integration either. There is
+    # checks out. CI does NOT verify fleet-main, fleet-orch, or
+    # claude-codex-integration either. There is
     # no unscoped run left that humans or CI use for corpus-wide drift; that gap
     # is a known, ledgered limitation, not something this hook or CI covers.
     python3 "$REPO_ROOT/pipeline/reconcile_l1.py" \
-        --source homelab-canon --source fleet-dispatch-schema
+        --source homelab-canon
 
     # L2 is released by add-failure-mode.sh's controlled snapshot transaction.
     # Never regenerate it here through the live embedding backend: replay the
@@ -81,7 +80,6 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
 
     GENERATED=(
         pipeline/L1/homelab-canon.jsonl
-        pipeline/L1/fleet-dispatch-schema.jsonl
         pipeline/L2/embedding-snapshot.json
         pipeline/L2/clusters.jsonl
     )

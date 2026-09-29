@@ -34,11 +34,11 @@ BATS_WORKFLOW_CONTRACT = REPO / "guard" / "tests" / "test_ci_workflow_contract.b
 # ANY edit to that workflow changes this value and MUST update it here in the
 # same change -- that is the whole point of the pin. Never copy a digest out of
 # a review comment or a PR body; recompute it against the file on disk.
-INTENDED_WORKFLOW_SHA256 = "f28992a8b9cbe17ecce355b60968040ddf9ec3478af47f23f5e5e24b5c77c78a"
+INTENDED_WORKFLOW_SHA256 = "4e97d7ee31109fce980c1cb5e94dbdc12cb038fed19793174fcbe5a4a3ba4c41"
 
 # A comment sentence may name a broader-than-CI check only while denying it.
 # "CI never runs the unscoped gate" is true; "the unscoped run CI uses" is not.
-_OVERCLAIM_TOKENS = ("unscoped", "all five", "every source", "full corpus",
+_OVERCLAIM_TOKENS = ("unscoped", "all four", "all five", "every source", "full corpus",
                      "corpus-wide", "corpus wide")
 _NEGATION = re.compile(
     r"\b(not|never|no|none|cannot|can't|isn't|aren't|without|nothing|neither)\b",

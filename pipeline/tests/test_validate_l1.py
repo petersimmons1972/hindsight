@@ -348,7 +348,7 @@ def test_main_reads_the_whole_checked_in_corpus(capsys) -> None:
     root = SCRIPT.parent
     files = sorted((root / "L1").glob("*.jsonl"))
     records = sum(len(f.read_text(encoding="utf-8").splitlines()) for f in files)
-    assert len(files) >= 14 and records >= 400, "corpus fixture itself went vacuous"
+    assert len(files) >= 13 and records >= 400, "corpus fixture itself went vacuous"
 
     status = validate_l1.main()
     out = capsys.readouterr().out

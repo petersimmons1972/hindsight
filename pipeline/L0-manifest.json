@@ -121,11 +121,6 @@
       "lines": 696
     },
     {
-      "path": "fleet-dispatch/migrations/0017_failure_class.sql",
-      "sha256": "2e6f8c9a3d5717a1210c85d513205a1fece1d710b9701238e9362a5e185a150e",
-      "lines": 39
-    },
-    {
       "path": "homelab-config/INCIDENTS/2026-01-28-resume-website-deployment.md",
       "sha256": "b5b5ab6823bad84674a5b1c1373ae2c9ee1cf2eb17ce4d44e3e411f396e565b2",
       "lines": 132

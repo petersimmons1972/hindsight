@@ -63,7 +63,6 @@ SIBLING_FILES = (
     Path("fleet") / "CODING-INVARIANTS.md",
     Path("fleet") / "CODING-FAILURE-MODES.md",
     Path("claude-codex") / "docs" / "integration-failure-modes.md",
-    Path("fleet-dispatch") / "migrations" / "0017_failure_class.sql",
 )
 
 ADD_TIMEOUT = 1800

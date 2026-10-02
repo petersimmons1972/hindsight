@@ -54,6 +54,32 @@ PIN_RELATIVES = (
 )
 MARKER_NAME = ".release-invocations"
 
+
+@pytest.fixture(autouse=True)
+def isolate_undo_journals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put every add invocation's undo journal in this test's disposable tree."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+
+def test_bats_add_run_keeps_journal_out_of_parent_tmpdir(tmp_path: Path) -> None:
+    """A Bats test must override TMPDIR with its own scratch directory."""
+    sentinel = tmp_path / "sentinel-tmp"
+    sentinel.mkdir()
+    env = dict(os.environ)
+    env["TMPDIR"] = str(sentinel)
+    suite = REPO_ROOT / "bin" / "tests" / "test_add_failure_mode.bats"
+    result = subprocess.run(
+        ["bats", "--filter", "none decision uses guard ID", str(suite)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout
+    assert not list(sentinel.glob("hindsight-add-failure-mode.*"))
+
 COPY_IGNORE = shutil.ignore_patterns(".git", ".workflow-lanes", "__pycache__", "*.pyc", ".venv")
 
 # Sibling repositories the canonical (full-loop) branch refuses to run without.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 
 setup() {
+  # Keep add-failure-mode's undo journals inside Bats' per-test scratch tree.
+  export TMPDIR="$BATS_TEST_TMPDIR"
   ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   TOOL="$ROOT/bin/add-failure-mode.sh"
   WORK="$(mktemp -d)"

@@ -6,6 +6,7 @@
 # weaken them to make an implementation pass.
 
 setup() {
+  export TMPDIR="$BATS_TEST_TMPDIR"
   ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   TOOL="$ROOT/bin/add-failure-mode.sh"
   REPORT="$ROOT/bin/report-guard-backlog.py"

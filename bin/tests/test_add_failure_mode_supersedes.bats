@@ -9,6 +9,7 @@
 # test_add_failure_mode.bats, which has an open PR against it.
 
 setup() {
+  export TMPDIR="$BATS_TEST_TMPDIR"
   ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   TOOL="$ROOT/bin/add-failure-mode.sh"
   WORK="$(mktemp -d)"

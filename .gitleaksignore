@@ -1,0 +1,10 @@
+# Gitleaks fingerprint allowlist (commit:path:rule:line), read by
+# bin/secret-scan.sh via the gitleaks CLI's default .gitleaksignore lookup.
+#
+# Both entries are the same false positive: generic-api-key matching the
+# "fd-auth_failure" key of pipeline/L2/embedding-snapshot.json, whose value is
+# a sha256 content digest of a catalog entry, not a credential. 25216c5 is on
+# main (#161); d6adfc7 is on the fix-144-snapshot-churn branch of that change.
+# Add an entry only for a reviewed false positive, never to silence a real key.
+25216c5599f31c02cc1cf5bca75ecf43714d73d3:pipeline/L2/embedding-snapshot.json:generic-api-key:755233
+d6adfc7b78fb8b5877655fcf89bc9218a7446a01:pipeline/L2/embedding-snapshot.json:generic-api-key:755233

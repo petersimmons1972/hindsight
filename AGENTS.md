@@ -139,14 +139,19 @@ When your work on a PR or task ends, read `~/projects/agent-policy/playbooks/tea
 
 <!-- id: standing-authorizations -->
 ## Standing authorizations
-Standing authorization (founder, 2026-09-22; amended 2026-09-25): in fleet, an
-agent may merge a pull request only via `cli-dispatch land`, never with
-`--force-no-review`, and only when every required CI check concluded SUCCESS at
-the PR head (with no required checks configured: at least one check ran and
-every check that ran concluded SUCCESS) and a merge-gating review from a vendor
-other than the author posted PASS for that head. This includes changes to fleet
-`MERGE-PATH.md` and `REVIEW-RULES.md` and the regenerated policy files that
-follow from them. No panel is required. It covers no merge into
-petersimmons1972/agent-policy: the founder merges canon changes.
+Standing authorization (founder, 2026-09-22; amended 2026-09-25 and
+2026-10-13): in fleet, apart from the ledger-harvest pull requests GOV-000070
+covers, an agent may merge a pull request only via `cli-dispatch land`, never
+with `--force-no-review`, `--allow-no-checks` or `--allow-unverified-checks`,
+and only when CI is green at the PR head and a merge-gating review from a
+vendor other than the author posted PASS for that head. CI is green there when
+every check observed in the full rollup concluded SUCCESS, apart from a
+skipped job `land`'s classifier admits as outside the diff, and at least one
+substantive check with Actions run identity, or a legacy StatusContext,
+concluded SUCCESS, whether or not required checks are configured. This
+includes changes to fleet `MERGE-PATH.md` and `REVIEW-RULES.md` and the
+regenerated policy files that follow from them. No panel is required. It
+covers no merge into petersimmons1972/agent-policy: the founder merges canon
+changes.
 <!-- END PROJECT AGENT POLICY -->
 <!-- END UNIVERSAL AGENT POLICY -->

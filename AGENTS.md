@@ -101,7 +101,6 @@ founder-only choice, and name the tradeoff when you do.
 | Before you | Read |
 |---|---|
 | file, open or create a PR | `~/projects/fleet/agent-playbooks/file-pr.md` |
-| babysit, drain, watch or fix CI on a PR | `~/projects/fleet/agent-playbooks/babysit-pr.md` |
 | merge on green without a babysit loop | `~/projects/fleet/agent-playbooks/merge-on-green.md` |
 | write code | `~/projects/fleet/CODING-STANDARDS.md` |
 | benchmark, score or route across harness and model combinations | `~/projects/fleet/docs/ROUTING-CONTRACT.md` |
@@ -141,7 +140,8 @@ When your work on a PR or task ends, read `~/projects/agent-policy/playbooks/tea
 ## Standing authorizations
 Standing authorization (founder, 2026-09-22; amended 2026-09-25 and
 2026-10-13): in fleet, apart from the ledger-harvest pull requests GOV-000070
-covers, an agent may merge a pull request only via `cli-dispatch land`, never
+covers or the agent-worker PRs a fleet repo-scope standing authorization covers,
+an agent may merge a pull request only via `cli-dispatch land`, never
 with `--force-no-review`, `--allow-no-checks` or `--allow-unverified-checks`,
 and only when CI is green at the PR head and a merge-gating review from a
 vendor other than the author posted PASS for that head. CI is green there when,
@@ -158,5 +158,20 @@ dropped, and a retained failure is red whatever its path. This includes
 changes to fleet `MERGE-PATH.md` and `REVIEW-RULES.md` and the regenerated
 policy files that follow from them. No panel is required. It covers no merge
 into petersimmons1972/agent-policy: the founder merges canon changes.
+
+<!-- id: pull-requests -->
+## Pull requests
+- **Risk and blast radius in every PR** (founder, 2026-10-28). Every PR body carries these lines:
+  - `Risk: low|medium|high`, with a one-line reason.
+    - low: tests, docs, or new code nothing calls yet.
+    - medium: changes behaviour that lanes, CI or users run, and a revert undoes it.
+    - high: touches the merge gate, required CI checks, credentials or auth, ledger or other
+      data, or publication; or a revert cannot fully undo it.
+  - `Blast radius:` what runs this code and who is hurt, and how badly, if it is wrong.
+  - `Rollback:` how to undo it, e.g. `git revert <merge>`. Say `cannot-rollback` and give
+    the manual steps when a revert is not enough.
+  - `Sensitive areas:` any of auth, secrets, merge gate, CI gates, data, migrations,
+    publication, dependencies; or `none`.
+  Review depth and other rules may be tuned to these levels.
 <!-- END PROJECT AGENT POLICY -->
 <!-- END UNIVERSAL AGENT POLICY -->

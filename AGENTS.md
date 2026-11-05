@@ -92,7 +92,7 @@ founder-only choice, and name the tradeoff when you do.
   before you mark the work done; verify it with `gh pr list`. Issue-bound work carries `Closes #N`.
 - **IF several lanes touch the same PR or code THEN each writes its findings to the PR body or its
   own `REPORT-<lane>.md`, never a shared `REPORT.md`.** Fleet's CI guard
-  `.github/scripts/ci-report-md-guard.sh` exists to catch that collision.
+  `ci/fleet-ci ci-report-md-guard` exists to catch that collision.
 - A durable code-level "why" goes in fleet's `CODING-INVARIANTS.md`; append a date when it recurs.
 
 <!-- id: pr-playbooks -->
